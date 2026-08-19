@@ -43,6 +43,7 @@ struct TrellisParams {
                                 //   speckle (issue #22). >0 forces that width (e.g. 1 for
                                 //   the thin-wall reference look, 2 for a thicker shell).
     int  decim    = -1;         // decimation cluster grid   (-1 => per-cascade default)
+    int  target_faces = -1;     // QEM target faces; -1 => per-cascade default (150K/300K)
     int  tex      = -1;         // UV atlas size in px        (-1 => per-cascade default)
     int  tex_res  = -1;         // texture PBR resolution: -1 => auto (drop dense res-1024 tex to
                                 //   512, whose clean coarse PBR bakes onto the res-1024 mesh
