@@ -2,6 +2,7 @@
 /build/
 /build-vk/
 /build-*/
+/portable/
 *.o
 *.a
 *.so
