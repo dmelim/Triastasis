@@ -60,7 +60,11 @@ fn server_bin_name() -> &'static str {
 /// <local-data>/trellis-studio/output (%LOCALAPPDATA%\... / ~/.local/share/...).
 pub fn default_output_dir() -> String {
     if let Some(root) = portable_root() {
-        return root.join("data").join("output").to_string_lossy().into_owned();
+        return root
+            .join("data")
+            .join("output")
+            .to_string_lossy()
+            .into_owned();
     }
     dirs::data_local_dir()
         .map(|d| d.join("trellis-studio").join("output"))
@@ -86,7 +90,11 @@ pub fn resolve_output_dir() -> Result<PathBuf, String> {
 /// <local-data>/trellis-studio/logs. Mirrors `default_output_dir()`.
 pub fn logs_dir() -> String {
     if let Some(root) = portable_root() {
-        return root.join("data").join("logs").to_string_lossy().into_owned();
+        return root
+            .join("data")
+            .join("logs")
+            .to_string_lossy()
+            .into_owned();
     }
     dirs::data_local_dir()
         .map(|d| d.join("trellis-studio").join("logs"))

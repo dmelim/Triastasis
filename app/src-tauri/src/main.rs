@@ -1,13 +1,100 @@
 // Trellis Studio — Tauri v2 desktop shell around the trellis-server image→3D
 // pipeline. Reads the installer-written config.json, launches & supervises the
 // server, and exposes a few commands to the web UI.
-#![cfg_attr(all(not(debug_assertions), target_os = "windows"), windows_subsystem = "windows")]
+#![cfg_attr(
+    all(not(debug_assertions), target_os = "windows"),
+    windows_subsystem = "windows"
+)]
 
+mod automation;
 mod config;
 mod server;
 
+use automation::AutomationState;
 use server::ServerState;
 use tauri::Manager;
+
+#[tauri::command]
+async fn preview_alpha(image: Vec<u8>, bg_removal: String) -> Result<Vec<u8>, String> {
+    let cfg = config::load().ok_or("no config.json found")?;
+    tauri::async_runtime::spawn_blocking(move || {
+        if image.is_empty() {
+            return Err("input image is empty".to_string());
+        }
+
+        let server_path = std::path::PathBuf::from(&cfg.server_bin);
+        #[cfg(windows)]
+        let cli_name = "trellis-cli.exe";
+        #[cfg(not(windows))]
+        let cli_name = "trellis-cli";
+        let cli_path = server_path.with_file_name(cli_name);
+        if !cli_path.exists() {
+            return Err(format!(
+                "mask preview tool not found: {}",
+                cli_path.display()
+            ));
+        }
+
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let work =
+            std::env::temp_dir().join(format!("trellis-mask-{}-{unique}", std::process::id()));
+        std::fs::create_dir_all(&work).map_err(|e| e.to_string())?;
+        let input_path = work.join("input.png");
+        let output_path = work.join("preview.glb");
+        let cutout_path = work.join("preview_cutout.png");
+        std::fs::write(&input_path, image).map_err(|e| e.to_string())?;
+
+        let mut cmd = std::process::Command::new(&cli_path);
+        cmd.arg("--image")
+            .arg(&input_path)
+            .arg("--output")
+            .arg(&output_path)
+            .arg("--models")
+            .arg(&cfg.models_dir)
+            .arg("--gpu")
+            .arg(cfg.gpu.to_string())
+            .arg("--res")
+            .arg("512")
+            .arg("--bg-only");
+        if bg_removal == "birefnet" || bg_removal == "threshold" {
+            cmd.arg("--bg-removal").arg(&bg_removal);
+        }
+
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+            cmd.creation_flags(CREATE_NO_WINDOW);
+        }
+
+        let result = cmd
+            .output()
+            .map_err(|e| format!("could not run mask preview: {e}"));
+        let response = match result {
+            Ok(output) if output.status.success() => {
+                std::fs::read(&cutout_path).map_err(|e| format!("could not read mask preview: {e}"))
+            }
+            Ok(output) => {
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                let stdout = String::from_utf8_lossy(&output.stdout);
+                let detail = if stderr.trim().is_empty() {
+                    stdout.trim()
+                } else {
+                    stderr.trim()
+                };
+                Err(format!("mask preview failed: {detail}"))
+            }
+            Err(e) => Err(e),
+        };
+        let _ = std::fs::remove_dir_all(&work);
+        response
+    })
+    .await
+    .map_err(|e| format!("mask preview task failed: {e}"))?
+}
 
 #[tauri::command]
 fn get_config() -> Option<config::Config> {
@@ -78,16 +165,27 @@ fn current_log_path(state: tauri::State<ServerState>) -> Option<String> {
 }
 
 #[tauri::command]
-fn restart_server(app: tauri::AppHandle, state: tauri::State<ServerState>) -> Result<(), String> {
+fn restart_server(
+    app: tauri::AppHandle,
+    state: tauri::State<ServerState>,
+    automation_state: tauri::State<AutomationState>,
+) -> Result<(), String> {
     let cfg = config::load().ok_or("no config.json found")?;
     // Explicit restart: the user just changed settings, so never reuse a stale
     // server on the port — spawn fresh so the new config actually takes effect.
-    server::start(&app, &cfg, state.inner(), false)
+    server::start(&app, &cfg, state.inner(), false)?;
+    automation::start(&cfg, automation_state.inner())?;
+    Ok(())
 }
 
 #[tauri::command]
 fn server_running(state: tauri::State<ServerState>) -> bool {
     server::is_running(state.inner())
+}
+
+#[tauri::command]
+fn automation_info(state: tauri::State<AutomationState>) -> automation::AutomationInfo {
+    automation::info(state.inner())
 }
 
 fn main() {
@@ -105,6 +203,7 @@ fn main() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())
         .manage(ServerState::default())
+        .manage(AutomationState::default())
         .invoke_handler(tauri::generate_handler![
             get_config,
             save_config,
@@ -115,7 +214,9 @@ fn main() {
             open_logs_dir,
             current_log_path,
             restart_server,
-            server_running
+            server_running,
+            automation_info,
+            preview_alpha
         ])
         .setup(|app| {
             // Auto-launch the server if the installer already wrote a usable config.
@@ -127,12 +228,17 @@ fn main() {
                     if let Err(e) = server::start(app.handle(), &cfg, state.inner(), true) {
                         eprintln!("[studio] server autostart failed: {e}");
                     }
+                    let automation_state = app.state::<AutomationState>();
+                    if let Err(e) = automation::start(&cfg, automation_state.inner()) {
+                        eprintln!("[studio] automation API failed: {e}");
+                    }
                 }
             }
             Ok(())
         })
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::CloseRequested { .. } = event {
+                automation::stop(window.state::<AutomationState>().inner());
                 server::stop(window.state::<ServerState>().inner());
             }
         })
@@ -140,6 +246,7 @@ fn main() {
         .expect("error while building Trellis Studio")
         .run(|app, event| {
             if let tauri::RunEvent::ExitRequested { .. } = event {
+                automation::stop(app.state::<AutomationState>().inner());
                 server::stop(app.state::<ServerState>().inner());
             }
         });

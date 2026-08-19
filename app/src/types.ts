@@ -42,4 +42,8 @@ export interface GenRecord {
   input: Blob; // source image
   glb: Blob; // resulting model/gltf-binary
   thumb: Blob | null; // model-viewer snapshot for the gallery
+  /** Present when this record is one candidate inside a seed sweep. */
+  sweepGroupId?: string;
+  sweepIndex?: number;
+  sweepCount?: number;
 }

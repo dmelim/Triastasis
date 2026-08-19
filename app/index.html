@@ -13,7 +13,8 @@
         <span class="logo">◈</span> Trellis Studio
       </div>
       <div class="status">
-        <span id="backend-badge" class="badge" title="active backend">—</span>
+        <span id="automation-badge" class="badge api-badge" title="Local automation API">API starting</span>
+        <span id="backend-badge" class="badge" title="active backend">-</span>
         <span id="server-dot" class="dot" title="server status"></span>
         <span id="server-label" class="server-label">connecting…</span>
         <button id="settings-btn" class="icon-btn" title="Settings">⚙</button>
@@ -26,66 +27,213 @@
     </div>
 
     <main class="workspace">
-      <section class="panel panel-left">
-        <div id="dropzone" class="dropzone" tabindex="0">
-          <img id="input-preview" class="input-preview hidden" alt="input" />
-          <div id="dropzone-hint" class="dropzone-hint">
-            <div class="dz-icon">⬆</div>
-            <div>Drop an image here</div>
-            <div class="muted">or click to browse</div>
+      <nav class="mode-rail" aria-label="Workspace mode">
+        <button id="mode-generate" class="mode-button active" type="button" aria-selected="true">
+          <span class="mode-key" aria-hidden="true">G</span>
+          <span>Generate</span>
+        </button>
+        <button id="mode-view" class="mode-button" type="button" aria-selected="false">
+          <span class="mode-key" aria-hidden="true">V</span>
+          <span>View</span>
+        </button>
+      </nav>
+
+      <aside class="panel panel-left" aria-label="Workspace controls">
+        <section id="generate-mode-panel" class="mode-panel">
+          <div class="panel-heading">
+            <div>
+              <h1>Generate</h1>
+              <p>Build a textured 3D model from one image.</p>
+            </div>
           </div>
-          <input id="file-input" type="file" accept="image/*" hidden />
-        </div>
 
-        <div class="controls">
-          <label class="ctl">
-            <span>Resolution</span>
-            <select id="ctl-res">
-              <option value="512">512 · light</option>
-              <option value="1024" selected>1024 · cascade</option>
-              <option value="1536">1536 · high</option>
-            </select>
-          </label>
-          <label class="ctl">
-            <span>Background removal</span>
-            <select id="ctl-bg">
-              <option value="auto" selected>auto</option>
-              <option value="birefnet">birefnet</option>
-              <option value="threshold">threshold</option>
-            </select>
-          </label>
-          <label class="ctl">
-            <span>UV unwrap</span>
-            <select id="ctl-uv">
-              <option value="xatlas" selected>xatlas</option>
-              <option value="box">box (faster)</option>
-            </select>
-          </label>
-          <label class="ctl">
-            <span>Seed</span>
-            <input id="ctl-seed" type="number" min="0" step="1" value="42" />
-          </label>
-        </div>
+          <div class="input-head">
+            <div class="preview-tabs" role="tablist" aria-label="Input preview">
+              <button id="preview-source-tab" class="preview-tab active" type="button" role="tab" aria-selected="true">Source</button>
+              <button id="preview-mask-tab" class="preview-tab" type="button" role="tab" aria-selected="false" disabled>Model input</button>
+            </div>
+            <button id="preview-mask-btn" class="link-btn" type="button" disabled>Preview mask</button>
+          </div>
 
-        <button id="generate-btn" class="primary" disabled>Generate 3D</button>
+          <div id="dropzone" class="dropzone" tabindex="0">
+            <img id="input-preview" class="input-preview hidden" alt="Input image" />
+            <img id="mask-preview" class="input-preview checkerboard hidden" alt="Background-removed model input" />
+            <div id="dropzone-hint" class="dropzone-hint">
+              <div class="dropzone-mark" aria-hidden="true">+</div>
+              <div>Drop an image here</div>
+              <div class="muted">or click to browse</div>
+            </div>
+            <input id="file-input" type="file" accept="image/*" hidden />
+          </div>
+          <div id="mask-help" class="input-help muted">Preview the exact background-removed image used for reconstruction.</div>
 
-        <div id="progress" class="progress hidden">
-          <div class="bar"><div class="bar-fill"></div></div>
-          <div id="progress-stage" class="progress-stage muted">starting…</div>
-          <div id="progress-elapsed" class="progress-elapsed muted">0:00</div>
-          <button id="cancel-btn" class="link-btn">Cancel</button>
-        </div>
-      </section>
+          <div class="controls">
+            <label class="ctl">
+              <span>Resolution</span>
+              <select id="ctl-res">
+                <option value="512">512 light</option>
+                <option value="1024" selected>1024 cascade</option>
+                <option value="1536">1536 high</option>
+              </select>
+            </label>
+            <label class="ctl">
+              <span>Background removal</span>
+              <select id="ctl-bg">
+                <option value="auto" selected>Auto</option>
+                <option value="birefnet">BiRefNet</option>
+                <option value="threshold">Threshold</option>
+              </select>
+            </label>
+            <label class="ctl">
+              <span>UV unwrap</span>
+              <select id="ctl-uv">
+                <option value="xatlas" selected>xatlas</option>
+                <option value="box">Box, faster</option>
+              </select>
+            </label>
+            <label class="ctl">
+              <span>Seed</span>
+              <input id="ctl-seed" type="number" min="0" step="1" value="42" />
+            </label>
+            <label class="ctl control-wide">
+              <span>Sweep candidates</span>
+              <select id="ctl-sweep-count">
+                <option value="4" selected>4 seeds</option>
+                <option value="6">6 seeds</option>
+                <option value="8">8 seeds</option>
+              </select>
+            </label>
+          </div>
+
+          <div class="generate-actions">
+            <button id="generate-btn" class="primary" disabled>Generate 3D</button>
+            <button id="sweep-btn" class="tool-btn sweep-btn" disabled>Sweep at 512</button>
+          </div>
+        </section>
+
+        <section id="view-mode-panel" class="mode-panel hidden">
+          <div class="panel-heading">
+            <div>
+              <h1>Inspect</h1>
+              <p>Read the mesh and inspect its triangle topology.</p>
+            </div>
+          </div>
+
+          <div id="inspect-empty" class="inspect-empty">
+            <strong>No model loaded</strong>
+            <span>Generate a model or choose one from the gallery.</span>
+          </div>
+
+          <div id="inspect-content" class="inspect-content hidden">
+            <section class="inspect-section">
+              <h2>Model information</h2>
+              <div class="metric-grid">
+                <div class="metric"><span>Topology</span><strong id="stat-topology">Triangles</strong></div>
+                <div class="metric"><span>Triangles</span><strong id="stat-triangles">0</strong></div>
+                <div class="metric"><span>Render vertices</span><strong id="stat-vertices">0</strong></div>
+                <div class="metric"><span>Mesh parts</span><strong id="stat-parts">0</strong></div>
+                <div class="metric"><span>Materials</span><strong id="stat-materials">0</strong></div>
+                <div class="metric"><span>Textures</span><strong id="stat-textures">0</strong></div>
+              </div>
+              <dl class="detail-list">
+                <div><dt>Texture size</dt><dd id="stat-texture-size">None</dd></div>
+                <div><dt>Dimensions</dt><dd id="stat-dimensions">0 x 0 x 0</dd></div>
+                <div><dt>GLB size</dt><dd id="stat-file-size">0 MB</dd></div>
+                <div><dt>Animations</dt><dd id="stat-animations">0</dd></div>
+              </dl>
+            </section>
+
+            <section class="inspect-section">
+              <h2>Surface</h2>
+              <div class="display-modes" role="group" aria-label="Surface display mode">
+                <button class="display-mode active" type="button" data-display-mode="textured">Textured</button>
+                <button class="display-mode" type="button" data-display-mode="clay">Clay</button>
+                <button class="display-mode" type="button" data-display-mode="wireframe">Wireframe</button>
+                <button class="display-mode" type="button" data-display-mode="overlay">Overlay</button>
+              </div>
+            </section>
+
+            <section class="inspect-section">
+              <h2>Scene</h2>
+              <div class="toggle-grid">
+                <label><input id="view-grid" type="checkbox" checked /> Grid</label>
+                <label><input id="view-axes" type="checkbox" /> Axes</label>
+                <label><input id="view-rotate" type="checkbox" /> Auto rotate</label>
+                <label><input id="view-shadows" type="checkbox" checked /> Shadows</label>
+              </div>
+              <label class="ctl range-control">
+                <span>Exposure <output id="view-exposure-value">1.0</output></span>
+                <input id="view-exposure" type="range" min="0.4" max="2" step="0.1" value="1" />
+              </label>
+              <label class="ctl">
+                <span>Background</span>
+                <select id="view-background">
+                  <option value="#0d1016" selected>Studio dark</option>
+                  <option value="#20252e">Slate</option>
+                  <option value="#dedede">Light gray</option>
+                  <option value="#111111">Near black</option>
+                </select>
+              </label>
+            </section>
+
+            <section class="inspect-section">
+              <h2>Camera</h2>
+              <div class="camera-grid">
+                <button type="button" data-camera="isometric">ISO</button>
+                <button type="button" data-camera="front">Front</button>
+                <button type="button" data-camera="back">Back</button>
+                <button type="button" data-camera="left">Left</button>
+                <button type="button" data-camera="right">Right</button>
+                <button type="button" data-camera="top">Top</button>
+              </div>
+            </section>
+
+            <div class="editing-note">
+              <strong>Non-destructive editing next</strong>
+              <span>Selection, cleanup, materials, and derived versions will build on this viewer.</span>
+            </div>
+          </div>
+        </section>
+      </aside>
 
       <section class="panel viewer-panel">
-        <div id="viewer-mount" class="viewer-mount"></div>
+        <div id="viewer-mount" class="viewer-mount">
+          <div id="viewer-empty" class="viewer-empty">
+            <span class="viewer-empty-mark" aria-hidden="true">3D</span>
+            <strong>Your model will appear here</strong>
+            <span>Generate from an image or reopen a gallery result.</span>
+          </div>
+          <div id="progress" class="progress viewer-progress hidden" role="status" aria-live="polite">
+            <div class="progress-card">
+              <div class="progress-title">Generating 3D model</div>
+              <div class="bar" aria-hidden="true"><div class="bar-fill"></div></div>
+              <div class="progress-meta">
+                <div id="progress-stage" class="progress-stage">Starting</div>
+                <div id="progress-elapsed" class="progress-elapsed muted">0:00</div>
+              </div>
+              <button id="cancel-btn" class="tool-btn progress-cancel" type="button">Cancel generation</button>
+            </div>
+          </div>
+        </div>
         <div class="viewer-toolbar">
           <button id="reset-view" class="tool-btn" disabled>Reset view</button>
+          <button id="open-view" class="tool-btn" disabled>Inspect model</button>
           <button id="save-glb" class="tool-btn" disabled>Save GLB…</button>
           <span id="viewer-caption" class="viewer-caption muted"></span>
         </div>
       </section>
     </main>
+
+    <section id="candidate-wrap" class="candidate-wrap hidden">
+      <div class="gallery-head">
+        <div>
+          <span>Seed candidates</span>
+          <span id="candidate-summary" class="candidate-summary muted"></span>
+        </div>
+        <button id="clear-candidates" class="link-btn" type="button">Clear candidates</button>
+      </div>
+      <div id="candidate-gallery" class="candidate-gallery"></div>
+    </section>
 
     <section class="gallery-wrap">
       <div class="gallery-head">

@@ -21,7 +21,7 @@ function dirField(label: string, id: string, value: string): string {
 }
 
 function ro(label: string, value: string): string {
-  return `<div class="kv">${label}: <b>${value || "—"}</b></div>`;
+  return `<div class="kv">${label}: <b>${value || "-"}</b></div>`;
 }
 
 export async function renderSettings(
@@ -50,7 +50,7 @@ export async function renderSettings(
       ${dirField("Output folder (generated GLBs are saved here)", "set-output", outputDir)}
       ${field("GPU index (&lt;0 = CPU)", "set-gpu", String(cfg.gpu), "number")}
       ${field("Port", "set-port", String(cfg.port), "number")}
-      <label class="ctl"><span>Server logs (each launch is saved here — attach these to bug reports)</span>
+      <label class="ctl"><span>Server logs (each launch is saved here. Attach these to bug reports)</span>
         <div class="dir-row">
           <input id="set-logs" type="text" value="${logDir.replace(/"/g, "&quot;")}" readonly />
           <button id="set-logs-open" class="tool-btn" type="button">Open</button>
@@ -111,7 +111,7 @@ export async function renderSettings(
     };
   } else {
     body.innerHTML = `
-      <div class="kv">Running in a browser — connecting to a trellis-server you launched.</div>
+      <div class="kv">Running in a browser. Connecting to a trellis-server you launched.</div>
       ${field("Host", "set-host", cfg.host)}
       ${field("Port", "set-port", String(cfg.port), "number")}
       <div class="modal-actions">

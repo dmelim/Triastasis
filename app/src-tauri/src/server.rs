@@ -173,7 +173,7 @@ pub fn start(
     studio_log(
         app,
         &sink,
-        &format!("Trellis Studio server log — {}", fmt_utc(started)),
+        &format!("Trellis Studio server log: {}", fmt_utc(started)),
     );
     studio_log(
         app,
@@ -206,7 +206,7 @@ pub fn start(
         }
         if !freed {
             let msg = format!(
-                "another process is already using {}:{} — close it (or change the port) so the new settings can take effect",
+                "another process is already using {}:{}. Close it (or change the port) so the new settings can take effect",
                 cfg.host, cfg.port
             );
             studio_log(app, &sink, &msg);
@@ -241,7 +241,13 @@ pub fn start(
     unsafe {
         use std::os::unix::process::CommandExt;
         cmd.pre_exec(|| {
-            libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL as libc::c_ulong, 0, 0, 0);
+            libc::prctl(
+                libc::PR_SET_PDEATHSIG,
+                libc::SIGKILL as libc::c_ulong,
+                0,
+                0,
+                0,
+            );
             Ok(())
         });
     }
