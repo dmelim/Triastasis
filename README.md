@@ -271,3 +271,11 @@ tools/          python conversion scripts (safetensors → GGUF) + reference-dum
 docs/spec/      reverse-engineered per-component architecture spec
 thirdparty/     vendored ggml (gitignored), plus stb + xatlas
 ```
+
+## Open-source lineage and license
+
+This repository is a modified version of [Piotr Wilkin's `trellis.cpp`](https://github.com/pwilkin/trellis.cpp), which ports Microsoft's [TRELLIS.2](https://github.com/microsoft/TRELLIS) image-to-3D pipeline to a native C++/GGML runtime and includes the original Trellis Studio application.
+
+The software in this repository remains available under the MIT License. Keep the root [`LICENSE`](LICENSE) file and its original copyright notice with copies or substantial portions of the software. Modifications and new contributions can be documented without removing upstream attribution.
+
+Bundled dependencies and separately downloaded model files have their own notices and terms. See [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md), especially the separate licensing note for installer-downloaded GGUF model files.
