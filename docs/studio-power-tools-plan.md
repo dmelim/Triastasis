@@ -268,81 +268,83 @@ Acceptance: advanced operations are clearly optional, report failure safely, and
 - Verify every edit path has undo or creates a recoverable derived version.
 - Run a third-party license/notice audit before packaging a public build.
 
-## 10. Immediate implementation baseline
+## 10. Implementation status
 
-The first implementation should cover Phase A only, while structuring the sidebar and state model so Phase B can replace the viewer without another UI redesign. Phase A should not add geometry editing or alter generated GLBs.
+Phases A through D now have an implementation in the working tree. The changes remain uncommitted until they complete review and the user explicitly asks for a commit.
 
-## 11. Implementation snapshot
+### Inspector and topology
 
-An early implementation pass was created on 2026-08-19 before this document was confirmed as planning-only. Keep it as an experimental baseline, but do not treat the broader roadmap as implemented.
+- Generate and View modes use a compact left rail and contextual sidebar.
+- The main workspace uses a direct, lazily loaded Three.js viewer.
+- Textured, clay, wireframe, overlay, normals, UV checker, base-color, metallic, roughness, and unlit modes are available.
+- Triangle topology uses a sampled overview at normal distance and full triangle edges when requested or viewed close up.
+- Perspective and orthographic cameras, presets, selection, frame, hide, isolate, grid, axes, shadows, exposure, and background controls are available.
+- Loaded metrics include triangles, render vertices, parts, materials, textures, dimensions, file size, texture size, and animation count.
 
-### Present in the working tree
+### Generation controls
 
-- Generate and View mode rail with a contextual left sidebar.
-- Existing Generate controls preserved inside Generate mode.
-- Direct Three.js GLB viewer replacing the preview-only wrapper.
-- Loaded-model metrics for triangles, render vertices, mesh parts, materials, textures, dimensions, file size, and animations.
-- Textured, clay, wireframe, and texture-plus-wireframe display modes.
-- Grid, axes, auto-rotate, shadows, exposure, background, and camera presets.
-- Existing gallery records can be loaded into the inspector.
-- Production web build passes.
+- Target faces, texture enablement, texture resolution, atlas size, remesh band, and encoding are configurable.
+- The TypeScript client and native HTTP server validate the same bounds and aliases.
+- Target faces overrides the existing pre-bake QEM target; `Auto` retains the established 150K/300K defaults.
+- Requested parameters and measured output metrics are persisted with each generated version.
+
+### Editing and history
+
+- Static models can enter an explicit non-destructive edit-copy session.
+- A selected mesh part can be transformed, material-adjusted, have normals recomputed, or have winding reversed.
+- Position-aware connected-component analysis recognizes physical connectivity across duplicated UV-seam vertices.
+- Connected components can be removed without mutating the stored parent GLB.
+- Snapshot history provides bounded undo and redo for the active session.
+- Edited GLBs can be exported or stored as child versions with operation metadata, thumbnails, and metrics.
+- Gallery records are grouped by stable asset ID and expose version labels, favorites, parent comparisons, and safe deletion behavior.
+- Existing IndexedDB records migrate in place to the version-aware schema.
+- Skinned meshes and models with animation clips remain read-only in this editor path.
 
 ### Verification performed
 
-- Loaded an existing 512-resolution gallery GLB successfully.
+- Loaded an existing 512-resolution WebP-textured gallery GLB in the browser workspace.
 - Reported 139,892 triangles, 87,261 render vertices, one mesh part, one material, two textures, and a 4.9 MB GLB.
-- Confirmed that Generate/View switching and the inspector controls are present and interactive.
-- Confirmed that the TypeScript and Vite production build completes.
+- Confirmed real triangle wireframe rendering and all inspector display controls.
+- Detected 16 physical connected components in the sample despite xatlas vertex duplication.
+- Removed a 2,180-triangle component in an edit copy, observed the count change to 137,712, and restored 139,892 through undo.
+- Applied and undid an object transform without changing the stored gallery version.
+- Exercised legacy migration, derived child/grandchild invariants, safe deletion, cascade deletion, seam-aware component analysis, geometry operations, and bounded history with ephemeral validation scripts.
+- The TypeScript/Vite production build, locked Tauri `cargo check`, native C++17 syntax checks, and `git diff --check` pass.
 
-### Known limitations in the early pass
+## 11. Remaining validation and polish
 
-- Dense wireframe lines merge into a bright silhouette at normal viewing distance. The topology view needs adaptive line density, depth-aware styling, close-up guidance, or a lower-detail inspection proxy.
-- Three.js increases the initial JavaScript bundle to about 660 kB before gzip. It should be lazy-loaded or split into a viewer chunk.
-- The old vendored `<model-viewer>` asset and related comments remain in the repository even though the new viewer no longer uses them.
-- The new viewer needs broader GLB compatibility testing, resource disposal checks, WebP testing in the desktop webview, and performance testing at 300K triangles.
-- The View sidebar can become vertically dense at shorter window heights and needs final scrolling/focus polish.
-- No model-editing operations are implemented.
-- No target-face-count or additional generation controls are implemented.
-- No derived-version history or gallery data migration is implemented.
-- No quad retopology, rigging, segmentation, or DCC handoff is implemented.
+- Run generation through a live native server for every new parameter combination and compare output quality and processing time.
+- Test representative 25K, 100K, 300K, 512-, 1024-, and 1536-resolution outputs on target desktop hardware.
+- Test multi-primitive, multi-material, transparent, geometry-only, malformed, skinned, and animated GLBs.
+- Validate exported edited GLBs in Blender or another external DCC application.
+- Exercise the IndexedDB v1-to-v2 upgrade in a dedicated browser fixture; current migration coverage is static plus memory-fallback testing.
+- Profile long edit sessions and the 12-entry geometry snapshot limit on large meshes.
+- Complete keyboard, screen-reader, high-DPI, short-window, and narrow-window testing.
+- Remove obsolete preview assets only after desktop parity and packaging checks are complete.
 
-## 12. Planned work from the current baseline
+## 12. Optional advanced pipeline evaluation
 
-No additional implementation should begin without explicit approval of the relevant slice.
+Triangles remain Polyloom's generation, runtime, and GLB interchange topology. No quad-retopology or rigging dependency has been added.
 
-### Stabilize the inspector
+### DCC handoff first
 
-- Decide whether to keep the direct Three.js viewer after testing WebP GLBs in Tauri.
-- Improve dense topology visualization.
-- Lazy-load the 3D viewer bundle.
-- Remove the obsolete viewer implementation and vendored asset only after parity is confirmed.
-- Add cleanup/disposal for replaced scenes, geometries, materials, and textures.
-- Test keyboard navigation, focus movement, narrow desktop windows, and high-DPI rendering.
-- Test 25K, 100K, 300K, and full-resolution meshes.
+- Treat reliable self-contained GLB export and re-import as the first advanced workflow.
+- Polyloom should own version lineage, staging, validation, metrics, and derived-version creation.
+- Blender or another DCC should own manual topology, quad preservation, rigging, skinning, animation, and specialist texture work.
+- Browser builds should download files only. A later Tauri integration may launch a user-configured executable without a shell and must never overwrite the parent version.
 
-### Expose generation controls
+### Optional quad-dominant retopology
 
-- Add a server-validated target triangle count.
-- Add texture on/off, atlas size, texture resolution, and remesh-band controls.
-- Persist requested settings and actual output metrics with each generation.
-- Compare output quality and processing time across presets before choosing defaults.
+- Implement retopology behind a provider boundary and always create a derived operation.
+- Evaluate an external QuadriFlow executable or Blender's Quadriflow operator before adding a native dependency.
+- Audit the exact provider revision and transitive licenses before distribution.
+- A true quad artifact must use OBJ, `.blend`, or another polygon-preserving source format. GLB previews are triangulated by definition and must not be labeled as stored quad topology.
+- Preflight manifoldness, report surface deviation and face counts, and create no child version on cancellation, timeout, or invalid output.
+- Treat UV regeneration and texture rebaking as explicit options; geometry-only output is an acceptable reported fallback.
 
-### Add practical editing
+### Rigging and animation
 
-- Begin with connected-component selection, isolate/hide, unwanted-component removal, transforms, normals repair, and material adjustments.
-- Add an explicit edit session with undo and redo.
-- Save geometry-changing operations as derived versions rather than overwriting the original GLB.
-- Add export and optional DCC handoff after derived versions are reliable.
-
-### Add version history
-
-- Introduce asset, version, and parent-version identifiers.
-- Record the operation and parameters that produced each version.
-- Design and test migration for existing IndexedDB gallery records.
-- Add comparison, naming, favorite, and restore behavior only after the data model is stable.
-
-### Revisit advanced topology later
-
-- Keep triangle topology as the default.
-- Evaluate quad-dominant retopology only as an optional derived operation.
-- Evaluate character-oriented retopology and rigging separately from static-asset cleanup.
+- Keep rigging and animation as separate provider operations outside the core editor initially.
+- Prefer export and Blender handoff before attempting automatic arbitrary-character rigging.
+- A rigged result must contain valid skins, joints, weights, and bind poses. An animated result must also contain non-empty clips.
+- Provider failures or unsupported body types must return diagnostics without creating a derived version.
