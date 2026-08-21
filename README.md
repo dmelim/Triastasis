@@ -88,7 +88,7 @@ click → rotate the result.
 4. **Inspect** — rotate and zoom in the interactive preview (Google's three.js-based
    `<model-viewer>`); **Reset view** re-frames the camera and **Save GLB…** exports
    the model.
-5. **Reuse** — every result is kept in a local **gallery** (IndexedDB): click a
+5. **Reuse** — every result is kept in a local **gallery** (native app storage): click a
    thumbnail to reload its model, input image, and settings — even after restarting
    the app.
 

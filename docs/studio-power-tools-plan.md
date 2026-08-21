@@ -1,6 +1,6 @@
 # Trellis Studio Power Tools Plan
 
-Status: baseline proposal
+Status: implemented baseline with remaining native-pipeline validation
 
 Created: 2026-08-19
 
@@ -270,7 +270,7 @@ Acceptance: advanced operations are clearly optional, report failure safely, and
 
 ## 10. Implementation status
 
-Phases A through D now have an implementation in the working tree. The changes remain uncommitted until they complete review and the user explicitly asks for a commit.
+Phases A through D have an implementation. The initial feature checkpoint is committed and pushed; the correction round described below remains uncommitted until the user explicitly asks for another commit.
 
 ### Inspector and topology
 
@@ -283,9 +283,10 @@ Phases A through D now have an implementation in the working tree. The changes r
 
 ### Generation controls
 
-- Target faces, texture enablement, texture resolution, atlas size, remesh band, and encoding are configurable.
+- Target faces, texture enablement, texture resolution, atlas size, remesh band, and encoding are configurable where the current native pipeline supports them.
 - The TypeScript client and native HTTP server validate the same bounds and aliases.
-- Target faces overrides the existing pre-bake QEM target; `Auto` retains the established 150K/300K defaults.
+- Target faces overrides the existing pre-bake QEM target on the textured path; `Auto` retains the established 150K/300K defaults. Geometry-only output currently forces `Auto` because the upstream-aligned native path does not run QEM there.
+- Explicit 1024 px texture decode is offered only with 1024 geometry. Other geometry resolutions offer `Auto` or 512 px rather than claiming unsupported combinations.
 - Requested parameters and measured output metrics are persisted with each generated version.
 
 ### Editing and history
@@ -308,8 +309,19 @@ Phases A through D now have an implementation in the working tree. The changes r
 - Detected 16 physical connected components in the sample despite xatlas vertex duplication.
 - Removed a 2,180-triangle component in an edit copy, observed the count change to 137,712, and restored 139,892 through undo.
 - Applied and undid an object transform without changing the stored gallery version.
+- Entered editing while Wireframe inspection was active and confirmed that the editable copy retained its original PBR material and two textures.
+- Applied a PBR metalness edit while Wireframe was active, switched back to Textured, and confirmed undo restored the original value.
 - Exercised legacy migration, derived child/grandchild invariants, safe deletion, cascade deletion, seam-aware component analysis, geometry operations, and bounded history with ephemeral validation scripts.
-- The TypeScript/Vite production build, locked Tauri `cargo check`, native C++17 syntax checks, and `git diff --check` pass.
+- The TypeScript/Vite production build, locked Tauri `cargo check`, native C++17 syntax checks, and `git diff --check` pass. The correction round changes no C++ source.
+
+### Correction review completed
+
+- Clone, material-edit, history, and GLB export paths temporarily restore source PBR materials and source visibility, then restore the active inspection mode even on failure.
+- Sweep removal now preflights the full group so derived children cannot cause a partially deleted sweep.
+- Clear All and candidate clearing are blocked during generation; Clear All also removes stale candidates.
+- Loading another gallery model clears the previous mask preview, and renaming the active version updates its visible caption and future derived-version label.
+- Established IndexedDB failures during delete or clear now surface an actionable persistence error rather than appearing to succeed through memory fallback.
+- Dropzone keyboard semantics, shortcut focus guards, opacity blend state, reversed tangent handedness, and large-model history limits received focused corrections.
 
 ## 11. Remaining validation and polish
 
@@ -318,7 +330,7 @@ Phases A through D now have an implementation in the working tree. The changes r
 - Test multi-primitive, multi-material, transparent, geometry-only, malformed, skinned, and animated GLBs.
 - Validate exported edited GLBs in Blender or another external DCC application.
 - Exercise the IndexedDB v1-to-v2 upgrade in a dedicated browser fixture; current migration coverage is static plus memory-fallback testing.
-- Profile long edit sessions and the 12-entry geometry snapshot limit on large meshes.
+- Profile long edit sessions and the adaptive geometry snapshot limits (12 entries normally, reduced progressively for dense meshes).
 - Complete keyboard, screen-reader, high-DPI, short-window, and narrow-window testing.
 - Remove obsolete preview assets only after desktop parity and packaging checks are complete.
 

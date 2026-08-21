@@ -75,7 +75,7 @@ Examples:
    **background removal**, and **UV unwrap** if you like.
 3. **Generate 3D** — this takes a few minutes; the live stage line shows progress.
 4. **Rotate/zoom** in the preview; **Reset view** re-frames; **Save GLB…** exports.
-5. Every result is saved to a local **gallery** (IndexedDB) — click a thumbnail to
+5. Every result is saved to a local **gallery** (native app storage) — click a thumbnail to
    reload it, even after restarting the app.
 
 ## No app? Use it in a browser
@@ -128,10 +128,9 @@ plus its full stdout/stderr — attach the newest file to a bug report.
   some Wayland setups) — the app now disables WebKit's DMA-BUF renderer on Linux
   automatically. If you still hit it, launch with
   `WEBKIT_DISABLE_DMABUF_RENDERER=1`; to opt back in, set it to `0`.
-- **"Unable to establish IDB database file" / empty gallery** — some WebKitGTK
-  builds can't open IndexedDB. Generations are unaffected: every result is still
-  written to your output folder; only the in-app gallery won't persist across
-  restarts.
+- **Legacy gallery is empty immediately after a development update** — launch
+  the packaged app once. Polyloom copies the old origin-bound IndexedDB gallery
+  into app-local storage; later packaged and development builds share it.
 - **Settings changes (e.g. models directory) seem ignored** — an older build
   could reuse a server left running by a previous crash. Fully quit the app (or
   reboot) once after updating; the current build kills the server with the app
