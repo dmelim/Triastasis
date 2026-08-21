@@ -674,8 +674,16 @@ select option:disabled { color: var(--content-secondary); }
   height: 16px;
   flex: 0 0 auto;
   background: currentColor;
-  mask: center / contain no-repeat;
-  -webkit-mask: center / contain no-repeat;
+  /* Longhand mask properties only. A `mask` shorthand here would reset
+     `mask-image` to none for icons whose image is declared in earlier-imported
+     stylesheets (select.css) or earlier rules, which rendered them as solid
+     squares. */
+  -webkit-mask-position: center;
+  mask-position: center;
+  -webkit-mask-size: contain;
+  mask-size: contain;
+  -webkit-mask-repeat: no-repeat;
+  mask-repeat: no-repeat;
 }
 .icon-plus { mask-image: url("/icons/plus.svg"); -webkit-mask-image: url("/icons/plus.svg"); }
 .icon-minus { mask-image: url("/icons/minus.svg"); -webkit-mask-image: url("/icons/minus.svg"); }
