@@ -92,6 +92,49 @@ struct QualityWarning {
     dimensions: ModelDimensions,
 }
 
+/// Canonical progress for one job, stored by the queue that owns it. Percent
+/// comes from the native server's sampler iterations; `None` means the backend
+/// could not measure progress and the UI must show an indeterminate bar.
+#[derive(Clone, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct JobProgressView {
+    stage_id: Option<String>,
+    stage_label: Option<String>,
+    completed_steps: Option<u64>,
+    total_steps: Option<u64>,
+    percent: Option<f64>,
+    eta_seconds: Option<f64>,
+    updated_at: Option<u64>,
+}
+
+fn parse_progress_view(value: &serde_json::Value) -> Option<JobProgressView> {
+    let object = value.as_object()?;
+    let positive =
+        |key: &str| -> Option<f64> { object.get(key)?.as_f64().filter(|number| *number >= 0.0) };
+    Some(JobProgressView {
+        stage_id: object
+            .get("stageId")
+            .and_then(|value| value.as_str())
+            .map(str::to_string),
+        stage_label: object
+            .get("stageLabel")
+            .and_then(|value| value.as_str())
+            .map(str::to_string),
+        completed_steps: object
+            .get("completedSteps")
+            .and_then(serde_json::Value::as_u64),
+        total_steps: object.get("totalSteps").and_then(serde_json::Value::as_u64),
+        percent: positive("percent"),
+        // Newer servers report the active-sampler ETA as `stageEtaSeconds`;
+        // accept the older spelling as a fallback.
+        eta_seconds: positive("stageEtaSeconds").or_else(|| positive("etaSeconds")),
+        updated_at: object
+            .get("updatedAt")
+            .and_then(serde_json::Value::as_f64)
+            .map(|seconds| seconds as u64),
+    })
+}
+
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct JobView {
@@ -111,6 +154,7 @@ struct JobView {
     queue_position: Option<usize>,
     jobs_ahead: usize,
     quality_warning: Option<QualityWarning>,
+    progress: JobProgressView,
 }
 
 struct Job {
@@ -119,8 +163,6 @@ struct Job {
     submitted_at: u64,
     started_at: Option<u64>,
     finished_at: Option<u64>,
-    content_type: String,
-    body: Vec<u8>,
     source_image: Vec<u8>,
     source_name: String,
     source_type: String,
@@ -129,6 +171,7 @@ struct Job {
     output_path: Option<String>,
     error: Option<String>,
     quality_warning: Option<QualityWarning>,
+    progress: JobProgressView,
 }
 
 impl Job {
@@ -151,6 +194,7 @@ impl Job {
             queue_position,
             jobs_ahead,
             quality_warning: self.quality_warning.clone(),
+            progress: self.progress.clone(),
         }
     }
 }
@@ -266,6 +310,87 @@ struct MultipartInput {
     params: JobParams,
 }
 
+fn push_multipart_part(
+    body: &mut Vec<u8>,
+    boundary: &str,
+    name: &str,
+    filename: Option<&str>,
+    content_type: Option<&str>,
+    value: &str,
+) {
+    body.extend_from_slice(format!("--{boundary}\r\n").as_bytes());
+    match filename {
+        Some(filename) => body.extend_from_slice(
+            format!("Content-Disposition: form-data; name=\"{name}\"; filename=\"{filename}\"\r\n")
+                .as_bytes(),
+        ),
+        None => body.extend_from_slice(
+            format!("Content-Disposition: form-data; name=\"{name}\"\r\n").as_bytes(),
+        ),
+    }
+    if let Some(content_type) = content_type {
+        body.extend_from_slice(format!("Content-Type: {content_type}\r\n").as_bytes());
+    }
+    body.extend_from_slice(b"\r\n");
+    body.extend_from_slice(value.as_bytes());
+    body.extend_from_slice(b"\r\n");
+}
+
+/// Rebuild the /generate request for a queued job. The queue's stable job id
+/// doubles as the native server's progress `request_id`, so any client polling
+/// either side sees the same lifecycle.
+fn build_generate_body(
+    job_id: &str,
+    source_image: &[u8],
+    raw_source_name: &str,
+    source_type: &str,
+    params: &JobParams,
+) -> (String, Vec<u8>) {
+    // Re-sanitize even though admission already did: this string lands inside
+    // a Content-Disposition header, so quotes or CR/LF here could corrupt the
+    // rebuilt request.
+    let source_name = sanitize_source_name(raw_source_name);
+    let boundary = format!("trellis-job-{job_id}");
+    let mut body = Vec::new();
+    // The image part carries binary bytes verbatim, so it is written directly.
+    body.extend_from_slice(format!("--{boundary}\r\n").as_bytes());
+    body.extend_from_slice(
+        format!("Content-Disposition: form-data; name=\"image\"; filename=\"{source_name}\"\r\n")
+            .as_bytes(),
+    );
+    body.extend_from_slice(format!("Content-Type: {source_type}\r\n\r\n").as_bytes());
+    body.extend_from_slice(source_image);
+    body.extend_from_slice(b"\r\n");
+    push_multipart_part(
+        &mut body,
+        &boundary,
+        "seed",
+        None,
+        None,
+        &params.seed.to_string(),
+    );
+    push_multipart_part(
+        &mut body,
+        &boundary,
+        "resolution",
+        None,
+        None,
+        &params.resolution.to_string(),
+    );
+    push_multipart_part(
+        &mut body,
+        &boundary,
+        "bg_removal",
+        None,
+        None,
+        &params.bg_removal,
+    );
+    push_multipart_part(&mut body, &boundary, "uv", None, None, &params.uv);
+    push_multipart_part(&mut body, &boundary, "request_id", None, None, job_id);
+    body.extend_from_slice(format!("--{boundary}--\r\n").as_bytes());
+    (format!("multipart/form-data; boundary={boundary}"), body)
+}
+
 #[derive(Default)]
 struct QueueData {
     jobs: HashMap<String, Job>,
@@ -332,6 +457,14 @@ fn now_ms() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+/// Progress timestamps share the native server's unit: whole epoch seconds.
+fn now_secs() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
         .unwrap_or(0)
 }
 
@@ -759,8 +892,6 @@ fn submit_job(mut request: Request, queue: &Arc<JobQueue>, base_url: &str) {
         submitted_at: now_ms(),
         started_at: None,
         finished_at: None,
-        content_type,
-        body,
         source_image: multipart.image,
         source_name: multipart.source_name,
         source_type: multipart.source_type,
@@ -769,6 +900,7 @@ fn submit_job(mut request: Request, queue: &Arc<JobQueue>, base_url: &str) {
         output_path: None,
         error: None,
         quality_warning: None,
+        progress: JobProgressView::default(),
     };
     let (queue_position, jobs_ahead, queued, running) = {
         let mut data = queue.data.lock().unwrap();
@@ -935,7 +1067,6 @@ fn cancel_job(request: Request, queue: &JobQueue, id: &str, base_url: &str) {
         if let Some(job) = data.jobs.get_mut(id) {
             job.status = JobStatus::Cancelled;
             job.finished_at = Some(now_ms());
-            job.body.clear();
             job.source_image.clear();
         }
         let (position, ahead) = job_queue_position(&data, id);
@@ -1034,6 +1165,66 @@ fn handle_request(request: Request, queue: &Arc<JobQueue>, info: &AutomationInfo
     let _ = request.respond(error_response(404, "endpoint not found"));
 }
 
+/// Polls the native server's progress endpoint for one running job and copies
+/// snapshots into `Job.progress`. The blocking `/generate` request occupies the
+/// worker thread, so polling runs on a scoped helper thread.
+///
+/// Conservative by design: 404s mean "not registered yet" (or an older native
+/// server without the endpoint) and never fail generation; connection errors
+/// back off; every queue lock is taken briefly and never around network I/O;
+/// polling stops as soon as the job leaves Running or the process shuts down.
+fn spawn_progress_watcher(queue: Arc<JobQueue>, client: Client, job_id: String) {
+    std::thread::spawn(move || {
+        let Some(cfg) = config::load() else {
+            return;
+        };
+        let url = format!("http://{}:{}/progress/{}", cfg.host, cfg.port, job_id);
+        let mut interval = Duration::from_millis(400);
+        loop {
+            std::thread::sleep(interval);
+            let still_running = {
+                let data = queue.data.lock().unwrap();
+                data.jobs
+                    .get(&job_id)
+                    .map(|job| job.status == JobStatus::Running)
+                    .unwrap_or(false)
+            };
+            if !still_running {
+                return;
+            }
+            match client.get(&url).send() {
+                Err(_) => {
+                    // Back off after repeated connection failures; generation
+                    // itself is unaffected and keeps its own long timeout.
+                    interval = (interval * 2).min(Duration::from_millis(4_000));
+                    continue;
+                }
+                Ok(response) => {
+                    interval = Duration::from_millis(400);
+                    if !response.status().is_success() {
+                        continue; // includes 404: progress not registered yet
+                    }
+                    let Ok(text) = response.text() else {
+                        continue;
+                    };
+                    let Ok(value) = serde_json::from_str::<serde_json::Value>(&text) else {
+                        continue;
+                    };
+                    let Some(view) = parse_progress_view(&value) else {
+                        continue;
+                    };
+                    let mut data = queue.data.lock().unwrap();
+                    if let Some(job) = data.jobs.get_mut(&job_id) {
+                        if job.status == JobStatus::Running {
+                            job.progress = view;
+                        }
+                    }
+                }
+            }
+        }
+    });
+}
+
 fn worker_loop(queue: Arc<JobQueue>, stop: Arc<AtomicBool>) {
     let client = match Client::builder()
         .timeout(Duration::from_secs(60 * 60))
@@ -1061,19 +1252,24 @@ fn worker_loop(queue: Arc<JobQueue>, stop: Arc<AtomicBool>) {
             job.started_at = Some(now_ms());
             Some((
                 id,
-                job.content_type.clone(),
-                job.body.clone(),
                 job.source_image.clone(),
                 job.source_name.clone(),
+                job.source_type.clone(),
+                job.params.clone(),
             ))
         };
 
-        let Some((id, content_type, body, source_image, source_name)) = work else {
+        let Some((id, source_image, source_name, source_type, params)) = work else {
             continue;
         };
+        // The job id doubles as the native request_id, so /progress/{job_id}
+        // and the automation status URL describe the same lifecycle.
+        spawn_progress_watcher(queue.clone(), client.clone(), id.clone());
         let result = (|| -> Result<(String, String, Option<QualityWarning>), String> {
             let cfg = config::load().ok_or("Trellis server configuration is unavailable")?;
             let url = format!("http://{}:{}/generate", cfg.host, cfg.port);
+            let (content_type, body) =
+                build_generate_body(&id, &source_image, &source_name, &source_type, &params);
             let response = client
                 .post(url)
                 .header(reqwest::header::CONTENT_TYPE, content_type)
@@ -1115,7 +1311,7 @@ fn worker_loop(queue: Arc<JobQueue>, stop: Arc<AtomicBool>) {
 
         let mut data = queue.data.lock().unwrap();
         if let Some(job) = data.jobs.get_mut(&id) {
-            job.body.clear();
+            // Source bytes are no longer needed once the copy was persisted.
             job.source_image.clear();
             job.finished_at = Some(now_ms());
             match result {
@@ -1124,10 +1320,15 @@ fn worker_loop(queue: Arc<JobQueue>, stop: Arc<AtomicBool>) {
                     job.output_path = Some(path);
                     job.source_path = Some(source_path);
                     job.quality_warning = quality_warning;
+                    job.progress.percent = Some(100.0);
+                    job.progress.stage_id = Some("complete".to_string());
+                    job.progress.stage_label = Some("Model ready".to_string());
+                    job.progress.updated_at = Some(now_secs());
                 }
                 Err(error) => {
                     job.status = JobStatus::Failed;
                     job.error = Some(error);
+                    job.progress.updated_at = Some(now_secs());
                 }
             }
         }
@@ -1205,8 +1406,6 @@ mod tests {
             submitted_at: 0,
             started_at: None,
             finished_at: None,
-            content_type: "multipart/form-data".to_string(),
-            body: Vec::new(),
             source_image: Vec::new(),
             source_name: "source.png".to_string(),
             source_type: "image/png".to_string(),
@@ -1215,6 +1414,7 @@ mod tests {
             output_path: None,
             error: None,
             quality_warning: None,
+            progress: JobProgressView::default(),
         }
     }
 
@@ -1341,6 +1541,128 @@ mod tests {
         data.jobs.get_mut("cancelled").unwrap().status = JobStatus::Cancelled;
 
         assert_eq!(job_queue_position(&data, "later"), (Some(1), 0));
+    }
+
+    #[test]
+    fn generate_body_round_trips_image_params_and_request_id_through_the_parser() {
+        let params = JobParams {
+            seed: 7,
+            resolution: 1024,
+            bg_removal: "birefnet".to_string(),
+            uv: "box".to_string(),
+        };
+        // Binary bytes including multipart-hostile sequences (\r\n, dashes, NUL).
+        let image: Vec<u8> = vec![0, 13, 10, 45, 45, 255, 0, 1, 2, 3];
+        let (content_type, body) =
+            build_generate_body("job-123", &image, "hero.png", "image/png", &params);
+
+        assert!(content_type.starts_with("multipart/form-data; boundary="));
+        let parsed = parse_multipart(&content_type, &body).unwrap();
+        assert_eq!(parsed.image, image);
+        assert_eq!(parsed.source_name, "hero.png");
+        assert_eq!(parsed.source_type, "image/png");
+        assert_eq!(parsed.params.seed, 7);
+        assert_eq!(parsed.params.resolution, 1024);
+        assert_eq!(parsed.params.bg_removal, "birefnet");
+        assert_eq!(parsed.params.uv, "box");
+    }
+
+    #[test]
+    fn generate_body_carries_the_automation_job_id_as_request_id() {
+        let (content_type, body) = build_generate_body(
+            "job-42",
+            &[9, 9, 9],
+            "source.png",
+            "image/png",
+            &JobParams::default(),
+        );
+        let text = String::from_utf8(body).unwrap();
+        assert!(text.contains("name=\"request_id\"\r\n\r\njob-42\r\n"));
+        let boundary = content_type
+            .split("boundary=")
+            .last()
+            .expect("boundary present");
+        assert!(
+            text.ends_with(&format!("--{boundary}--\r\n")),
+            "body must end with a closing boundary delimiter"
+        );
+    }
+
+    #[test]
+    fn generate_body_preserves_binary_image_bytes_exactly() {
+        // Every byte value, including CR/LF and the boundary prefix sequence.
+        let image: Vec<u8> = (0..=255u8).chain([13, 10, 45, 45]).collect();
+        let (content_type, body) = build_generate_body(
+            "job-bytes",
+            &image,
+            "raw.bin",
+            "application/octet-stream",
+            &JobParams::default(),
+        );
+        let parsed = parse_multipart(&content_type, &body).unwrap();
+        assert_eq!(parsed.image, image);
+    }
+
+    #[test]
+    fn generate_body_sanitizes_hostile_source_filenames() {
+        let (_, body) = build_generate_body(
+            "job-name",
+            &[1],
+            "..\\evil name.png",
+            "image/png",
+            &JobParams::default(),
+        );
+        let text = String::from_utf8(body).unwrap();
+        assert!(text.contains("filename=\"evil_name.png\""));
+        assert!(!text.contains("..\\evil"));
+        let disposition_line = text
+            .lines()
+            .find(|line| line.starts_with("Content-Disposition"))
+            .unwrap();
+        assert!(!disposition_line.contains(".."));
+    }
+
+    #[test]
+    fn progress_view_parses_native_snapshots_and_rejects_negative_percent() {
+        let value: serde_json::Value = serde_json::from_str(
+            r#"{
+                "requestId": "req-1",
+                "status": "running",
+                "stageId": "shape_slat_hr",
+                "stageLabel": "Refining",
+                "completedSteps": 20,
+                "totalSteps": 48,
+                "percent": 41.7,
+                "stageEtaSeconds": 120,
+                "updatedAt": 123.5,
+                "error": null
+            }"#,
+        )
+        .unwrap();
+        let view = parse_progress_view(&value).unwrap();
+        assert_eq!(view.stage_id.as_deref(), Some("shape_slat_hr"));
+        assert_eq!(view.completed_steps, Some(20));
+        assert_eq!(view.total_steps, Some(48));
+        assert!((view.percent.unwrap() - 41.7).abs() < 1e-9);
+        // Canonical spelling: the active sampler's ETA in seconds.
+        assert_eq!(view.eta_seconds, Some(120.0));
+        // updatedAt stays in whole epoch seconds, matching the native server.
+        assert_eq!(view.updated_at, Some(123));
+
+        let indeterminate: serde_json::Value =
+            serde_json::from_str(r#"{ "percent": -1, "stageEtaSeconds": -1 }"#).unwrap();
+        let view = parse_progress_view(&indeterminate).unwrap();
+        assert!(view.percent.is_none());
+        assert!(view.eta_seconds.is_none());
+        assert!(view.stage_id.is_none());
+    }
+
+    #[test]
+    fn progress_view_accepts_the_legacy_eta_spelling_as_fallback() {
+        let legacy: serde_json::Value =
+            serde_json::from_str(r#"{ "etaSeconds": 90, "percent": 10 }"#).unwrap();
+        let view = parse_progress_view(&legacy).unwrap();
+        assert_eq!(view.eta_seconds, Some(90.0));
     }
 
     #[test]

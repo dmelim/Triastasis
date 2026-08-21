@@ -14,6 +14,7 @@
 #include "remesh_dc.h"
 #include "stb_image_write.h"
 #include "trellis_run.h"
+#include "trellis_progress.h"
 
 #include <cstdio>
 #include <random>
@@ -72,6 +73,23 @@ int trellis_run(const trellis::TrellisParams& cfg) {
     auto noise = [&](size_t n){ vector<float> v(n); for (auto& x : v) x = randn(rng); return v; };
     double t0 = now();
 
+    // Complete sampler plan, fixed before any work starts so global progress
+    // has one constant denominator: sparse structure -> shape LR -> (cascade)
+    // shape HR -> (textured) texture flow. Each offset is the sum of every
+    // sampler that runs BEFORE it; steps come from SamplerParams below, which
+    // all share this count.
+    const int flow_steps = 12;
+    const int sparse_offset = 0;
+    const int shape_lr_offset = sparse_offset + flow_steps;
+    const int shape_hr_offset = shape_lr_offset + flow_steps;
+    const int texture_offset = shape_hr_offset + (cfg.cascade ? flow_steps : 0);
+    const int plan_total = texture_offset + (cfg.texture ? flow_steps : 0);
+    auto make_step_cb = [plan_total](const char* stage, int offset) {
+        return [stage, offset, plan_total](int done, int total, double eta) {
+            trellis::report_progress(stage, done, total, offset + done, plan_total, eta);
+        };
+    };
+
     bool birefnet = cfg.birefnet == 1;
     if (cfg.birefnet < 0) {
         // Auto bg-removal. A pre-matted image keeps its own alpha (threshold path uses it
@@ -90,6 +108,7 @@ int trellis_run(const trellis::TrellisParams& cfg) {
     }
     vector<float> chw, chw1024;
     std::vector<unsigned char> cutout; int cut_sz = 0;   // the bg-removal result (for --dump-bg / --bg-only)
+    trellis::report_progress("preprocess", 0, 0, 0, 0, -1.0);
     if (birefnet) {
         printf("[1/6] preprocess %s (BiRefNet bg removal, %s)\n", img.c_str(), cascade ? "1024 cascade" : "512");
         // Full BiRefNet (Swin-L backbone + deformable-conv decoder) runs on the GPU. Cutout computed
@@ -119,6 +138,7 @@ int trellis_run(const trellis::TrellisParams& cfg) {
     }
 
     printf("[2/6] DINOv3 conditioning\n");
+    trellis::report_progress("condition", 0, 0, 0, 0, -1.0);
     vector<float> cond, cond1024;
     { trellis::Model m = trellis::Model::load(M + "/dinov3.gguf", gpu);
       cond = trellis::dinov3_encode(m, chw, 512);
@@ -133,14 +153,16 @@ int trellis_run(const trellis::TrellisParams& cfg) {
     if (cascade) slat_stats("cond_1024 (DINOv3@1024)", cond1024);
 
     printf("[3/6] sparse-structure flow + decode\n");
+    trellis::report_progress("sparse_structure", 0, 0, 0, 0, -1.0);
     vector<std::array<int,3>> coords;
     {
         trellis::Model m = trellis::Model::load(M + "/ss_flow.gguf", gpu);
         trellis::DiTParams p; p.in_ch = 8; p.out_ch = 8; p.d_cond = 1024; p.cast_f32 = F32;
         trellis::DitRunner* run = trellis::make_dense_runner(m, p, 16, Lc);
         trellis::FlowFwd fwd = [&](const vector<float>& x, float ts, const float* c){ return run->forward(x, ts, c); };
-        trellis::SamplerParams sp; sp.steps=12; sp.guidance_strength=cfg.gss; sp.guidance_rescale=0.7f; sp.gi0=0.6f; sp.gi1=1.0f; sp.rescale_t=5.0f;
-        vector<float> z = trellis::sample_flow(fwd, noise(8*4096), cond.data(), neg.data(), sp);  // [8,4096] ne0=8
+        trellis::SamplerParams sp; sp.steps=flow_steps; sp.guidance_strength=cfg.gss; sp.guidance_rescale=0.7f; sp.gi0=0.6f; sp.gi1=1.0f; sp.rescale_t=5.0f;
+        auto step_cb = make_step_cb("sparse_structure", sparse_offset);
+        vector<float> z = trellis::sample_flow(fwd, noise(8*4096), cond.data(), neg.data(), sp, nullptr, step_cb);  // [8,4096] ne0=8
         delete run; m.free();
         // transpose [8,L] -> torch [8,16,16,16] memory (c*4096 + sp)
         vector<float> zdec(8*4096);
@@ -157,14 +179,16 @@ int trellis_run(const trellis::TrellisParams& cfg) {
 
     // one shape SLAT flow run -> normalized [32,n] (sparse, CFG 7.5, gi[0.6,1], rescale_t 3)
     auto shape_flow = [&](const std::string& path, const vector<std::array<int,3>>& cds,
-                          const float* cnd, const float* ncnd, int lc) {
+                          const float* cnd, const float* ncnd, int lc,
+                          const char* stage, int offset) {
         const int n = (int)cds.size();
         trellis::Model m = trellis::Model::load(path, gpu);
         trellis::DiTParams p; p.in_ch = 32; p.out_ch = 32; p.d_cond = 1024; p.cast_f32 = F32;
         trellis::DitRunner* run = trellis::make_sparse_runner(m, p, cds, lc);
         trellis::FlowFwd fwd = [&](const vector<float>& x, float ts, const float* c){ return run->forward(x, ts, c); };
-        trellis::SamplerParams sp; sp.steps=12; sp.guidance_strength=cfg.gsh; sp.guidance_rescale=0.5f; sp.gi0=0.6f; sp.gi1=1.0f; sp.rescale_t=3.0f;
-        vector<float> sn = trellis::sample_flow(fwd, noise((size_t)32*n), cnd, ncnd, sp);   // [32,n]
+        trellis::SamplerParams sp; sp.steps=flow_steps; sp.guidance_strength=cfg.gsh; sp.guidance_rescale=0.5f; sp.gi0=0.6f; sp.gi1=1.0f; sp.rescale_t=3.0f;
+        auto step_cb = make_step_cb(stage, offset);
+        vector<float> sn = trellis::sample_flow(fwd, noise((size_t)32*n), cnd, ncnd, sp, nullptr, step_cb);   // [32,n]
         delete run; m.free();
         return sn;
     };
@@ -191,7 +215,7 @@ int trellis_run(const trellis::TrellisParams& cfg) {
         const int max_tok   = cfg.max_tokens;
         printf("[4/7] shape SLAT flow (LR 512 -> upsample -> HR %d cascade, max_tok=%d)\n", hr_target, max_tok);
         // (1) LR shape flow @res32 with cond_512
-        lr_norm = shape_flow(M + "/shape_flow_512.gguf", coords, cond.data(), neg.data(), Lc);
+        lr_norm = shape_flow(M + "/shape_flow_512.gguf", coords, cond.data(), neg.data(), Lc, "shape_slat_lr", shape_lr_offset);
         lr_dn.resize(lr_norm.size());
         for (size_t n = 0; n < coords.size(); ++n) for (int c = 0; c < 32; ++c)
             lr_dn[(size_t)c + 32*n] = lr_norm[(size_t)c + 32*n]*SHAPE_STD[c] + SHAPE_MEAN[c];
@@ -221,12 +245,12 @@ int trellis_run(const trellis::TrellisParams& cfg) {
             hr_res -= 128;
         }
         // (4) HR shape flow @res(hr_res//16) with cond_1024
-        slat_norm = shape_flow(M + "/shape_flow_1024.gguf", shc, cond1024.data(), neg1024.data(), Lc1024);
+        slat_norm = shape_flow(M + "/shape_flow_1024.gguf", shc, cond1024.data(), neg1024.data(), Lc1024, "shape_slat_hr", shape_hr_offset);
         RES = hr_res; cond_dec = cond1024.data(); neg_dec = neg1024.data(); Lc_dec = Lc1024;
     } else {
         printf("[4/7] shape SLAT flow (512)\n");
         shc = coords;
-        slat_norm = shape_flow(M + "/shape_flow_512.gguf", coords, cond.data(), neg.data(), Lc);
+        slat_norm = shape_flow(M + "/shape_flow_512.gguf", coords, cond.data(), neg.data(), Lc, "shape_slat_lr", shape_lr_offset);
     }
     const int N = (int)shc.size();
     slat_dn.resize(slat_norm.size());
@@ -244,6 +268,7 @@ int trellis_run(const trellis::TrellisParams& cfg) {
     }
 
     printf("[5/7] FlexiDualGrid shape decode -> mesh @res%d\n", RES);
+    trellis::report_progress("mesh", 0, 0, 0, 0, -1.0);
     trellis::Mesh mesh;
     trellis::ShapeOut so;
     {
@@ -281,6 +306,7 @@ int trellis_run(const trellis::TrellisParams& cfg) {
                           : (cascade && (int)so.coords.size() > DENSE_TEX ? 512 : RES);
         const bool mixed = cascade && tex_res != RES;   // res-1024 geometry + res-512 texture
         printf("[6/7] texture SLAT flow + PBR decode%s\n", mixed ? "  (res-512 texture on res-1024 mesh)" : "");
+        trellis::report_progress("texture_flow", 0, 0, 0, 0, -1.0);
 
         if (mixed) {   // decode a res-512 shape (from the LR slat) to guide the res-512 tex decode
             trellis::Model m = trellis::Model::load(M + "/shape_dec.gguf", gpu);
@@ -313,12 +339,14 @@ int trellis_run(const trellis::TrellisParams& cfg) {
                 }
                 return run->forward(x64, ts, c);
             };
-            trellis::SamplerParams sp; sp.steps=12; sp.guidance_strength=1.0f; sp.guidance_rescale=0.0f; sp.gi0=0.6f; sp.gi1=0.9f; sp.rescale_t=3.0f;
-            texlat = trellis::sample_flow(fwd, noise((size_t)32*tN), tcond, tneg, sp);  // [32,tN]
+            trellis::SamplerParams sp; sp.steps=flow_steps; sp.guidance_strength=1.0f; sp.guidance_rescale=0.0f; sp.gi0=0.6f; sp.gi1=0.9f; sp.rescale_t=3.0f;
+            auto step_cb = make_step_cb("texture_flow", texture_offset);
+            texlat = trellis::sample_flow(fwd, noise((size_t)32*tN), tcond, tneg, sp, nullptr, step_cb);  // [32,tN]
             delete run; m.free();
             for (int n = 0; n < tN; ++n) for (int c = 0; c < 32; ++c) texlat[(size_t)c + 32*n] = texlat[(size_t)c + 32*n]*TEX_STD[c] + TEX_MEAN[c];
         }
         {
+            trellis::report_progress("texture_decode", 0, 0, 0, 0, -1.0);
             trellis::Model m = trellis::Model::load(M + "/tex_dec.gguf", gpu);
             vector<float> pbr = trellis::tex_decode(m, texlat, tcoords, tsubs); m.free();   // [6,Mv] pre-scale
             const int Mv = (int)pbr_coords->size();
@@ -346,6 +374,7 @@ int trellis_run(const trellis::TrellisParams& cfg) {
     }
 
     printf("[7/7] write %s\n", outglb.c_str());
+    trellis::report_progress("package", 0, 0, 0, 0, -1.0);
     bool textured = false;
     if (!pbr6.empty()) {   // UV-baked textured GLB (PBR material)
         // UV method: xatlas unwrap by default — unique chart space per face, no projection

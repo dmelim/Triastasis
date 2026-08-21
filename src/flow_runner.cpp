@@ -131,7 +131,7 @@ DitRunner* make_sparse_runner(const Model& m, const DiTParams& p,
 
 std::vector<float> sample_flow(const FlowFwd& fwd, std::vector<float> sample,
                                const float* cond, const float* neg_cond, const SamplerParams& sp,
-                               std::vector<std::vector<float>>* trace) {
+                               std::vector<std::vector<float>>* trace, const FlowStepFn& step_cb) {
     const float sm = sp.sigma_min;
     const size_t Nst = sample.size();
     std::vector<float> ts(sp.steps + 1);
@@ -164,6 +164,10 @@ std::vector<float> sample_flow(const FlowFwd& fwd, std::vector<float> sample,
         printf("%s      [flow] [%s] %2d/%d  %5.1fs  %-12s%s",
                tty ? "\r" : "", bar, done, sp.steps, el, eta, tty ? "" : "\n");
         fflush(stdout);
+        if (step_cb) {
+            const double eta_s = done ? el / done * (double)(sp.steps - done) : -1.0;
+            step_cb(done, sp.steps, eta_s);
+        }
     };
     progress(0);
     for (int i = 0; i < sp.steps; ++i) {

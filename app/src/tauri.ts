@@ -29,6 +29,18 @@ export interface AutomationJobParams {
   uv: "xatlas" | "box";
 }
 
+/** Canonical progress stored by the automation queue for one job. */
+export interface AutomationJobProgress {
+  stageId: string | null;
+  stageLabel: string | null;
+  completedSteps: number | null;
+  totalSteps: number | null;
+  /** null while the native backend has no measurable sampler data. */
+  percent: number | null;
+  etaSeconds: number | null;
+  updatedAt: number | null;
+}
+
 export interface AutomationJob {
   id: string;
   status: "queued" | "running" | "succeeded" | "failed" | "cancelled";
@@ -46,6 +58,7 @@ export interface AutomationJob {
   queuePosition: number | null;
   jobsAhead: number;
   qualityWarning: GenerationQualityWarning | null;
+  progress?: AutomationJobProgress | null;
 }
 
 export function isTauri(): boolean {

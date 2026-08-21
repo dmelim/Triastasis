@@ -1,7 +1,11 @@
 // HTTP client for the resident trellis-server (see src/trellis-server.cpp):
 //   GET  /health   -> "ok"
-//   POST /generate  multipart: image file plus generation overrides
+//   POST /generate  multipart: image file plus generation overrides and an
+//                   optional request_id used with the progress endpoint
 //                   -> model/gltf-binary, or JSON {"error": "..."} on failure.
+//   GET  /progress/{request_id}
+//                  -> canonical job progress; percent is null until a real
+//                     sampler reports steps (never inferred from elapsed time).
 
 import { apiBase, loadConfig } from "./config";
 import { normalizeGenParams, type GenParams } from "./types";
@@ -20,6 +24,37 @@ export async function health(timeoutMs = 2000): Promise<boolean> {
     return false;
   } finally {
     clearTimeout(t);
+  }
+}
+
+/** Canonical progress snapshot served by trellis-server's registry. */
+export interface NativeProgress {
+  requestId: string;
+  status: "running" | "succeeded" | "failed";
+  stageId: string;
+  stageLabel: string;
+  completedSteps: number;
+  totalSteps: number;
+  /** null while no sampler has reported steps: show an indeterminate bar. */
+  percent: number | null;
+  /** ETA for the active sampler only, not the whole job. */
+  stageEtaSeconds: number | null;
+  updatedAt: number;
+  error: string | null;
+}
+
+/**
+ * Fetch one job's canonical progress. Returns null on any failure — including
+ * the expected 404 before registration and older servers without the endpoint
+ * — so callers fall back to indeterminate display.
+ */
+export async function getGenerationProgress(requestId: string): Promise<NativeProgress | null> {
+  try {
+    const res = await fetch(`${await base()}/progress/${encodeURIComponent(requestId)}`);
+    if (!res.ok) return null;
+    return (await res.json()) as NativeProgress;
+  } catch {
+    return null;
   }
 }
 
@@ -65,10 +100,13 @@ export async function generate(
   image: Blob,
   params: GenParams,
   signal?: AbortSignal,
+  requestId?: string,
 ): Promise<GenerateResult> {
+  const form = toForm(image, params);
+  if (requestId) form.append("request_id", requestId);
   const res = await fetch(`${await base()}/generate`, {
     method: "POST",
-    body: toForm(image, params),
+    body: form,
     signal,
   });
   if (!res.ok) {

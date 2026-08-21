@@ -1,0 +1,170 @@
+/* Design-system custom select. The native element stays in the DOM as the
+   source of truth and is made visually hidden while enhanced. */
+
+.ds-select-native {
+  position: absolute !important;
+  width: 1px !important;
+  height: 1px !important;
+  margin: -1px !important;
+  padding: 0 !important;
+  border: 0 !important;
+  overflow: hidden !important;
+  clip-path: inset(50%) !important;
+  white-space: nowrap !important;
+  pointer-events: none !important;
+}
+
+.ds-select-trigger {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  width: 100%;
+  min-width: 0;
+  min-height: 34px;
+  padding: 6px var(--space-2);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-control);
+  background: var(--surface-control);
+  color: var(--content-primary);
+  font: var(--font-weight-regular) var(--font-size-label)/var(--line-height-control) var(--font-family-sans);
+  text-align: left;
+  cursor: pointer;
+  transition:
+    border-color var(--duration-fast) var(--ease-standard),
+    background var(--duration-fast) var(--ease-standard);
+}
+
+.ds-select-trigger:hover:not(.is-disabled):not(.is-open) {
+  border-color: var(--border-strong);
+  background: var(--surface-control-hover);
+}
+
+.ds-select-trigger:focus-visible,
+.ds-select-trigger.is-focused {
+  outline: 2px solid var(--border-focus);
+  outline-offset: 2px;
+}
+
+.ds-select-trigger.is-open {
+  border-color: var(--border-focus);
+}
+
+.ds-select-trigger.is-disabled {
+  opacity: 0.42;
+  cursor: not-allowed;
+}
+
+.ds-select-trigger.is-invalid {
+  border-color: var(--border-danger);
+}
+
+.ds-select-trigger.is-invalid:focus-visible {
+  outline-color: var(--status-danger);
+}
+
+.ds-select-value {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ds-select-trigger.is-placeholder .ds-select-value {
+  color: var(--content-secondary);
+}
+
+.ds-select-caret {
+  flex: 0 0 auto;
+  width: 14px;
+  height: 14px;
+  color: var(--content-secondary);
+  mask-image: url("/icons/caret-down.svg");
+  -webkit-mask-image: url("/icons/caret-down.svg");
+  transition: transform var(--duration-fast) var(--ease-standard);
+}
+
+.ds-select-trigger.is-open .ds-select-caret {
+  transform: rotate(180deg);
+}
+
+.ds-select-popover {
+  position: fixed;
+  z-index: 65;
+  min-width: 180px;
+  max-height: 320px;
+  display: flex;
+  overflow: hidden;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-md);
+  background: var(--surface-overlay);
+  box-shadow: var(--elevation-raised);
+}
+
+.ds-select-popover.hidden {
+  display: none;
+}
+
+.ds-select-listbox {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 4px;
+  scrollbar-width: thin;
+  scrollbar-color: var(--border-strong) transparent;
+}
+
+.ds-select-option {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  padding: 7px 9px;
+  border-radius: var(--radius-control);
+  color: var(--content-primary);
+  font-size: var(--font-size-label);
+  line-height: var(--line-height-label);
+  cursor: pointer;
+}
+
+.ds-select-option:hover:not(.is-disabled),
+.ds-select-option.is-active:not(.is-disabled) {
+  background: var(--surface-control-hover);
+}
+
+.ds-select-option.is-disabled {
+  color: var(--content-muted);
+  cursor: default;
+}
+
+.ds-select-option-label {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ds-select-option-check {
+  display: none;
+  flex: 0 0 auto;
+  width: 14px;
+  height: 14px;
+  color: var(--content-accent);
+  background: currentColor;
+  mask: center / contain no-repeat;
+  -webkit-mask: center / contain no-repeat;
+  mask-image: url("/icons/check.svg");
+  -webkit-mask-image: url("/icons/check.svg");
+}
+
+.ds-select-option.is-selected .ds-select-option-check {
+  display: block;
+}
+
+.ds-select-empty {
+  padding: 9px 10px;
+  color: var(--content-secondary);
+  font-size: var(--font-size-caption);
+}

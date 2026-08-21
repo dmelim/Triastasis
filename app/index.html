@@ -63,102 +63,102 @@
           <div id="mask-help" class="input-help muted">For stronger volume, use a three-quarter view with visible depth, clear lighting, and a neutral background. Preview the model input before generating.</div>
 
           <div class="controls">
-            <label class="ctl">
-              <span>Resolution</span>
+            <div class="ctl">
+              <label id="ctl-res-label" for="ctl-res">Resolution</label>
               <select id="ctl-res">
                 <option value="512">512 light</option>
                 <option value="1024" selected>1024 cascade</option>
                 <option value="1536">1536 high</option>
               </select>
-            </label>
-            <label class="ctl">
-              <span>Background removal</span>
+            </div>
+            <div class="ctl">
+              <label id="ctl-bg-label" for="ctl-bg">Background removal</label>
               <select id="ctl-bg">
                 <option value="auto" selected>Auto</option>
                 <option value="birefnet">BiRefNet</option>
                 <option value="threshold">Threshold</option>
               </select>
-            </label>
-            <label class="ctl">
-              <span>UV unwrap</span>
+            </div>
+            <div class="ctl">
+              <label id="ctl-uv-label" for="ctl-uv">UV unwrap</label>
               <select id="ctl-uv">
                 <option value="xatlas" selected>xatlas</option>
                 <option value="box">Box, faster</option>
               </select>
-            </label>
+            </div>
             <label class="ctl">
               <span>Seed</span>
               <input id="ctl-seed" type="number" min="0" step="1" value="42" />
             </label>
-            <label class="ctl control-wide">
-              <span>Sweep candidates</span>
+            <div class="ctl control-wide">
+              <label id="ctl-sweep-count-label" for="ctl-sweep-count">Sweep candidates</label>
               <select id="ctl-sweep-count">
                 <option value="4" selected>4 seeds</option>
                 <option value="6">6 seeds</option>
                 <option value="8">8 seeds</option>
               </select>
-            </label>
-            <label class="ctl">
-              <span>Target faces</span>
+            </div>
+            <div class="ctl">
+              <label id="ctl-target-faces-mode-label" for="ctl-target-faces-mode">Target faces</label>
               <select id="ctl-target-faces-mode" aria-describedby="ctl-target-faces-error">
                 <option value="auto" selected>Auto by resolution</option>
                 <option value="custom">Custom target</option>
               </select>
-            </label>
+            </div>
             <label id="ctl-target-faces-wrap" class="ctl custom-param hidden">
               <span>Custom faces</span>
               <input id="ctl-target-faces" type="number" min="10000" max="1000000" step="1" value="150000" />
             </label>
             <span id="ctl-target-faces-error" data-param-error="targetFaces" class="field-error control-wide" role="alert"></span>
             <span id="ctl-target-faces-help" class="field-help control-wide" role="note"></span>
-            <label class="ctl">
-              <span>Textures</span>
+            <div class="ctl">
+              <label id="ctl-texture-label" for="ctl-texture">Textures</label>
               <select id="ctl-texture">
                 <option value="on" selected>Generate texture</option>
                 <option value="off">Geometry only</option>
               </select>
-            </label>
-            <label class="ctl">
-              <span>Texture decode</span>
+            </div>
+            <div class="ctl">
+              <label id="ctl-texture-resolution-label" for="ctl-texture-resolution">Texture decode</label>
               <select id="ctl-texture-resolution" aria-describedby="texture-resolution-help">
                 <option value="auto" selected>Auto</option>
                 <option value="512">512 px</option>
                 <option value="1024">1024 px</option>
               </select>
-            </label>
+            </div>
             <span id="texture-resolution-help" class="field-help control-wide" role="note">1024 px decode is available with 1024 geometry; 512 px works at every geometry resolution.</span>
-            <label class="ctl">
-              <span>Atlas size</span>
+            <div class="ctl">
+              <label id="ctl-atlas-size-mode-label" for="ctl-atlas-size-mode">Atlas size</label>
               <select id="ctl-atlas-size-mode" aria-describedby="ctl-atlas-size-error">
                 <option value="auto" selected>Auto by resolution</option>
                 <option value="custom">Custom atlas</option>
               </select>
-            </label>
+            </div>
             <label id="ctl-atlas-size-wrap" class="ctl custom-param hidden">
               <span>Custom atlas</span>
               <input id="ctl-atlas-size" type="number" min="128" max="4096" step="1" value="2048" />
             </label>
             <span id="ctl-atlas-size-error" data-param-error="atlasSize" class="field-error control-wide" role="alert"></span>
-            <label class="ctl">
-              <span>Remesh band</span>
+            <div class="ctl">
+              <label id="ctl-remesh-band-mode-label" for="ctl-remesh-band-mode">Remesh band</label>
               <select id="ctl-remesh-band-mode" aria-describedby="ctl-remesh-band-error">
                 <option value="auto" selected>Auto</option>
                 <option value="custom">Custom band</option>
               </select>
-            </label>
+            </div>
             <label id="ctl-remesh-band-wrap" class="ctl custom-param hidden">
               <span>Custom band</span>
               <input id="ctl-remesh-band" type="number" min="0" max="8" step="1" value="2" />
             </label>
             <span id="ctl-remesh-band-error" data-param-error="remeshBand" class="field-error control-wide" role="alert"></span>
-            <label class="ctl control-wide">
-              <span>Texture encoding</span>
+            <div class="ctl control-wide">
+              <label id="ctl-texture-encoding-label" for="ctl-texture-encoding">Texture encoding</label>
               <select id="ctl-texture-encoding">
                 <option value="auto" selected>Auto</option>
                 <option value="webp">WebP</option>
                 <option value="png">PNG</option>
               </select>
-            </label>
+            </div>
           </div>
           <div id="generation-param-error" class="field-error" role="alert"></div>
 
@@ -217,14 +217,14 @@
                 <button class="display-mode" type="button" data-display-mode="roughness">Roughness</button>
                 <button class="display-mode" type="button" data-display-mode="unlit">Unlit</button>
               </div>
-              <label class="ctl compact-control">
-                <span>Topology detail</span>
+              <div class="ctl compact-control">
+                <label id="view-topology-detail-label" for="view-topology-detail">Topology detail</label>
                 <select id="view-topology-detail">
                   <option value="adaptive" selected>Adaptive density</option>
                   <option value="coarse">Coarse overview</option>
                   <option value="full">Full triangle topology</option>
                 </select>
-              </label>
+              </div>
             </section>
 
             <section class="inspect-section">
@@ -239,15 +239,15 @@
                 <span>Exposure <output id="view-exposure-value">1.0</output></span>
                 <input id="view-exposure" type="range" min="0.4" max="2" step="0.1" value="1" />
               </label>
-              <label class="ctl">
-                <span>Background</span>
+              <div class="ctl">
+                <label id="view-background-label" for="view-background">Background</label>
                 <select id="view-background">
                   <option value="#0d1016" selected>Studio dark</option>
                   <option value="#20252e">Slate</option>
                   <option value="#dedede">Light gray</option>
                   <option value="#111111">Near black</option>
                 </select>
-              </label>
+              </div>
             </section>
 
             <section class="inspect-section">
@@ -261,24 +261,24 @@
                 <button type="button" data-camera="top">Top</button>
                 <button type="button" data-camera="bottom">Bottom</button>
               </div>
-              <label class="ctl compact-control">
-                <span>Projection</span>
+              <div class="ctl compact-control">
+                <label id="view-camera-type-label" for="view-camera-type">Projection</label>
                 <select id="view-camera-type">
                   <option value="perspective" selected>Perspective</option>
                   <option value="orthographic">Orthographic</option>
                 </select>
-              </label>
+              </div>
             </section>
 
             <section class="inspect-section selection-section">
               <h2>Mesh-part selection</h2>
               <p class="section-note">Select a mesh primitive or node. Choose a connected component in Edit copy to edit it.</p>
-              <label class="ctl">
-                <span>Loaded mesh part</span>
+              <div class="ctl">
+                <label id="mesh-part-select-label" for="mesh-part-select">Loaded mesh part</label>
                 <select id="mesh-part-select">
                   <option value="">No mesh parts loaded</option>
                 </select>
-              </label>
+              </div>
               <div class="selection-actions">
                 <button id="selection-frame" class="button button--secondary" type="button" disabled>Frame</button>
                 <button id="selection-isolate" class="button button--secondary" type="button" disabled>Isolate</button>
@@ -303,12 +303,12 @@
               <div id="edit-controls" class="hidden">
                 <div class="edit-group">
                   <h3>Connected component</h3>
-                  <label class="ctl">
-                    <span>Component in selected mesh part</span>
+                  <div class="ctl">
+                    <label id="edit-component-select-label" for="edit-component-select">Component in selected mesh part</label>
                     <select id="edit-component-select" aria-describedby="edit-component-status">
                       <option value="">Select a mesh part first</option>
                     </select>
-                  </label>
+                  </div>
                   <div id="edit-component-status" class="selection-status" role="status">Create an edit copy to inspect components.</div>
                   <button id="edit-delete-component" class="button button--danger" type="button" disabled>Delete component</button>
                 </div>
@@ -379,18 +379,16 @@
             <span>Generate from an image or reopen a gallery result.</span>
           </div>
           <div id="progress" class="progress viewer-progress hidden" role="status" aria-live="polite">
-            <div class="progress-card">
+            <div id="progress-card" class="progress-card">
+              <button id="progress-minimize-btn" class="progress-minimize" type="button" aria-label="Minimize job card." title="Minimize job card.">
+                <span class="button-icon icon-minus" aria-hidden="true"></span>
+              </button>
               <div class="progress-head">
-                <div>
+                <div class="progress-titles">
                   <div id="progress-title" class="progress-title">Generating 3D model</div>
                   <div id="progress-queue" class="progress-queue muted">1 running</div>
                 </div>
-                <div class="progress-head-actions">
-                  <div id="progress-elapsed" class="progress-elapsed muted">0:00</div>
-                  <button id="progress-collapse-btn" class="button button--icon button--sm progress-collapse" type="button" aria-label="Minimize job progress" aria-expanded="true" title="Minimize job progress">
-                    <span class="button-icon icon-minus" aria-hidden="true"></span>
-                  </button>
-                </div>
+                <div id="progress-elapsed" class="progress-elapsed muted">0:00</div>
               </div>
               <div class="progress-details">
                 <div id="progress-bar" class="bar" role="progressbar" aria-label="Generation progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="2">
@@ -399,12 +397,20 @@
                 <div class="progress-meta">
                   <div id="progress-stage" class="progress-stage">Starting</div>
                 </div>
-                <div class="progress-actions">
+                <div class="progress-actions" id="progress-actions">
                   <button id="cancel-btn" class="button button--secondary progress-cancel" type="button">Cancel current</button>
                   <button id="clear-queue-btn" class="link-btn progress-clear" type="button">Clear queued</button>
                 </div>
               </div>
             </div>
+            <button id="progress-chip" class="progress-chip hidden" type="button" aria-expanded="false" aria-controls="progress-card" title="Expand job card.">
+              <span id="progress-chip-title" class="progress-chip-title"></span>
+              <span id="progress-chip-percent" class="progress-chip-percent">2%</span>
+              <span id="progress-chip-elapsed" class="progress-chip-elapsed">0:00</span>
+              <span id="progress-chip-queued" class="progress-chip-queued hidden"></span>
+              <span class="button-icon progress-chip-expand" aria-hidden="true"></span>
+              <span class="progress-chip-bar" aria-hidden="true"><span id="progress-chip-bar-fill" class="bar-fill"></span></span>
+            </button>
           </div>
         </div>
         <div class="viewer-toolbar">
@@ -414,28 +420,31 @@
         </div>
       </section>
 
-      <section class="asset-dock" aria-label="Generated assets">
-        <section id="candidate-wrap" class="candidate-wrap hidden">
-          <div class="gallery-head">
-            <div>
-              <span>Seed candidates</span>
-              <span id="candidate-summary" class="candidate-summary muted"></span>
+      <section id="asset-dock" class="asset-dock" aria-label="Generated assets">
+        <div class="dock-header">
+          <button id="asset-dock-toggle" class="dock-toggle" type="button" aria-expanded="true" aria-controls="asset-dock-body" title="Expand or collapse the assets dock">
+            <span class="button-icon dock-caret" aria-hidden="true"></span>
+            <span class="dock-title">Assets and versions</span>
+            <span id="dock-counts" class="dock-counts muted"></span>
+          </button>
+          <button id="clear-gallery" class="link-btn" type="button">Clear all</button>
+        </div>
+        <div id="asset-dock-body" class="dock-body">
+          <section id="candidate-wrap" class="candidate-wrap hidden">
+            <div class="gallery-head">
+              <div>
+                <span>Seed candidates</span>
+                <span id="candidate-summary" class="candidate-summary muted"></span>
+              </div>
+              <button id="clear-candidates" class="link-btn" type="button">Clear candidates</button>
             </div>
-            <button id="clear-candidates" class="link-btn" type="button">Clear candidates</button>
-          </div>
-          <div id="candidate-gallery" class="candidate-gallery"></div>
-        </section>
+            <div id="candidate-gallery" class="candidate-gallery"></div>
+          </section>
 
-        <section class="gallery-wrap">
-          <div class="gallery-head">
-            <div class="gallery-title-group">
-              <span>Assets and versions</span>
-              <span id="gallery-summary" class="gallery-summary muted"></span>
-            </div>
-            <button id="clear-gallery" class="link-btn" type="button">Clear all</button>
-          </div>
-          <div id="gallery" class="gallery"></div>
-        </section>
+          <section class="gallery-wrap">
+            <div id="gallery" class="gallery"></div>
+          </section>
+        </div>
       </section>
     </main>
 

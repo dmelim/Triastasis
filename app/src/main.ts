@@ -1,8 +1,9 @@
 import "./ui.css";
 import type { BufferGeometry, Mesh, Object3D } from "three";
-import { generate, health } from "./api";
+import { generate, getGenerationProgress, health, type NativeProgress } from "./api";
 import { loadConfig } from "./config";
 import { createButton } from "./design-system/button";
+import { enhanceSelect, refreshSelect } from "./design-system/select";
 import {
   detectPlaneCollapse,
   inspectGeneratedGlb,
@@ -53,6 +54,8 @@ import {
 
 const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T;
 
+document.querySelectorAll<HTMLSelectElement>("select").forEach((element) => enhanceSelect(element));
+
 // ---- element refs ----
 const dropzone = $("dropzone");
 const fileInput = $<HTMLInputElement>("file-input");
@@ -72,8 +75,15 @@ const progressStage = $("progress-stage");
 const progressElapsed = $("progress-elapsed");
 const progressBar = $("progress-bar");
 const progressBarFill = $("progress-bar-fill");
-const progressCard = progress.querySelector<HTMLElement>(".progress-card")!;
-const progressCollapseBtn = $<HTMLButtonElement>("progress-collapse-btn");
+const progressCard = $<HTMLElement>("progress-card");
+const progressMinimizeBtn = $<HTMLButtonElement>("progress-minimize-btn");
+const progressActions = $("progress-actions");
+const progressChip = $<HTMLButtonElement>("progress-chip");
+const progressChipTitle = $("progress-chip-title");
+const progressChipPercent = $("progress-chip-percent");
+const progressChipElapsed = $("progress-chip-elapsed");
+const progressChipQueued = $("progress-chip-queued");
+const chipBarFill = $<HTMLElement>("progress-chip-bar-fill");
 const cancelBtn = $<HTMLButtonElement>("cancel-btn");
 const clearQueueBtn = $<HTMLButtonElement>("clear-queue-btn");
 const resetViewBtn = $<HTMLButtonElement>("reset-view");
@@ -86,7 +96,9 @@ const generateModePanel = $("generate-mode-panel");
 const viewModePanel = $("view-mode-panel");
 const inspectEmpty = $("inspect-empty");
 const inspectContent = $("inspect-content");
-const gallerySummary = $("gallery-summary");
+const gallerySummary = $("dock-counts");
+const assetDock = $("asset-dock");
+const dockToggle = $<HTMLButtonElement>("asset-dock-toggle");
 const galleryEl = $("gallery");
 const clearGalleryBtn = $<HTMLButtonElement>("clear-gallery");
 const backendBadge = $("backend-badge");
@@ -245,10 +257,6 @@ interface GenerationJob {
 
 let generationQueue: GenerationJob[] = [];
 let currentJob: GenerationJob | null = null;
-let progressStageLabel = "Preparing job";
-let progressStageStart = 2;
-let progressStageEnd = 8;
-let progressHasServerStart = false;
 
 // ---- workspace modes and viewer inspector ----
 let workspaceMode: WorkspaceMode = "generate";
@@ -430,6 +438,7 @@ function renderMeshParts(instance: Viewer): void {
   });
   const selected = instance.getSelection();
   meshPartSelect.value = selected ? String(selected.meshIndex) : "";
+  refreshSelect(meshPartSelect);
   selectionShowAllBtn.disabled = false;
   renderEditorActions();
 }
@@ -578,6 +587,7 @@ function renderComponentOptions(): void {
     ? previous
     : null;
   editComponentSelect.value = selectedComponentId ?? "";
+  refreshSelect(editComponentSelect);
   const selected = componentAnalysis?.components.find((component) => component.id === selectedComponentId);
   if (selected) {
     editComponentStatus.textContent = `${selected.triangleCount.toLocaleString()} triangles, ${selected.vertexCount.toLocaleString()} vertices.`;
@@ -1319,57 +1329,132 @@ function updateGenerateEnabled(): void {
   clearQueueBtn.disabled = generationQueue.length === 0;
 }
 
-function setProgress(percent: number, label: string): void {
-  const value = Math.max(0, Math.min(100, Math.round(percent)));
-  progressStage.textContent = label;
-  progressBarFill.style.width = `${value}%`;
-  progressBar.setAttribute("aria-valuenow", String(value));
+// ---- canonical job progress ----
+// One state object drives BOTH the expanded card and the minimized chip, so
+// they can never disagree. percent === null means indeterminate: the backend
+// has no sampler data yet (or is an older server), and we never invent a
+// number from elapsed time.
+interface JobProgressState {
+  stageLabel: string;
+  etaText: string;
+  percent: number | null;
+}
+let jobProgress: JobProgressState = { stageLabel: "Preparing the job", etaText: "", percent: null };
+let structuredProgressSeen = false;
+
+function renderJobProgress(): void {
+  const { stageLabel, etaText, percent } = jobProgress;
+  progressStage.textContent = etaText ? `${stageLabel} · ${etaText}` : stageLabel;
+
+  const bars: Array<HTMLElement> = [progressBarFill, chipBarFill];
+  for (const bar of bars) bar.classList.toggle("indeterminate", percent === null);
+  if (percent === null) {
+    progressBar.removeAttribute("aria-valuenow");
+    progressBar.setAttribute("aria-valuetext", "In progress");
+    for (const bar of bars) bar.style.width = "100%";
+    progressChipPercent.textContent = "";
+  } else {
+    // 100 is reserved for the succeeded snapshot; running values are already
+    // capped at 99 by the server and by applyNativeProgress.
+    const value = Math.max(0, Math.min(100, Math.round(percent)));
+    progressBar.setAttribute("aria-valuenow", String(value));
+    progressBar.setAttribute("aria-valuetext", `${value}%`);
+    for (const bar of bars) bar.style.width = `${value}%`;
+    progressChipPercent.textContent = `${value}%`;
+  }
 }
 
-function setProgressStage(label: string, start: number, end: number): void {
-  progressStageLabel = label;
-  progressStageStart = start;
-  progressStageEnd = end;
-  setProgress(start, label);
+function setJobStage(label: string): void {
+  jobProgress.stageLabel = label;
+  renderJobProgress();
+}
+
+function applyNativeProgress(snapshot: NativeProgress): void {
+  structuredProgressSeen = true;
+  if (snapshot.status === "succeeded") {
+    jobProgress.percent = 100;
+    jobProgress.stageLabel = snapshot.stageLabel || "Model ready";
+    jobProgress.etaText = "";
+    renderJobProgress();
+    return;
+  }
+  if (snapshot.stageLabel) jobProgress.stageLabel = snapshot.stageLabel;
+  jobProgress.etaText =
+    snapshot.stageEtaSeconds !== null && snapshot.status === "running"
+      ? `~${Math.round(snapshot.stageEtaSeconds)}s left`
+      : "";
+  // Monotonic on the client too; null keeps the previous value.
+  if (snapshot.percent !== null) {
+    jobProgress.percent = Math.max(jobProgress.percent ?? -1, Math.min(99, snapshot.percent));
+  }
+  renderJobProgress();
+}
+
+/**
+ * Polls GET /progress/{request_id} while a direct /generate request runs.
+ * Returns a stop function. 404s are expected before registration and with
+ * older servers; failures leave the last known state untouched.
+ */
+function startProgressPolling(requestId: string, signal?: AbortSignal): () => void {
+  let stopped = false;
+  const tick = async (): Promise<void> => {
+    while (!stopped && !signal?.aborted) {
+      const snapshot = await getGenerationProgress(requestId);
+      if (stopped || signal?.aborted) return;
+      if (snapshot) applyNativeProgress(snapshot);
+      await new Promise((resolve) => setTimeout(resolve, 600));
+    }
+  };
+  void tick();
+  return () => {
+    stopped = true;
+  };
+}
+
+function newRequestId(): string {
+  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+    return crypto.randomUUID();
+  }
+  return `req-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
 }
 
 function updateProgressFromServerLog(line: string): void {
   const text = line.replace(/\x1b\[[0-9;]*m/g, "").trim();
-  if (/^\[trellis-server\]\s+generate:/i.test(text)) {
-    progressHasServerStart = true;
-    setProgressStage("Preparing the job", 2, 5);
-    return;
-  }
-  if (!progressHasServerStart) return;
   const stageMatch = text.match(/^\[(\d+)\/(\d+)\]\s*(.*)$/);
   if (stageMatch) {
     const stage = Number(stageMatch[1]);
-    const stages: Record<number, [string, number, number]> = {
-      1: ["Preparing the image", 5, 14],
-      2: ["Understanding the image", 14, 25],
-      3: ["Building the coarse shape", 25, 40],
-      4: ["Refining the 3D structure", 40, 63],
-      5: ["Building the mesh", 63, 75],
-      6: ["Generating materials", 75, 92],
-      7: ["Packing the 3D model", 92, 98],
+    const stages: Record<number, string> = {
+      1: "Preparing the image",
+      2: "Understanding the image",
+      3: "Building the coarse shape",
+      4: "Refining the 3D structure",
+      5: "Building the mesh",
+      6: "Generating materials",
+      7: "Packing the 3D model",
     };
     const mapped = stages[stage];
-    if (mapped) setProgressStage(...mapped);
+    if (mapped) setJobStage(mapped);
     return;
   }
 
+  // The log exposes per-sampler steps only, so there is no truthful whole-job
+  // percentage to derive: keep the bar indeterminate and surface the step
+  // count as text instead of inventing one from stage weights or time.
   const flowMatch = text.match(/\[flow\]\s+\[[^\]]*\]\s*(\d+)\/(\d+)/);
   if (flowMatch) {
     const done = Number(flowMatch[1]);
     const total = Math.max(1, Number(flowMatch[2]));
-    const percent = progressStageStart + (progressStageEnd - progressStageStart) * (done / total);
-    const etaMatch = text.match(/~\d+s left/);
-    const eta = etaMatch ? ` · ${etaMatch[0]}` : "";
-    setProgress(percent, `${progressStageLabel} · Step ${done} of ${total}${eta}`);
+    jobProgress.etaText = /~\d+s left/.test(text) ? `~${text.match(/~(\d+)s left/)![1]}s left` : "";
+    jobProgress.stageLabel = `${jobProgress.stageLabel.split(" · ")[0]} · Step ${done} of ${total}`;
+    renderJobProgress();
     return;
   }
 
-  if (/^done in\s/i.test(text)) setProgress(100, "Model ready");
+  if (/^done in\s/i.test(text)) {
+    jobProgress.etaText = "";
+    jobProgress.stageLabel = "Model ready";
+    renderJobProgress();
+  }
 }
 
 function updateQueueStatus(): void {
@@ -1377,25 +1462,159 @@ function updateQueueStatus(): void {
   progressQueue.textContent = queued
     ? `1 running · ${queued} queued`
     : "1 running";
+  progressChipQueued.classList.toggle("hidden", queued === 0);
+  progressChipQueued.textContent = `+${queued}`;
+  syncChipTooltip();
   clearQueueBtn.disabled = queued === 0;
   updateGenerateEnabled();
 }
 
+// ---- job card minimized state ----
+const JOB_CARD_COLLAPSED_KEY = "polyloom.job-card.collapsed";
+let jobCardCollapsed = false;
+let tempExpandTimer: number | null = null;
+
+function syncChipTooltip(): void {
+  const queued = generationQueue.length;
+  const queuePart = queued ? ` | ${queued} queued` : "";
+  progressChip.title = `${progressTitle.textContent || "Generating"}${queuePart} | Expand job card.`;
+}
+
+function setJobCardCollapsed(collapsed: boolean, persist = true): void {
+  jobCardCollapsed = collapsed;
+  if (tempExpandTimer !== null && !collapsed) {
+    window.clearTimeout(tempExpandTimer);
+    tempExpandTimer = null;
+  }
+  progressCard.classList.toggle("hidden", collapsed);
+  progressChip.classList.toggle("hidden", !collapsed);
+  chipBtnState(collapsed);
+  if (persist) localStorage.setItem(JOB_CARD_COLLAPSED_KEY, collapsed ? "1" : "0");
+}
+
+function chipBtnState(collapsed: boolean): void {
+  progressChip.setAttribute("aria-expanded", String(!collapsed));
+}
+
+function revealJobCardTemporarily(): void {
+  if (!jobCardCollapsed) return;
+  setJobCardCollapsed(false, false);
+  if (tempExpandTimer !== null) window.clearTimeout(tempExpandTimer);
+  tempExpandTimer = window.setTimeout(() => {
+    tempExpandTimer = null;
+    if (generating && localStorage.getItem(JOB_CARD_COLLAPSED_KEY) === "1") {
+      setJobCardCollapsed(true, false);
+    }
+  }, 6000);
+}
+
+progressMinimizeBtn.addEventListener("click", () => setJobCardCollapsed(true));
+progressChip.addEventListener("click", () => setJobCardCollapsed(false));
+
+// ---- external job monitor ----
+// When the UI reopens while a skill-submitted automation job is still queued
+// or running, mirror its canonical status. The UI does not own that job, so
+// cancel/clear actions stay hidden and polling never touches the GPU worker.
+let externalMonitor: { apiUrl: string; jobId: string; timer: number } | null = null;
+
+function stopExternalMonitoring(): void {
+  if (externalMonitor) {
+    window.clearInterval(externalMonitor.timer);
+    externalMonitor = null;
+  }
+  if (!generating && !currentJob) progressActions.classList.remove("hidden");
+}
+
+async function restoreActiveJobDisplay(): Promise<void> {
+  if (!isTauri() || generating || currentJob || externalMonitor) return;
+  try {
+    const api = await automationInfo();
+    if (!api?.running) return;
+    const jobs = await automationJobs(api.url);
+    const active = jobs
+      .filter((job) => job.status === "queued" || job.status === "running")
+      .sort((a, b) => a.submittedAt - b.submittedAt)[0];
+    if (active) monitorExternalJob(api.url, active);
+  } catch {
+    /* status polling is best-effort */
+  }
+}
+
+function monitorExternalJob(apiUrl: string, initial: AutomationJob): void {
+  stopExternalMonitoring();
+  externalMonitor = { apiUrl, jobId: initial.id, timer: 0 };
+  structuredProgressSeen = false;
+  jobProgress = { stageLabel: "Checking queue", etaText: "", percent: null };
+  progressTitle.textContent = initial.sourceName || "Queued model";
+  progressChipTitle.textContent = progressTitle.textContent;
+  progress.classList.remove("hidden");
+  setJobCardCollapsed(localStorage.getItem(JOB_CARD_COLLAPSED_KEY) === "1", false);
+  renderJobProgress();
+  const startedAt = initial.startedAt ?? initial.submittedAt;
+  if (elapsedTimer) window.clearInterval(elapsedTimer);
+  elapsedTimer = window.setInterval(() => {
+    const text = fmtElapsed(Date.now() - startedAt);
+    progressElapsed.textContent = text;
+    progressChipElapsed.textContent = text;
+  }, 1000);
+
+  const poll = async (): Promise<void> => {
+    try {
+      const res = await fetch(`${apiUrl}/jobs/${encodeURIComponent(initial.id)}`);
+      if (!res.ok) throw new Error(String(res.status));
+      const job = (await res.json()) as AutomationJob;
+      if (!externalMonitor || externalMonitor.jobId !== initial.id) return;
+      if (job.status !== "queued" && job.status !== "running") {
+        stopExternalMonitoring();
+        progress.classList.add("hidden");
+        if (elapsedTimer) window.clearInterval(elapsedTimer);
+        elapsedTimer = null;
+        return;
+      }
+      jobProgress.percent = job.progress?.percent ?? null;
+      jobProgress.stageLabel =
+        job.status === "queued"
+          ? "Waiting in queue"
+          : job.progress?.stageLabel || "Generating model";
+      jobProgress.etaText = "";
+      renderJobProgress();
+      const positionText =
+        job.status === "queued"
+          ? `${job.jobsAhead} ahead of you${job.queuePosition ? ` · position ${job.queuePosition}` : ""}`
+          : "running";
+      progressQueue.textContent = positionText.charAt(0).toUpperCase() + positionText.slice(1);
+      syncChipTooltip();
+    } catch {
+      /* transient network errors: keep last known state */
+    }
+  };
+  void poll();
+  externalMonitor.timer = window.setInterval(() => void poll(), 800);
+}
+
 function startRun(job: GenerationJob): void {
+  stopExternalMonitoring();
   generating = true;
-  progressHasServerStart = !isTauri();
+  structuredProgressSeen = false;
+  jobProgress = { stageLabel: "Preparing the job", etaText: "", percent: null };
   progressTitle.textContent = job.label;
+  progressChipTitle.textContent = job.label;
   viewerReferencePopover.classList.add("hidden");
   viewerReferenceToggle.setAttribute("aria-expanded", "false");
   progress.classList.remove("hidden");
-  setProgressStage("Preparing the job", 2, 5);
+  progressActions.classList.remove("hidden");
+  setJobCardCollapsed(localStorage.getItem(JOB_CARD_COLLAPSED_KEY) === "1", false);
+  renderJobProgress();
+  updateQueueStatus();
   const started = Date.now();
   progressElapsed.textContent = "0:00";
+  if (elapsedTimer) window.clearInterval(elapsedTimer);
   elapsedTimer = window.setInterval(() => {
-    progressElapsed.textContent = fmtElapsed(Date.now() - started);
+    const text = fmtElapsed(Date.now() - started);
+    progressElapsed.textContent = text;
+    progressChipElapsed.textContent = text;
   }, 1000);
   abort = new AbortController();
-  updateQueueStatus();
 }
 
 function finishRun(): void {
@@ -1423,7 +1642,14 @@ async function generateRecord(
   sweep?: SweepMembership,
 ): Promise<VersionRecord> {
   const normalizedParams = normalizeGenParams(params);
-  const { glb } = await generate(sourceImage, normalizedParams, signal);
+  const requestId = newRequestId();
+  const stopPolling = startProgressPolling(requestId, signal);
+  let glb: Blob;
+  try {
+    ({ glb } = await generate(sourceImage, normalizedParams, signal, requestId));
+  } finally {
+    stopPolling();
+  }
   const inspection = await inspectGeneratedGlb(glb).catch(() => ({ dimensions: null, warning: null }));
 
   const recordId = newId();
@@ -1478,6 +1704,7 @@ async function generateRecord(
       "err",
     );
   }
+  revealAssetDock();
   await refreshGallery();
 
   if (autoOpen && !activeId && !currentGlb) try {
@@ -1561,6 +1788,7 @@ async function runGenerationQueue(): Promise<void> {
       job.candidate.error = cancelled ? undefined : (error as Error).message || "generation failed";
     }
     toast(cancelled ? `${job.label} cancelled` : (error as Error).message || "generation failed", cancelled ? "" : "err");
+    if (!cancelled) revealJobCardTemporarily();
   } finally {
     finishRun();
     currentJob = null;
@@ -1593,15 +1821,6 @@ function doGenerate(): void {
 }
 
 generateBtn.addEventListener("click", doGenerate);
-progressCollapseBtn.addEventListener("click", () => {
-  const collapsed = progressCard.classList.toggle("collapsed");
-  progressCollapseBtn.setAttribute("aria-expanded", String(!collapsed));
-  progressCollapseBtn.setAttribute("aria-label", collapsed ? "Expand job progress" : "Minimize job progress");
-  progressCollapseBtn.title = collapsed ? "Expand job progress" : "Minimize job progress";
-  const icon = progressCollapseBtn.querySelector(".button-icon");
-  icon?.classList.toggle("icon-minus", !collapsed);
-  icon?.classList.toggle("icon-plus", collapsed);
-});
 cancelBtn.addEventListener("click", () => abort?.abort());
 clearQueueBtn.addEventListener("click", () => {
   if (!generationQueue.length) return;
@@ -1687,6 +1906,29 @@ saveGlbBtn.addEventListener("click", async () => {
 });
 
 // ---- gallery ----
+const DOCK_COLLAPSED_KEY = "polyloom.asset-dock.collapsed";
+let userCollapsedDockThisSession = false;
+
+function applyDockCollapsed(collapsed: boolean): void {
+  assetDock.classList.toggle("is-collapsed", collapsed);
+  dockToggle.setAttribute("aria-expanded", String(!collapsed));
+}
+
+function initDockPreference(): void {
+  applyDockCollapsed(localStorage.getItem(DOCK_COLLAPSED_KEY) === "1");
+}
+
+function revealAssetDock(): void {
+  if (!userCollapsedDockThisSession) applyDockCollapsed(false);
+}
+
+dockToggle.addEventListener("click", () => {
+  const collapsed = !assetDock.classList.contains("is-collapsed");
+  applyDockCollapsed(collapsed);
+  localStorage.setItem(DOCK_COLLAPSED_KEY, collapsed ? "1" : "0");
+  if (collapsed) userCollapsedDockThisSession = true;
+});
+
 async function loadRecordData(rec: VersionRecord): Promise<void> {
   let stats: ViewerStats;
   let instance: Viewer;
@@ -1753,6 +1995,7 @@ function renderCandidates(): void {
   for (const slot of candidates) {
     const item = createButton({
       label: `Seed ${slot.seed}`,
+      labelMode: "aria-only",
       variant: "secondary",
       className: `candidate ${slot.status}${slot.record?.id === activeId ? " active" : ""}${slot.record?.qualityWarning ? " quality-warning" : ""}`,
     });
@@ -1854,11 +2097,6 @@ async function refreshGallery(): Promise<void> {
       item.className = `version-item${versionRecords.some((candidate) => candidate.id === activeId) ? " active" : ""}${warnings.length ? " quality-warning" : ""}`;
       item.tabIndex = 0;
       item.setAttribute("role", "button");
-      item.title = warnings.length
-        ? `${representative.label} | collapsed into a plane | ${REFERENCE_GUIDANCE}`
-        : isSweep
-        ? `${representative.label} | seed sweep with ${versionRecords.length} candidates`
-        : `${representative.label} | ${new Date(representative.createdAt).toLocaleString()}`;
 
       const itemHead = document.createElement("div");
       itemHead.className = "version-item-head";
@@ -1900,6 +2138,12 @@ async function refreshGallery(): Promise<void> {
         : isSweep
         ? `Seed sweep, ${versionRecords.length} candidates`
         : `${representative.operation} | ${actualFaces !== undefined ? compactNumber(actualFaces) + " triangles" : "metrics pending"}${comparison ? ` | ${comparison}` : ""}`;
+      item.title = [
+        representative.label || representative.name,
+        versionDetails.textContent,
+        new Date(representative.createdAt).toLocaleString(),
+        ...(warnings.length ? [REFERENCE_GUIDANCE] : []),
+      ].filter(Boolean).join(" | ");
       versionMeta.append(versionDetails);
       item.appendChild(versionMeta);
 
@@ -2078,6 +2322,7 @@ function syncAutomationResults(): Promise<number> {
       }
       if (imported > 0) {
         await refreshGallery();
+        revealAssetDock();
         toast(
           importedWarnings
             ? `${imported} automation model${imported === 1 ? "" : "s"} added to Assets; ${importedWarnings} collapsed into a plane. ${REFERENCE_GUIDANCE}`
@@ -2199,13 +2444,16 @@ function listenSafely<T>(event: string, handler: (payload: T) => void): void {
 }
 
 listenSafely<string>("server-log", (line) => {
-  if (generating) updateProgressFromServerLog(String(line));
+  // Compatibility fallback only: used while the app owns an older server
+  // binary that has no /progress endpoint (no structured snapshot yet).
+  if (generating && !structuredProgressSeen) updateProgressFromServerLog(String(line));
 });
 listenSafely<string>("tray-action-blocked", (message) => {
   toast(String(message), "err");
 });
 listenSafely("studio-shown", () => {
   void syncAutomationResults();
+  void restoreActiveJobDisplay();
 });
 listenSafely("server-restarted", () => {
   automationJobsCache = null;
@@ -2214,9 +2462,13 @@ listenSafely("server-restarted", () => {
 
 window.addEventListener("focus", () => {
   void syncAutomationResults();
+  void restoreActiveJobDisplay();
 });
 document.addEventListener("visibilitychange", () => {
-  if (document.visibilityState === "visible") void syncAutomationResults();
+  if (document.visibilityState === "visible") {
+    void syncAutomationResults();
+    void restoreActiveJobDisplay();
+  }
 });
 
 // ---- boot ----
@@ -2224,6 +2476,7 @@ async function boot(): Promise<void> {
   setViewerTools(false);
   renderViewerStats(null);
   setWorkspaceMode("generate");
+  initDockPreference();
   await pollHealth();
   await syncAutomationResults();
   await refreshGallery();

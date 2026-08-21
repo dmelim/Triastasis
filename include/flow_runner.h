@@ -53,9 +53,13 @@ DitRunner* make_sparse_runner(const Model& m, const DiTParams& p,
 
 // FlowEuler guidance-interval sampler over an arbitrary forward functor.
 using FlowFwd = std::function<std::vector<float>(const std::vector<float>&, float, const float*)>;
+// Optional per-step hook: (completed, total, eta_seconds; eta < 0 = unknown).
+// Used to feed canonical progress reporting from real sampler iterations.
+using FlowStepFn = std::function<void(int, int, double)>;
 std::vector<float> sample_flow(const FlowFwd& fwd, std::vector<float> sample,
                                const float* cond, const float* neg_cond,
                                const SamplerParams& sp,
-                               std::vector<std::vector<float>>* trace = nullptr);
+                               std::vector<std::vector<float>>* trace = nullptr,
+                               const FlowStepFn& step_cb = {});
 
 } // namespace trellis

@@ -1,6 +1,12 @@
 // trellis-server — resident HTTP wrapper around the TRELLIS.2 image->3D pipeline.
 //
 //   GET  /health     -> "ok"
+//   GET  /progress/{request_id}
+//                    -> canonical job progress JSON: status, stage id/label,
+//                       cumulative sampler steps, iteration-derived percent
+//                       (null while unknown), optional ETA, last-update time,
+//                       and a failure message. Lives here so every client sees
+//                       it, including ones that adopted this server process.
 //   POST /generate    multipart/form-data with an "image" file part; optional text
 //                      fields "seed", "resolution" (512/1024/1536), "bg_removal"
 //                      (threshold|birefnet), "uv" (xatlas = default, unique
@@ -20,8 +26,10 @@
 // process resident avoids re-initializing the Vulkan backend on every request.
 #include "trellis_args.h"
 #include "trellis_run.h"
+#include "trellis_progress.h"
 #include "httplib.h"
 
+#include <algorithm>
 #include <atomic>
 #include <charconv>
 #include <cstdint>
@@ -29,8 +37,11 @@
 #include <filesystem>
 #include <fstream>
 #include <initializer_list>
+#include <iterator>
 #include <mutex>
 #include <string>
+#include <unordered_map>
+#include <utility>
 
 namespace {
 
@@ -44,6 +55,179 @@ bool write_file_bytes(const std::string& path, const std::string& data) {
     if (!f) return false;
     f.write(data.data(), (std::streamsize) data.size());
     return f.good();
+}
+
+std::string json_escape(const std::string& value) {
+    std::string escaped;
+    for (char c : value) {
+        switch (c) {
+            case '"':  escaped += "\\\""; break;
+            case '\\': escaped += "\\\\"; break;
+            case '\n':  escaped += "\\n"; break;
+            case '\r':  escaped += "\\r"; break;
+            case '\t':  escaped += "\\t"; break;
+            default:
+                if ((unsigned char)c < 0x20) break;
+                escaped += c;
+        }
+    }
+    return escaped;
+}
+
+// ---- per-request progress registry ----------------------------------------
+//
+// One generation runs at a time (the /generate mutex), so the registry tracks
+// the active request id plus a short history of finished requests. The
+// pipeline reports a COMPLETE sampler plan up front, so overall step counts
+// have a fixed denominator and percentages never move backwards. Percent is
+// capped at 99 while running; exactly 100 only after the GLB was produced.
+// Reports without iteration counts keep the last known percent.
+
+struct ProgressEntry {
+    std::string request_id;
+    std::string status = "running";   // running | succeeded | failed
+    std::string stage_id;
+    std::string stage_label;
+    int completed_steps = 0;
+    int total_steps = 0;
+    double percent = -1.0;            // <0 => indeterminate (no sampler yet)
+    double eta_seconds = -1.0;        // stage-local ETA; <0 => unknown
+    double updated_at = 0.0;
+    std::string error;
+};
+
+class ProgressRegistry {
+public:
+    void begin(const std::string& id) {
+        std::lock_guard<std::mutex> lk(mu_);
+        prune_locked();
+        ProgressEntry entry;
+        entry.request_id = id;
+        entry.status = "running";
+        entry.updated_at = trellis::epoch_seconds();
+        entries_[id] = std::move(entry);   // reuse of an id replaces deliberately
+        active_ = id;
+    }
+
+    void on_report(const trellis::ProgressReport& report) {
+        std::lock_guard<std::mutex> lk(mu_);
+        if (active_.empty()) return;
+        auto it = entries_.find(active_);
+        if (it == entries_.end()) return;
+        ProgressEntry& entry = it->second;
+        entry.stage_id = report.stage_id;
+        entry.stage_label = report.stage_label;
+        if (report.overall_total_steps > 0) {
+            // Monotonic by construction: counts only advance, denominators are
+            // fixed for the whole run, and the percentage is clamped to <= 99
+            // until packaging succeeds.
+            entry.completed_steps =
+                std::max(entry.completed_steps, report.overall_completed_steps);
+            entry.total_steps = report.overall_total_steps;
+            const double candidate =
+                100.0 * (double)entry.completed_steps / (double)entry.total_steps;
+            const double capped = std::min(candidate, 99.0);
+            if (capped >= entry.percent) entry.percent = capped;
+        }
+        entry.eta_seconds = report.stage_eta_seconds;
+        entry.updated_at = trellis::epoch_seconds();
+    }
+
+    void finish(const std::string& id, bool ok, std::string error_message) {
+        std::lock_guard<std::mutex> lk(mu_);
+        auto it = entries_.find(id);
+        if (it != entries_.end()) {
+            ProgressEntry& entry = it->second;
+            if (ok) {
+                entry.status = "succeeded";
+                entry.stage_id = "complete";
+                entry.stage_label = "Model ready";
+                entry.percent = 100.0;
+            } else {
+                // Preserve the last stage and percent for diagnosis.
+                entry.status = "failed";
+                entry.error = std::move(error_message);
+            }
+            entry.eta_seconds = -1.0;
+            entry.updated_at = trellis::epoch_seconds();
+        }
+        if (active_ == id) active_.clear();
+    }
+
+    bool snapshot(const std::string& id, std::string& json) const {
+        std::lock_guard<std::mutex> lk(mu_);
+        auto it = entries_.find(id);
+        if (it == entries_.end()) return false;
+        const ProgressEntry& entry = it->second;
+
+        json = "{";
+        json += "\"requestId\":\"" + json_escape(entry.request_id) + "\"";
+        json += ",\"status\":\"" + entry.status + "\"";
+        json += ",\"stageId\":\"" + json_escape(entry.stage_id) + "\"";
+        json += ",\"stageLabel\":\"" + json_escape(entry.stage_label) + "\"";
+        json += ",\"completedSteps\":" + std::to_string(entry.completed_steps);
+        json += ",\"totalSteps\":" + std::to_string(entry.total_steps);
+        if (entry.percent >= 0.0) {
+            char buffer[32];
+            snprintf(buffer, sizeof buffer, "%.1f", entry.percent);
+            json += std::string(",\"percent\":") + buffer;
+        } else {
+            json += ",\"percent\":null";
+        }
+        if (entry.eta_seconds >= 0.0) {
+            char buffer[32];
+            snprintf(buffer, sizeof buffer, "%.0f", entry.eta_seconds);
+            json += std::string(",\"stageEtaSeconds\":") + buffer;
+        } else {
+            json += ",\"stageEtaSeconds\":null";
+        }
+        json += ",\"updatedAt\":" + std::to_string(entry.updated_at);
+        json += ",\"error\":" +
+                (entry.error.empty() ? std::string("null") : "\"" + json_escape(entry.error) + "\"");
+        json += "}";
+        return true;
+    }
+
+private:
+    void prune_locked() {
+        const double cutoff = trellis::epoch_seconds() - 7200.0;
+        for (auto it = entries_.begin(); it != entries_.end();) {
+            if (it->second.updated_at < cutoff) it = entries_.erase(it);
+            else ++it;
+        }
+    }
+
+    mutable std::mutex mu_;
+    std::unordered_map<std::string, ProgressEntry> entries_;
+    std::string active_;
+};
+
+// Installs the per-run progress sink and always clears it, including when
+// trellis_run throws something that is not a std::exception.
+class ProgressSinkGuard {
+public:
+    explicit ProgressSinkGuard(ProgressRegistry& registry) {
+        trellis::set_progress_sink(
+            [](const trellis::ProgressReport& report, void* user) {
+                static_cast<ProgressRegistry*>(user)->on_report(report);
+            },
+            &registry);
+    }
+    ~ProgressSinkGuard() { trellis::clear_progress_sink(); }
+    ProgressSinkGuard(const ProgressSinkGuard&) = delete;
+    ProgressSinkGuard& operator=(const ProgressSinkGuard&) = delete;
+};
+
+std::string sanitize_request_id(std::string value) {
+    std::string clean;
+    clean.reserve(value.size());
+    for (char c : value) {
+        const bool ok = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+                        (c >= '0' && c <= '9') || c == '-' || c == '_' || c == '.';
+        if (ok) clean += c;
+        if (clean.size() >= 128) break;
+    }
+    return clean;
 }
 
 // Read one logical form field, accepting the documented snake_case/camelCase aliases.
@@ -151,23 +335,6 @@ bool parse_texture_encoding(const httplib::Request& req, std::initializer_list<c
     return false;
 }
 
-std::string json_escape(const std::string& value) {
-    std::string escaped;
-    for (char c : value) {
-        switch (c) {
-            case '"':  escaped += "\\\""; break;
-            case '\\': escaped += "\\\\"; break;
-            case '\n':  escaped += "\\n"; break;
-            case '\r':  escaped += "\\r"; break;
-            case '\t':  escaped += "\\t"; break;
-            default:
-                if ((unsigned char)c < 0x20) break;
-                escaped += c;
-        }
-    }
-    return escaped;
-}
-
 void set_json_error(httplib::Response& res, int status, const std::string& message) {
     res.status = status;
     res.set_content("{\"error\":\"" + json_escape(message) + "\"}", "application/json");
@@ -198,6 +365,8 @@ int main(int argc, char** argv) {
     }
 
     std::mutex gen_mu;
+    ProgressRegistry progress_registry;
+    std::atomic<unsigned> request_counter{0};
     httplib::Server svr;
 
     // Trellis Studio (and any browser client) calls this server from a different
@@ -217,6 +386,15 @@ int main(int argc, char** argv) {
 
     svr.Get("/health", [](const httplib::Request&, httplib::Response& res) {
         res.set_content("ok", "text/plain");
+    });
+
+    svr.Get(R"(/progress/([A-Za-z0-9._\-]+))", [&](const httplib::Request& req, httplib::Response& res) {
+        std::string json;
+        if (progress_registry.snapshot(req.matches[1], json)) {
+            res.set_content(json, "application/json");
+        } else {
+            set_json_error(res, 404, "unknown request id");
+        }
     });
 
     svr.Post("/generate", [&](const httplib::Request& req, httplib::Response& res) {
@@ -331,7 +509,31 @@ int main(int argc, char** argv) {
         p.image  = stem + ".png";
         p.output = stem + ".glb";
 
+        // Client-supplied progress id. Conflicting aliases are rejected (not
+        // silently resolved), values must survive sanitization non-empty, and
+        // ids are capped at 128 characters.
+        bool client_supplied_id = false;
+        std::string request_id;
+        {
+            std::string value, used_name, rid_error;
+            read_text_field(req, {"request_id", "requestId"}, value, used_name, rid_error);
+            if (!rid_error.empty()) {
+                bad_request(rid_error);
+                return;
+            }
+            client_supplied_id = !value.empty();
+            request_id = sanitize_request_id(value);
+            if (client_supplied_id && request_id.empty()) {
+                bad_request(used_name + " must contain letters, digits, '-', '_', or '.'");
+                return;
+            }
+        }
+        if (request_id.empty()) {
+            request_id = "req-" + std::to_string(request_counter.fetch_add(1));
+        }
+
         std::string glb;
+        bool run_ok = false;
         std::string error_message = "3D reconstruction failed";
         {
             std::lock_guard<std::mutex> lk(gen_mu);
@@ -340,16 +542,20 @@ int main(int argc, char** argv) {
                 res.set_content("{\"error\":\"failed to stage input image\"}", "application/json");
                 return;
             }
+            progress_registry.begin(request_id);
+            ProgressSinkGuard sink_guard(progress_registry);
             fprintf(stderr, "[trellis-server] generate: %zu-byte image, seed %u, res %s, bg %s, uv %s\n",
                     image.content.size(), p.seed, p.cascade ? std::to_string(p.hr_res).c_str() : "512",
                     p.birefnet < 0 ? "auto" : (p.birefnet ? "birefnet" : "threshold"), p.xatlas ? "xatlas" : "box");
             try {
                 int rc = trellis_run(p);
                 if (rc == 0) glb = read_file_bytes(p.output);
+                run_ok = rc == 0 && !glb.empty();
             } catch (const std::exception& e) {
                 fprintf(stderr, "[trellis-server] generate failed: %s\n", e.what());
                 error_message = e.what();
             }
+            progress_registry.finish(request_id, run_ok, error_message);
             std::remove(p.image.c_str());
             std::remove(p.output.c_str());
             // trellis_run also writes sibling debug artifacts; clean them up too.
