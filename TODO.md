@@ -2,22 +2,11 @@
 
 ## Generation job card
 
-- [ ] Make the minimized state substantially smaller.
 - [ ] Replace the inline `-` minimize control with an `x` icon positioned near the card's top-right corner, with a small outward offset so it appears to sit just outside the card.
-- [ ] Restore meaningful work-in-progress tracking. The card currently remains on `Preparing the job` instead of showing the job's actual stage and progress.
 
 ## Typography
 
-- [ ] Replace the current font with a more legible UI typeface and verify readability across controls, labels, cards, and status text.
-
-## Controls
-
-- [ ] Replace native-looking dropdowns with custom select controls styled to match Polyloom, including their closed, open, hover, focus, selected, and disabled states.
-
-## Layout
-
-- [ ] Replace the current island-style layout with full-width, full-height sections that occupy the available space without gaps between panels.
-- [ ] Make the bottom `Assets and versions` panel collapsible, or move the library into a dedicated sidebar destination. Choose the interaction that preserves the most workspace while keeping the library easy to reach.
+- [ ] Verify the new Inter UI typeface remains readable across controls, labels, cards, and status text during desktop smoke testing.
 
 ## Job persistence and recovery
 
@@ -26,3 +15,10 @@
 ## Asset cards
 
 - [ ] Fix clipped text in asset and version cards so labels and status messages remain readable within the available card width.
+
+## Reconstruction quality test set
+
+- [ ] Build a controlled set of 10 character reference images similar to the Homer and Mr Burns styles, varying pose, background, lighting, framing, silhouette, and rendering style one factor at a time.
+- [ ] Run every reference with fixed generation settings and seeds, preserving the source image, conditioning image, GLB, dimensions, and generation logs.
+- [ ] Compare healthy models, fully collapsed planes, and hybrid failures with attached background sheets using depth ratio and vertex concentration measurements.
+- [ ] Use the results to identify the model's specific weak inputs and establish a reliable threshold for the planned `background-plane-attached` quality warning.
