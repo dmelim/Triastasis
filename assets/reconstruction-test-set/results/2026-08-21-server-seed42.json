@@ -1,0 +1,27 @@
+{
+  "$comment": "Recorded from a complete server-backed run against the resident RTX 4070 runtime. Raw run artifacts remain local under runs/ and are not committed.",
+  "generatedAtUtc": "2026-08-21T18:10:00.620211+00:00",
+  "backend": "server",
+  "settings": {
+    "resolution": 512,
+    "seed": 42,
+    "bgRemoval": "auto",
+    "uv": "xatlas",
+    "texture": true
+  },
+  "total": 10,
+  "succeeded": 10,
+  "failed": 0,
+  "cases": [
+    { "caseId": "01-baseline", "durationSeconds": 31.48, "dimensions": [0.61471, 0.91672, 1.00168], "thinRatio": 0.613684 },
+    { "caseId": "02-front-view", "durationSeconds": 32.63, "dimensions": [0.61914, 0.93439, 0.99059], "thinRatio": 0.625017 },
+    { "caseId": "03-profile-view", "durationSeconds": 109.52, "dimensions": [0.64339, 1.00357, 0.06187], "thinRatio": 0.061654 },
+    { "caseId": "04-walking-pose", "durationSeconds": 34.80, "dimensions": [0.68961, 1.00293, 0.00403], "thinRatio": 0.004018 },
+    { "caseId": "05-merged-silhouette", "durationSeconds": 33.77, "dimensions": [0.68962, 1.00293, 0.00402], "thinRatio": 0.004006 },
+    { "caseId": "06-busy-background", "durationSeconds": 34.24, "dimensions": [0.65939, 1.00293, 0.06647], "thinRatio": 0.066274 },
+    { "caseId": "07-low-key-lighting", "durationSeconds": 35.11, "dimensions": [0.68962, 1.00293, 0.00403], "thinRatio": 0.004016 },
+    { "caseId": "08-tight-crop", "durationSeconds": 32.71, "dimensions": [0.60621, 0.88475, 1.00161], "thinRatio": 0.605240 },
+    { "caseId": "09-cel-shaded", "durationSeconds": 132.34, "dimensions": [0.66081, 1.00321, 0.06470], "thinRatio": 0.064497 },
+    { "caseId": "10-wide-angle", "durationSeconds": 34.54, "dimensions": [0.68963, 1.00292, 0.00402], "thinRatio": 0.004009 }
+  ]
+}
