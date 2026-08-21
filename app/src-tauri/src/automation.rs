@@ -1,5 +1,5 @@
 use reqwest::blocking::Client;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, VecDeque};
 use std::io::{Cursor, Read};
 use std::process::Command;
@@ -44,7 +44,7 @@ impl Default for AutomationInfo {
     }
 }
 
-#[derive(Clone, Copy, PartialEq, Serialize)]
+#[derive(Clone, Copy, PartialEq, Serialize, Deserialize, Debug)]
 #[serde(rename_all = "lowercase")]
 enum JobStatus {
     Queued,
@@ -54,7 +54,7 @@ enum JobStatus {
     Cancelled,
 }
 
-#[derive(Clone, Serialize)]
+#[derive(Clone, Serialize, Deserialize, Debug)]
 #[serde(rename_all = "camelCase")]
 struct JobParams {
     seed: u64,
@@ -74,7 +74,7 @@ impl Default for JobParams {
     }
 }
 
-#[derive(Clone, Serialize)]
+#[derive(Clone, Serialize, Deserialize, Debug)]
 #[serde(rename_all = "camelCase")]
 struct ModelDimensions {
     x: f64,
@@ -82,7 +82,7 @@ struct ModelDimensions {
     z: f64,
 }
 
-#[derive(Clone, Serialize)]
+#[derive(Clone, Serialize, Deserialize, Debug)]
 #[serde(rename_all = "camelCase")]
 struct QualityWarning {
     code: String,
@@ -95,8 +95,8 @@ struct QualityWarning {
 /// Canonical progress for one job, stored by the queue that owns it. Percent
 /// comes from the native server's sampler iterations; `None` means the backend
 /// could not measure progress and the UI must show an indeterminate bar.
-#[derive(Clone, Default, Serialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Clone, Default, Serialize, Deserialize, Debug)]
+#[serde(rename_all = "camelCase", default)]
 struct JobProgressView {
     stage_id: Option<String>,
     stage_label: Option<String>,
@@ -135,6 +135,295 @@ fn parse_progress_view(value: &serde_json::Value) -> Option<JobProgressView> {
     })
 }
 
+/// Version of the on-disk job-store schema. Bump when DurableJob changes
+/// shape; older files are quarantined instead of misread.
+const JOB_STORE_VERSION: u32 = 1;
+
+/// One durable job record: everything needed to reconcile a job after the app
+/// restarts — identity, inputs, lifecycle state, timestamps, progress, and
+/// outputs. Persisted atomically at every lifecycle transition.
+#[derive(Clone, Serialize, Deserialize, Debug)]
+#[serde(rename_all = "camelCase", default)]
+struct DurableJob {
+    schema_version: u32,
+    id: String,
+    status: JobStatus,
+    source_image_path: String,
+    source_name: String,
+    source_type: String,
+    params: JobParams,
+    submitted_at: u64,
+    started_at: Option<u64>,
+    finished_at: Option<u64>,
+    /// True when this job was Running in a previous process life and must be
+    /// re-run; the worker waits out any native-side orphan first.
+    interrupted: bool,
+    output_path: Option<String>,
+    error: Option<String>,
+    quality_warning: Option<QualityWarning>,
+    progress: JobProgressView,
+}
+
+impl Default for DurableJob {
+    fn default() -> Self {
+        Self {
+            schema_version: JOB_STORE_VERSION,
+            id: String::new(),
+            status: JobStatus::Queued,
+            source_image_path: String::new(),
+            source_name: String::new(),
+            source_type: "image/png".to_string(),
+            params: JobParams::default(),
+            submitted_at: 0,
+            started_at: None,
+            finished_at: None,
+            interrupted: false,
+            output_path: None,
+            error: None,
+            quality_warning: None,
+            progress: JobProgressView::default(),
+        }
+    }
+}
+
+impl Job {
+    fn to_durable(&self) -> DurableJob {
+        DurableJob {
+            schema_version: JOB_STORE_VERSION,
+            id: self.id.clone(),
+            status: self.status,
+            source_image_path: self.source_disk_path.clone().unwrap_or_default(),
+            source_name: self.source_name.clone(),
+            source_type: self.source_type.clone(),
+            params: self.params.clone(),
+            submitted_at: self.submitted_at,
+            started_at: self.started_at,
+            finished_at: self.finished_at,
+            interrupted: self.interrupted,
+            output_path: self.output_path.clone(),
+            error: self.error.clone(),
+            quality_warning: self.quality_warning.clone(),
+            progress: self.progress.clone(),
+        }
+    }
+
+    fn from_durable(durable: DurableJob) -> Job {
+        let source_path = if durable.source_image_path.is_empty() {
+            None
+        } else {
+            Some(durable.source_image_path.clone())
+        };
+        Job {
+            id: durable.id,
+            status: durable.status,
+            submitted_at: durable.submitted_at,
+            started_at: durable.started_at,
+            finished_at: durable.finished_at,
+            source_image: Vec::new(),
+            source_name: durable.source_name,
+            source_type: durable.source_type,
+            source_path: source_path.clone(),
+            source_disk_path: source_path,
+            params: durable.params,
+            output_path: durable.output_path,
+            error: durable.error,
+            quality_warning: durable.quality_warning,
+            progress: durable.progress,
+            interrupted: durable.interrupted,
+        }
+    }
+}
+
+#[derive(Serialize, Deserialize)]
+struct JobStoreFile {
+    version: u32,
+    jobs: Vec<serde_json::Value>,
+}
+
+fn serialize_store(jobs: &[DurableJob]) -> String {
+    let file = JobStoreFile {
+        version: JOB_STORE_VERSION,
+        jobs: jobs
+            .iter()
+            .map(|job| serde_json::to_value(job).unwrap_or_else(|_| serde_json::Value::Null))
+            .collect(),
+    };
+    serde_json::to_string(&file).unwrap_or_default()
+}
+
+/// Parses a store file leniently: one unreadable record becomes an explicit
+/// unrecoverable placeholder instead of losing every other job.
+fn parse_store(text: &str) -> Result<Vec<DurableJob>, String> {
+    let stripped = text.strip_prefix('\u{feff}').unwrap_or(text);
+    let file: JobStoreFile =
+        serde_json::from_str(stripped).map_err(|e| format!("store is not valid JSON: {e}"))?;
+    if file.version != JOB_STORE_VERSION {
+        return Err(format!(
+            "store schema version {} is not supported (expected {JOB_STORE_VERSION})",
+            file.version
+        ));
+    }
+    Ok(file
+        .jobs
+        .into_iter()
+        .map(
+            |value| match serde_json::from_value::<DurableJob>(value.clone()) {
+                Ok(job) => job,
+                Err(error) => {
+                    let id = value
+                        .get("id")
+                        .and_then(|id| id.as_str())
+                        .unwrap_or("unknown")
+                        .to_string();
+                    DurableJob {
+                        id,
+                        status: JobStatus::Failed,
+                        error: Some(format!("unrecoverable: unreadable job record ({error})")),
+                        finished_at: Some(now_ms()),
+                        ..DurableJob::default()
+                    }
+                }
+            },
+        )
+        .collect())
+}
+
+/// Applies recovery rules after loading: non-terminal records from a previous
+/// process become requeued (interrupted) or clearly unrecoverable. Queue order
+/// follows submission time so restarts preserve ordering.
+fn reconcile_loaded_jobs(jobs: Vec<DurableJob>) -> Vec<DurableJob> {
+    let mut ordered = jobs;
+    ordered.sort_by_key(|job| job.submitted_at);
+    for job in &mut ordered {
+        let terminal = matches!(
+            job.status,
+            JobStatus::Succeeded | JobStatus::Failed | JobStatus::Cancelled
+        );
+        if terminal {
+            continue;
+        }
+        // Non-terminal records were mid-flight during a crash or restart.
+        let image_available = !job.source_image_path.is_empty()
+            && std::path::Path::new(&job.source_image_path).is_file();
+        if !image_available {
+            job.status = JobStatus::Failed;
+            job.error =
+                Some("unrecoverable: the saved source image is missing or unreadable".to_string());
+            job.interrupted = false;
+            job.finished_at = Some(now_ms());
+        } else {
+            // Only a previously-Running job can have an orphaned native
+            // request under its id; a merely-queued one never started.
+            let was_running = job.status == JobStatus::Running;
+            job.interrupted = was_running;
+            job.status = JobStatus::Queued;
+        }
+    }
+    ordered
+}
+
+fn jobs_store_path() -> Result<std::path::PathBuf, String> {
+    if let Some(mut path) = crate::config::config_path() {
+        if let Some(parent) = path.parent() {
+            path = parent.to_path_buf();
+        } else {
+            path.pop();
+        }
+        return Ok(path.join("automation-jobs.json"));
+    }
+    Ok(crate::config::resolve_output_dir()?.join("automation-jobs.json"))
+}
+
+/// Replaces the store through a fully-written temporary file. Windows cannot
+/// rename over an existing destination with std::fs::rename, so the previous
+/// store is retained as a backup during the swap and used for recovery if the
+/// process stops between the two renames.
+fn save_store_file(path: &std::path::Path, jobs: &[DurableJob]) -> Result<(), String> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+    let body = serialize_store(jobs);
+    let temp = path.with_extension("json.tmp");
+    let backup = path.with_extension("json.bak");
+    {
+        use std::io::Write;
+        let mut file = std::fs::File::create(&temp).map_err(|e| e.to_string())?;
+        file.write_all(body.as_bytes()).map_err(|e| e.to_string())?;
+        file.sync_all().map_err(|e| e.to_string())?;
+    }
+    if path.exists() {
+        if backup.exists() {
+            std::fs::remove_file(&backup).map_err(|e| e.to_string())?;
+        }
+        std::fs::rename(path, &backup).map_err(|e| e.to_string())?;
+    }
+    if let Err(error) = std::fs::rename(&temp, path) {
+        if !path.exists() && backup.exists() {
+            let _ = std::fs::rename(&backup, path);
+        }
+        return Err(error.to_string());
+    }
+    if backup.exists() {
+        let _ = std::fs::remove_file(backup);
+    }
+    Ok(())
+}
+
+fn load_store_file(path: &std::path::Path) -> Vec<DurableJob> {
+    let backup = path.with_extension("json.bak");
+    let (loaded_path, text) = match std::fs::read_to_string(path) {
+        Ok(text) => (path, text),
+        Err(_) => match std::fs::read_to_string(&backup) {
+            Ok(text) => (backup.as_path(), text),
+            Err(_) => return Vec::new(), // no store yet: nothing to recover
+        },
+    };
+    match parse_store(&text) {
+        Ok(jobs) => reconcile_loaded_jobs(jobs),
+        Err(reason) => {
+            // Quarantine the unreadable file rather than deleting evidence.
+            let quarantine = path.with_extension(format!("json.corrupt-{}", now_ms()));
+            let _ = std::fs::rename(loaded_path, quarantine);
+            eprintln!("[automation] job store quarantined: {reason}");
+            Vec::new()
+        }
+    }
+}
+
+/// Persists the whole queue under an already-held data lock.
+fn persist_locked(data: &QueueData) {
+    let Ok(path) = jobs_store_path() else {
+        return;
+    };
+    let mut jobs: Vec<DurableJob> = data.jobs.values().map(|job| job.to_durable()).collect();
+    jobs.sort_by_key(|job| job.submitted_at);
+    if let Err(error) = save_store_file(&path, &jobs) {
+        eprintln!("[automation] could not persist job state: {error}");
+    }
+}
+
+/// Loads persisted jobs into a fresh queue before it starts accepting work.
+fn recover_persisted_jobs(queue: &JobQueue) {
+    let Ok(path) = jobs_store_path() else {
+        return;
+    };
+    let recovered = load_store_file(&path);
+    if recovered.is_empty() {
+        return;
+    }
+    let mut data = queue.data.lock().unwrap();
+    for durable in recovered {
+        let status = durable.status;
+        let id = durable.id.clone();
+        let job = Job::from_durable(durable);
+        data.jobs.insert(id.clone(), job);
+        if status == JobStatus::Queued {
+            data.pending.push_back(id);
+        }
+    }
+    persist_locked(&data);
+}
+
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct JobView {
@@ -164,6 +453,11 @@ struct Job {
     started_at: Option<u64>,
     finished_at: Option<u64>,
     source_image: Vec<u8>,
+    /// Where the source image was persisted at submission, so interrupted
+    /// jobs can be requeued after a restart.
+    source_disk_path: Option<String>,
+    /// Set when this job survived a restart mid-run and must be re-run.
+    interrupted: bool,
     source_name: String,
     source_type: String,
     source_path: Option<String>,
@@ -886,6 +1180,44 @@ fn submit_job(mut request: Request, queue: &Arc<JobQueue>, base_url: &str) {
     }
 
     let id = next_job_id();
+    // Persist the source image at submission time: recovery after a crash
+    // needs the input bytes on disk, not in a dead process's memory.
+    let source_disk_path = match config::resolve_output_dir() {
+        Ok(dir) => {
+            if let Err(error) = std::fs::create_dir_all(&dir) {
+                let _ = request.respond(error_response(
+                    500,
+                    &format!("could not prepare durable job storage: {error}"),
+                ));
+                return;
+            }
+            let extension = std::path::Path::new(&multipart.source_name)
+                .extension()
+                .and_then(|value| value.to_str())
+                .filter(|value| {
+                    value.len() <= 8 && value.chars().all(|ch| ch.is_ascii_alphanumeric())
+                })
+                .unwrap_or("img");
+            let path = dir.join(format!("automation_{id}_source.{extension}"));
+            match std::fs::write(&path, &multipart.image) {
+                Ok(()) => Some(path.to_string_lossy().into_owned()),
+                Err(error) => {
+                    let _ = request.respond(error_response(
+                        500,
+                        &format!("could not persist source image for recovery: {error}"),
+                    ));
+                    return;
+                }
+            }
+        }
+        Err(error) => {
+            let _ = request.respond(error_response(
+                500,
+                &format!("could not resolve durable job storage: {error}"),
+            ));
+            return;
+        }
+    };
     let job = Job {
         id: id.clone(),
         status: JobStatus::Queued,
@@ -893,6 +1225,8 @@ fn submit_job(mut request: Request, queue: &Arc<JobQueue>, base_url: &str) {
         started_at: None,
         finished_at: None,
         source_image: multipart.image,
+        source_disk_path,
+        interrupted: false,
         source_name: multipart.source_name,
         source_type: multipart.source_type,
         source_path: None,
@@ -906,6 +1240,7 @@ fn submit_job(mut request: Request, queue: &Arc<JobQueue>, base_url: &str) {
         let mut data = queue.data.lock().unwrap();
         data.pending.push_back(id.clone());
         data.jobs.insert(id.clone(), job);
+        persist_locked(&data);
         let (queue_position, jobs_ahead) = job_queue_position(&data, &id);
         let queued = data
             .jobs
@@ -1069,6 +1404,7 @@ fn cancel_job(request: Request, queue: &JobQueue, id: &str, base_url: &str) {
             job.finished_at = Some(now_ms());
             job.source_image.clear();
         }
+        persist_locked(&data);
         let (position, ahead) = job_queue_position(&data, id);
         let Some(job) = data.jobs.get(id) else {
             let _ = request.respond(error_response(404, "job not found"));
@@ -1216,7 +1552,13 @@ fn spawn_progress_watcher(queue: Arc<JobQueue>, client: Client, job_id: String) 
                     let mut data = queue.data.lock().unwrap();
                     if let Some(job) = data.jobs.get_mut(&job_id) {
                         if job.status == JobStatus::Running {
+                            // Persist only on stage changes, not every poll:
+                            // lifecycle transitions matter for recovery.
+                            let stage_changed = job.progress.stage_id != view.stage_id;
                             job.progress = view;
+                            if stage_changed {
+                                persist_locked(&data);
+                            }
                         }
                     }
                 }
@@ -1242,29 +1584,73 @@ fn worker_loop(queue: Arc<JobQueue>, stop: Arc<AtomicBool>) {
             let Some(id) = data.pending.pop_front() else {
                 continue;
             };
-            let Some(job) = data.jobs.get_mut(&id) else {
-                continue;
+            // Scoped block: the mutable job borrow must end before
+            // persist_locked takes its own (immutable) look at the queue.
+            let payload = {
+                let Some(job) = data.jobs.get_mut(&id) else {
+                    continue;
+                };
+                if job.status != JobStatus::Queued {
+                    continue;
+                }
+                job.status = JobStatus::Running;
+                job.started_at = Some(now_ms());
+                (
+                    id.clone(),
+                    job.source_image.clone(),
+                    job.source_name.clone(),
+                    job.source_type.clone(),
+                    job.params.clone(),
+                    job.interrupted,
+                )
             };
-            if job.status != JobStatus::Queued {
-                continue;
-            }
-            job.status = JobStatus::Running;
-            job.started_at = Some(now_ms());
-            Some((
-                id,
-                job.source_image.clone(),
-                job.source_name.clone(),
-                job.source_type.clone(),
-                job.params.clone(),
-            ))
+            persist_locked(&data);
+            Some(payload)
         };
 
-        let Some((id, source_image, source_name, source_type, params)) = work else {
+        let Some((id, source_image, source_name, source_type, params, interrupted)) = work else {
             continue;
         };
+        // A job that survived a restart mid-run may still have an orphaned
+        // native-side request running under the same request_id (the server
+        // keeps processing after the old client vanished). Wait for it to
+        // finish before re-submitting so the GPU never runs duplicates.
+        if interrupted {
+            wait_for_orphan(&client, &id);
+            let mut data = queue.data.lock().unwrap();
+            if let Some(job) = data.jobs.get_mut(&id) {
+                job.interrupted = false;
+                persist_locked(&data);
+            }
+        }
         // The job id doubles as the native request_id, so /progress/{job_id}
         // and the automation status URL describe the same lifecycle.
         spawn_progress_watcher(queue.clone(), client.clone(), id.clone());
+        // Recovered jobs carry no in-memory image bytes; reload from disk.
+        let source_image = if source_image.is_empty() {
+            let path = {
+                let data = queue.data.lock().unwrap();
+                data.jobs
+                    .get(&id)
+                    .and_then(|job| job.source_disk_path.clone())
+            };
+            match path.map(|p| std::fs::read(p)) {
+                Some(Ok(bytes)) => bytes,
+                _ => {
+                    let mut data = queue.data.lock().unwrap();
+                    if let Some(job) = data.jobs.get_mut(&id) {
+                        job.status = JobStatus::Failed;
+                        job.error =
+                            Some("unrecoverable: the saved source image could not be read".into());
+                        job.finished_at = Some(now_ms());
+                        persist_locked(&data);
+                    }
+                    continue;
+                }
+            }
+        } else {
+            source_image
+        };
         let result = (|| -> Result<(String, String, Option<QualityWarning>), String> {
             let cfg = config::load().ok_or("Trellis server configuration is unavailable")?;
             let url = format!("http://{}:{}/generate", cfg.host, cfg.port);
@@ -1331,7 +1717,43 @@ fn worker_loop(queue: Arc<JobQueue>, stop: Arc<AtomicBool>) {
                     job.progress.updated_at = Some(now_secs());
                 }
             }
+            persist_locked(&data);
         }
+    }
+}
+
+/// After a crash, the native server may still be finishing the orphaned
+/// generation for `id` (its handler outlives the dead HTTP client). Poll its
+/// progress endpoint until that request is no longer running — or until a
+/// generous timeout — before this queue re-runs the job, so the same request
+/// id never executes twice concurrently.
+fn wait_for_orphan(client: &Client, id: &str) {
+    let Some(cfg) = config::load() else {
+        return;
+    };
+    let url = format!("http://{}:{}/progress/{}", cfg.host, cfg.port, id);
+    // Bounded by the native generation client timeout (60 min) plus margin.
+    let deadline = std::time::Instant::now() + Duration::from_secs(65 * 60);
+    while std::time::Instant::now() < deadline {
+        let running = client
+            .get(&url)
+            .send()
+            .ok()
+            .filter(|response| response.status().is_success())
+            .and_then(|response| response.text().ok())
+            .and_then(|text| serde_json::from_str::<serde_json::Value>(&text).ok())
+            .and_then(|value| {
+                value
+                    .get("status")
+                    .and_then(|status| status.as_str())
+                    .map(str::to_string)
+            })
+            .map(|status| status == "running")
+            .unwrap_or(false);
+        if !running {
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(2_000));
     }
 }
 
@@ -1344,6 +1766,10 @@ pub fn start(cfg: &Config, state: &AutomationState) -> Result<AutomationInfo, St
     let stop_flag = Arc::new(AtomicBool::new(false));
     let queue = Arc::new(JobQueue::default());
     queue.admission.lock().unwrap().accepting = !state.maintenance.load(Ordering::Acquire);
+    // Reconcile persisted jobs with this fresh process BEFORE the API accepts
+    // traffic: queued jobs requeue, interrupted runs become re-runnable, and
+    // unrecoverable records surface as failed with a clear reason.
+    recover_persisted_jobs(&queue);
     let info = gpu_capability(cfg, api_port);
     let base_url = info.url.clone();
 
@@ -1407,6 +1833,8 @@ mod tests {
             started_at: None,
             finished_at: None,
             source_image: Vec::new(),
+            source_disk_path: None,
+            interrupted: false,
             source_name: "source.png".to_string(),
             source_type: "image/png".to_string(),
             source_path: None,
@@ -1663,6 +2091,167 @@ mod tests {
             serde_json::from_str(r#"{ "etaSeconds": 90, "percent": 10 }"#).unwrap();
         let view = parse_progress_view(&legacy).unwrap();
         assert_eq!(view.eta_seconds, Some(90.0));
+    }
+
+    fn durable(id: &str, status: JobStatus, submitted_at: u64) -> DurableJob {
+        DurableJob {
+            id: id.to_string(),
+            status,
+            submitted_at,
+            source_name: "source.png".to_string(),
+            ..DurableJob::default()
+        }
+    }
+
+    #[test]
+    fn store_round_trips_records_without_loss() {
+        let jobs = vec![
+            durable("b", JobStatus::Queued, 20),
+            durable("a", JobStatus::Succeeded, 10),
+            durable("c", JobStatus::Running, 30),
+            durable("d", JobStatus::Cancelled, 40),
+        ];
+        let text = serialize_store(&jobs);
+        let loaded = parse_store(&text).unwrap();
+        assert_eq!(loaded.len(), jobs.len());
+        // Record order is preserved verbatim; ordering is reconcile's job.
+        assert_eq!(loaded[0].id, "b");
+        assert_eq!(loaded[0].status, JobStatus::Queued);
+        assert_eq!(loaded[1].status, JobStatus::Succeeded);
+        assert_eq!(loaded[2].status, JobStatus::Running);
+    }
+
+    #[test]
+    fn recovery_requeues_interrupted_runs_and_preserves_order() {
+        let jobs = vec![
+            durable("late", JobStatus::Queued, 30),
+            durable("midrun", JobStatus::Running, 20),
+            durable("done", JobStatus::Succeeded, 10),
+        ];
+        // Every record points at an existing file so validation passes.
+        let dir = std::env::temp_dir().join(format!("trellis-jobs-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let image = dir.join("img.png");
+        std::fs::write(&image, b"png").unwrap();
+        let jobs: Vec<DurableJob> = jobs
+            .into_iter()
+            .map(|mut job| {
+                job.source_image_path = image.to_string_lossy().into_owned();
+                job
+            })
+            .collect();
+
+        let recovered = reconcile_loaded_jobs(jobs);
+        assert_eq!(recovered.len(), 3);
+        assert_eq!(recovered[0].id, "done");
+        assert_eq!(recovered[0].status, JobStatus::Succeeded); // history untouched
+        assert_eq!(recovered[1].id, "midrun");
+        assert_eq!(recovered[1].status, JobStatus::Queued); // requeued
+        assert!(recovered[1].interrupted); // flagged for orphan-wait
+        assert_eq!(recovered[2].id, "late");
+        assert_eq!(recovered[2].status, JobStatus::Queued); // original queue order kept
+        assert!(!recovered[2].interrupted);
+
+        let _ = std::fs::remove_file(&image);
+        let _ = std::fs::remove_dir(&dir);
+    }
+
+    #[test]
+    fn recovery_marks_missing_source_images_unrecoverable() {
+        let mut job = durable("ghost", JobStatus::Running, 5);
+        job.source_image_path = "Z:/definitely/not/here/source.png".to_string();
+        let recovered = reconcile_loaded_jobs(vec![job]);
+        assert_eq!(recovered[0].status, JobStatus::Failed);
+        assert!(recovered[0]
+            .error
+            .as_deref()
+            .unwrap()
+            .contains("unrecoverable"));
+        assert!(!recovered[0].interrupted);
+    }
+
+    #[test]
+    fn corrupt_and_incompatible_stores_are_rejected_not_misread() {
+        let parsed = parse_store("this is not json at all");
+        assert!(parsed.is_err());
+
+        let wrong_version = serde_json::json!({ "version": 99, "jobs": [] }).to_string();
+        let parsed = parse_store(&wrong_version);
+        assert!(parsed.is_err());
+    }
+
+    #[test]
+    fn one_unreadable_record_does_not_lose_the_others() {
+        let good = serde_json::to_value(durable("good", JobStatus::Queued, 1)).unwrap();
+        let mut bad = good.clone();
+        bad.as_object_mut().unwrap().insert(
+            "submittedAt".to_string(),
+            serde_json::Value::String("not-a-number".to_string()),
+        );
+        let file = serde_json::json!({ "version": JOB_STORE_VERSION, "jobs": [bad, good] });
+        let loaded = parse_store(&file.to_string()).unwrap();
+        assert_eq!(loaded.len(), 2);
+        // The unreadable record keeps its id but surfaces as clearly failed.
+        let failed = loaded
+            .iter()
+            .find(|job| job.status == JobStatus::Failed)
+            .unwrap();
+        assert_eq!(failed.id, "good");
+        assert!(failed.error.as_deref().unwrap().contains("unrecoverable"));
+        // The healthy record survived untouched.
+        let good_job = loaded
+            .iter()
+            .find(|job| job.status == JobStatus::Queued)
+            .unwrap();
+        assert_eq!(good_job.id, "good");
+    }
+
+    #[test]
+    fn store_file_replaces_an_existing_snapshot_on_windows() {
+        let dir = std::env::temp_dir().join(format!(
+            "trellis-store-replace-{}-{}",
+            std::process::id(),
+            now_ms()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("automation-jobs.json");
+
+        save_store_file(&path, &[durable("first", JobStatus::Succeeded, 1)]).unwrap();
+        save_store_file(&path, &[durable("second", JobStatus::Succeeded, 2)]).unwrap();
+
+        let loaded = load_store_file(&path);
+        assert_eq!(loaded.len(), 1);
+        assert_eq!(loaded[0].id, "second");
+        assert!(!path.with_extension("json.tmp").exists());
+        assert!(!path.with_extension("json.bak").exists());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn durable_terminal_job_restores_source_and_quality_warning() {
+        let mut saved = durable("done", JobStatus::Succeeded, 1);
+        saved.source_image_path = "C:/saved/source.png".to_string();
+        saved.quality_warning = Some(QualityWarning {
+            code: "collapsed-plane".to_string(),
+            message: "Collapsed into a plane".to_string(),
+            thin_ratio: 0.001,
+            threshold: PLANE_COLLAPSE_RATIO,
+            dimensions: ModelDimensions {
+                x: 1.0,
+                y: 2.0,
+                z: 0.001,
+            },
+        });
+
+        let job = Job::from_durable(saved);
+        assert_eq!(job.source_disk_path.as_deref(), Some("C:/saved/source.png"));
+        assert_eq!(job.source_path.as_deref(), Some("C:/saved/source.png"));
+        assert_eq!(
+            job.quality_warning
+                .as_ref()
+                .map(|warning| warning.code.as_str()),
+            Some("collapsed-plane")
+        );
     }
 
     #[test]
