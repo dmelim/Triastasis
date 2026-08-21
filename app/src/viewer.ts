@@ -169,6 +169,7 @@ export class Viewer {
   private loadedRoot: THREE.Object3D | null = null;
   private meshes: THREE.Mesh[] = [];
   private originals = new Map<THREE.Mesh, MaterialValue>();
+  private originalMaterialsQueue: Promise<void> = Promise.resolve();
   private initialVisibility = new Map<THREE.Mesh, boolean>();
   private hiddenMeshes = new Set<THREE.Mesh>();
   private topologyLines: TopologyLines[] = [];
@@ -249,6 +250,48 @@ export class Viewer {
   /** Return the current parsed or adopted root for read-only integrations. */
   getLoadedRoot(): THREE.Object3D | null {
     return this.loadedRoot;
+  }
+
+  /**
+   * Run an integration against the loaded root's original materials and
+   * source visibility. Display modes are presentation-only, but they replace
+   * mesh materials and may suppress the model for wireframe inspection. This
+   * boundary keeps cloning and export code from accidentally serializing an
+   * inspection shader or a wireframe-hidden mesh. The active inspection mode
+   * and exact on-screen visibility are restored even when the operation fails.
+   */
+  async withOriginalMaterials<T>(
+    operation: (root: THREE.Object3D) => Promise<T> | T,
+  ): Promise<T> {
+    const run = async (): Promise<T> => {
+      const root = this.loadedRoot;
+      if (!root) throw new Error("No model is loaded in the viewer");
+
+      const previousVisibility = new Map<THREE.Mesh, boolean>();
+      for (const mesh of this.meshes) previousVisibility.set(mesh, mesh.visible);
+
+      this.restoreOriginalMaterials();
+      for (const mesh of this.meshes) {
+        const sourceVisible = this.initialVisibility.get(mesh) ?? true;
+        mesh.visible = sourceVisible && !this.hiddenMeshes.has(mesh);
+      }
+
+      const previousMode = this.displayMode;
+      try {
+        return await operation(root);
+      } finally {
+        this.setDisplayMode(previousMode);
+        for (const mesh of this.meshes) {
+          const visible = previousVisibility.get(mesh);
+          if (visible !== undefined) mesh.visible = visible;
+        }
+        this.updateTopologyVisibility();
+      }
+    };
+
+    const queued = this.originalMaterialsQueue.then(run, run);
+    this.originalMaterialsQueue = queued.then(() => undefined, () => undefined);
+    return queued;
   }
 
   /** Replace one loaded mesh geometry without changing scene ownership. */

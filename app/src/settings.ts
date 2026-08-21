@@ -15,8 +15,8 @@ function dirField(label: string, id: string, value: string): string {
   return `<label class="ctl"><span>${label}</span>
     <div class="dir-row">
       <input id="${id}" type="text" value="${value.replace(/"/g, "&quot;")}" />
-      <button id="${id}-browse" class="tool-btn" type="button">Browse…</button>
-      <button id="${id}-open" class="tool-btn" type="button">Open</button>
+      <button id="${id}-browse" class="button button--secondary button--sm" type="button">Browse…</button>
+      <button id="${id}-open" class="button button--secondary button--sm" type="button">Open</button>
     </div></label>`;
 }
 
@@ -53,11 +53,11 @@ export async function renderSettings(
       <label class="ctl"><span>Server logs (each launch is saved here. Attach these to bug reports)</span>
         <div class="dir-row">
           <input id="set-logs" type="text" value="${logDir.replace(/"/g, "&quot;")}" readonly />
-          <button id="set-logs-open" class="tool-btn" type="button">Open</button>
+          <button id="set-logs-open" class="button button--secondary button--sm" type="button">Open</button>
         </div></label>
       <div class="modal-actions">
-        <button id="set-restart" class="tool-btn">Restart server</button>
-        <button id="set-save" class="primary">Save &amp; restart</button>
+        <button id="set-restart" class="button button--secondary" type="button">Restart server</button>
+        <button id="set-save" class="button button--primary" type="button">Save &amp; restart</button>
       </div>`;
 
     (body.querySelector("#set-logs-open") as HTMLButtonElement).onclick = async () => {
@@ -115,7 +115,7 @@ export async function renderSettings(
       ${field("Host", "set-host", cfg.host)}
       ${field("Port", "set-port", String(cfg.port), "number")}
       <div class="modal-actions">
-        <button id="set-save" class="primary">Save</button>
+        <button id="set-save" class="button button--primary" type="button">Save</button>
       </div>`;
     (body.querySelector("#set-save") as HTMLButtonElement).onclick = async () => {
       const host = (body.querySelector("#set-host") as HTMLInputElement).value.trim() || "127.0.0.1";

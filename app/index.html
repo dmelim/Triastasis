@@ -6,18 +6,26 @@
     <title>Polyloom</title>
   </head>
   <body>
-    <header class="topbar">
-      <div class="brand">
-        <span class="logo" aria-hidden="true">PL</span> Polyloom
+    <nav class="mode-rail" aria-label="Workspace navigation">
+      <div class="rail-brand" title="Polyloom">
+        <img src="/brand/polyloom-mark.png" alt="" />
+        <span>Polyloom</span>
       </div>
-      <div class="status">
-        <span id="automation-badge" class="badge api-badge" title="Local automation API">API starting</span>
-        <span id="backend-badge" class="badge" title="active backend">-</span>
-        <span id="server-dot" class="dot" title="server status"></span>
-        <span id="server-label" class="server-label">connecting…</span>
-        <button id="settings-btn" class="icon-btn" title="Settings" aria-label="Open settings">Settings</button>
+      <div class="rail-actions">
+        <button id="mode-generate" class="mode-button active" type="button" aria-selected="true">
+          <span class="mode-icon mode-icon-generate" aria-hidden="true"></span>
+          <span>Generate</span>
+        </button>
+        <button id="mode-view" class="mode-button" type="button" aria-selected="false">
+          <span class="mode-icon mode-icon-view" aria-hidden="true"></span>
+          <span>View</span>
+        </button>
       </div>
-    </header>
+      <button id="settings-btn" class="mode-button mode-settings" type="button" title="Settings" aria-label="Open settings">
+        <span class="mode-icon mode-icon-settings" aria-hidden="true"></span>
+        <span>Settings</span>
+      </button>
+    </nav>
 
     <div id="setup-banner" class="banner hidden">
       <span></span>
@@ -25,17 +33,6 @@
     </div>
 
     <main class="workspace">
-      <nav class="mode-rail" aria-label="Workspace mode">
-        <button id="mode-generate" class="mode-button active" type="button" aria-selected="true">
-          <span class="mode-key" aria-hidden="true">G</span>
-          <span>Generate</span>
-        </button>
-        <button id="mode-view" class="mode-button" type="button" aria-selected="false">
-          <span class="mode-key" aria-hidden="true">V</span>
-          <span>View</span>
-        </button>
-      </nav>
-
       <aside class="panel panel-left" aria-label="Workspace controls">
         <section id="generate-mode-panel" class="mode-panel">
           <div class="panel-heading">
@@ -53,17 +50,17 @@
             <button id="preview-mask-btn" class="link-btn" type="button" disabled>Preview mask</button>
           </div>
 
-          <div id="dropzone" class="dropzone" tabindex="0">
+          <div id="dropzone" class="dropzone" tabindex="0" role="button" aria-label="Choose an input image" aria-controls="file-input">
             <img id="input-preview" class="input-preview hidden" alt="Input image" />
             <img id="mask-preview" class="input-preview checkerboard hidden" alt="Background-removed model input" />
             <div id="dropzone-hint" class="dropzone-hint">
-              <div class="dropzone-mark" aria-hidden="true">+</div>
+              <div class="dropzone-mark" aria-hidden="true"><span class="button-icon icon-plus"></span></div>
               <div>Drop an image here</div>
               <div class="muted">or click to browse</div>
             </div>
             <input id="file-input" type="file" accept="image/*" hidden />
           </div>
-          <div id="mask-help" class="input-help muted">Preview the exact background-removed image used for reconstruction.</div>
+          <div id="mask-help" class="input-help muted">For stronger volume, use a three-quarter view with visible depth, clear lighting, and a neutral background. Preview the model input before generating.</div>
 
           <div class="controls">
             <label class="ctl">
@@ -101,7 +98,6 @@
                 <option value="8">8 seeds</option>
               </select>
             </label>
-            <div class="control-divider control-wide"><span>Mesh output</span></div>
             <label class="ctl">
               <span>Target faces</span>
               <select id="ctl-target-faces-mode" aria-describedby="ctl-target-faces-error">
@@ -114,6 +110,7 @@
               <input id="ctl-target-faces" type="number" min="10000" max="1000000" step="1" value="150000" />
             </label>
             <span id="ctl-target-faces-error" data-param-error="targetFaces" class="field-error control-wide" role="alert"></span>
+            <span id="ctl-target-faces-help" class="field-help control-wide" role="note"></span>
             <label class="ctl">
               <span>Textures</span>
               <select id="ctl-texture">
@@ -123,12 +120,13 @@
             </label>
             <label class="ctl">
               <span>Texture decode</span>
-              <select id="ctl-texture-resolution">
+              <select id="ctl-texture-resolution" aria-describedby="texture-resolution-help">
                 <option value="auto" selected>Auto</option>
                 <option value="512">512 px</option>
                 <option value="1024">1024 px</option>
               </select>
             </label>
+            <span id="texture-resolution-help" class="field-help control-wide" role="note">1024 px decode is available with 1024 geometry; 512 px works at every geometry resolution.</span>
             <label class="ctl">
               <span>Atlas size</span>
               <select id="ctl-atlas-size-mode" aria-describedby="ctl-atlas-size-error">
@@ -165,8 +163,8 @@
           <div id="generation-param-error" class="field-error" role="alert"></div>
 
           <div class="generate-actions">
-            <button id="generate-btn" class="primary" disabled>Generate 3D</button>
-            <button id="sweep-btn" class="tool-btn sweep-btn" disabled>Sweep at 512</button>
+            <button id="generate-btn" class="button button--primary" disabled>Generate 3D</button>
+            <button id="sweep-btn" class="button button--secondary sweep-btn" disabled>Sweep at 512</button>
           </div>
         </section>
 
@@ -176,6 +174,7 @@
               <h1>Inspect</h1>
               <p>Read the mesh and inspect its triangle topology.</p>
             </div>
+            <button id="viewer-reference-toggle" class="button button--secondary panel-heading-action hidden" type="button" aria-expanded="false" aria-controls="viewer-reference-popover">Source image</button>
           </div>
 
           <div id="inspect-empty" class="inspect-empty">
@@ -281,10 +280,10 @@
                 </select>
               </label>
               <div class="selection-actions">
-                <button id="selection-frame" class="tool-btn" type="button" disabled>Frame</button>
-                <button id="selection-isolate" class="tool-btn" type="button" disabled>Isolate</button>
-                <button id="selection-hide" class="tool-btn" type="button" disabled>Hide</button>
-                <button id="selection-show-all" class="tool-btn" type="button" disabled>Show all</button>
+                <button id="selection-frame" class="button button--secondary" type="button" disabled>Frame</button>
+                <button id="selection-isolate" class="button button--secondary" type="button" disabled>Isolate</button>
+                <button id="selection-hide" class="button button--secondary" type="button" disabled>Hide</button>
+                <button id="selection-show-all" class="button button--secondary" type="button" disabled>Show all</button>
               </div>
               <div id="selection-status" class="selection-status" role="status">Click the model or choose a mesh part.</div>
             </section>
@@ -299,7 +298,7 @@
               <p class="section-note">Static meshes only. Skinned meshes and animation clips remain read-only.</p>
               <div class="edit-toolbar">
                 <span id="edit-status" class="selection-status" role="status">Read-only model</span>
-                <button id="edit-start" class="tool-btn" type="button">Create edit copy</button>
+                <button id="edit-start" class="button button--secondary" type="button">Create edit copy</button>
               </div>
               <div id="edit-controls" class="hidden">
                 <div class="edit-group">
@@ -311,7 +310,7 @@
                     </select>
                   </label>
                   <div id="edit-component-status" class="selection-status" role="status">Create an edit copy to inspect components.</div>
-                  <button id="edit-delete-component" class="tool-btn danger-btn" type="button" disabled>Delete component</button>
+                  <button id="edit-delete-component" class="button button--danger" type="button" disabled>Delete component</button>
                 </div>
 
                 <div class="edit-group">
@@ -334,7 +333,7 @@
                     <label class="ctl"><span>Y</span><input id="edit-scale-y" type="number" step="0.001" min="0.001" aria-label="Scale Y" /></label>
                     <label class="ctl"><span>Z</span><input id="edit-scale-z" type="number" step="0.001" min="0.001" aria-label="Scale Z" /></label>
                   </div>
-                  <button id="edit-apply-transform" class="tool-btn" type="button" disabled>Apply transform</button>
+                  <button id="edit-apply-transform" class="button button--secondary" type="button" disabled>Apply transform</button>
                 </div>
 
                 <div class="edit-group">
@@ -342,24 +341,24 @@
                   <label class="ctl"><span>Base color</span><input id="edit-base-color" type="color" value="#ffffff" /></label>
                   <label class="ctl range-control"><span>Metalness <output id="edit-metalness-value">0.0</output></span><input id="edit-metalness" type="range" min="0" max="1" step="0.01" value="0" /></label>
                   <label class="ctl range-control"><span>Roughness <output id="edit-roughness-value">0.5</output></span><input id="edit-roughness" type="range" min="0" max="1" step="0.01" value="0.5" /></label>
-                  <button id="edit-apply-material" class="tool-btn" type="button" disabled>Apply material</button>
+                  <button id="edit-apply-material" class="button button--secondary" type="button" disabled>Apply material</button>
                 </div>
 
                 <div class="edit-group">
                   <h3>Mesh repair</h3>
                   <div class="selection-actions">
-                    <button id="edit-recompute-normals" class="tool-btn" type="button" disabled>Recompute normals</button>
-                    <button id="edit-reverse-winding" class="tool-btn" type="button" disabled>Reverse winding</button>
+                    <button id="edit-recompute-normals" class="button button--secondary" type="button" disabled>Recompute normals</button>
+                    <button id="edit-reverse-winding" class="button button--secondary" type="button" disabled>Reverse winding</button>
                   </div>
                 </div>
 
                 <div class="edit-group edit-history">
                   <h3>History and output</h3>
                   <div class="selection-actions">
-                    <button id="edit-undo" class="tool-btn" type="button" disabled>Undo</button>
-                    <button id="edit-redo" class="tool-btn" type="button" disabled>Redo</button>
-                    <button id="edit-export-glb" class="tool-btn" type="button" disabled>Export edited GLB</button>
-                    <button id="edit-save-derived" class="primary" type="button" disabled>Save as derived version</button>
+                    <button id="edit-undo" class="button button--secondary" type="button" disabled>Undo</button>
+                    <button id="edit-redo" class="button button--secondary" type="button" disabled>Redo</button>
+                    <button id="edit-export-glb" class="button button--secondary" type="button" disabled>Export edited GLB</button>
+                    <button id="edit-save-derived" class="button button--primary" type="button" disabled>Save as derived version</button>
                   </div>
                   <div id="edit-limitations" class="selection-status" role="status"></div>
                 </div>
@@ -371,6 +370,9 @@
 
       <section class="panel viewer-panel">
         <div id="viewer-mount" class="viewer-mount">
+          <div id="viewer-reference-popover" class="viewer-reference-popover hidden">
+            <img id="viewer-reference-image" alt="Source image used to generate the current model" />
+          </div>
           <div id="viewer-empty" class="viewer-empty">
             <span class="viewer-empty-mark" aria-hidden="true">3D</span>
             <strong>Your model will appear here</strong>
@@ -378,52 +380,81 @@
           </div>
           <div id="progress" class="progress viewer-progress hidden" role="status" aria-live="polite">
             <div class="progress-card">
-              <div class="progress-title">Generating 3D model</div>
-              <div class="bar" aria-hidden="true"><div class="bar-fill"></div></div>
-              <div class="progress-meta">
-                <div id="progress-stage" class="progress-stage">Starting</div>
-                <div id="progress-elapsed" class="progress-elapsed muted">0:00</div>
+              <div class="progress-head">
+                <div>
+                  <div id="progress-title" class="progress-title">Generating 3D model</div>
+                  <div id="progress-queue" class="progress-queue muted">1 running</div>
+                </div>
+                <div class="progress-head-actions">
+                  <div id="progress-elapsed" class="progress-elapsed muted">0:00</div>
+                  <button id="progress-collapse-btn" class="button button--icon button--sm progress-collapse" type="button" aria-label="Minimize job progress" aria-expanded="true" title="Minimize job progress">
+                    <span class="button-icon icon-minus" aria-hidden="true"></span>
+                  </button>
+                </div>
               </div>
-              <button id="cancel-btn" class="tool-btn progress-cancel" type="button">Cancel generation</button>
+              <div class="progress-details">
+                <div id="progress-bar" class="bar" role="progressbar" aria-label="Generation progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="2">
+                  <div id="progress-bar-fill" class="bar-fill"></div>
+                </div>
+                <div class="progress-meta">
+                  <div id="progress-stage" class="progress-stage">Starting</div>
+                </div>
+                <div class="progress-actions">
+                  <button id="cancel-btn" class="button button--secondary progress-cancel" type="button">Cancel current</button>
+                  <button id="clear-queue-btn" class="link-btn progress-clear" type="button">Clear queued</button>
+                </div>
+              </div>
             </div>
           </div>
         </div>
         <div class="viewer-toolbar">
-          <button id="reset-view" class="tool-btn" disabled>Reset view</button>
-          <button id="open-view" class="tool-btn" disabled>Inspect model</button>
-          <button id="save-glb" class="tool-btn" disabled>Save GLB…</button>
+          <button id="reset-view" class="button button--secondary" disabled>Reset view</button>
+          <button id="save-glb" class="button button--secondary" disabled>Save GLB…</button>
           <span id="viewer-caption" class="viewer-caption muted"></span>
         </div>
       </section>
+
+      <section class="asset-dock" aria-label="Generated assets">
+        <section id="candidate-wrap" class="candidate-wrap hidden">
+          <div class="gallery-head">
+            <div>
+              <span>Seed candidates</span>
+              <span id="candidate-summary" class="candidate-summary muted"></span>
+            </div>
+            <button id="clear-candidates" class="link-btn" type="button">Clear candidates</button>
+          </div>
+          <div id="candidate-gallery" class="candidate-gallery"></div>
+        </section>
+
+        <section class="gallery-wrap">
+          <div class="gallery-head">
+            <div class="gallery-title-group">
+              <span>Assets and versions</span>
+              <span id="gallery-summary" class="gallery-summary muted"></span>
+            </div>
+            <button id="clear-gallery" class="link-btn" type="button">Clear all</button>
+          </div>
+          <div id="gallery" class="gallery"></div>
+        </section>
+      </section>
     </main>
-
-    <section id="candidate-wrap" class="candidate-wrap hidden">
-      <div class="gallery-head">
-        <div>
-          <span>Seed candidates</span>
-          <span id="candidate-summary" class="candidate-summary muted"></span>
-        </div>
-        <button id="clear-candidates" class="link-btn" type="button">Clear candidates</button>
-      </div>
-      <div id="candidate-gallery" class="candidate-gallery"></div>
-    </section>
-
-    <section class="gallery-wrap">
-      <div class="gallery-head">
-        <div class="gallery-title-group">
-          <span>Assets and versions</span>
-          <span id="gallery-summary" class="gallery-summary muted"></span>
-        </div>
-        <button id="clear-gallery" class="link-btn">Clear all</button>
-      </div>
-      <div id="gallery" class="gallery"></div>
-    </section>
 
     <div id="settings-modal" class="modal hidden">
       <div class="modal-card">
         <div class="modal-head">
           <span>Settings</span>
-          <button id="settings-close" class="icon-btn" aria-label="Close settings">Close</button>
+          <button id="settings-close" class="button button--icon modal-close" type="button" aria-label="Close settings" title="Close settings">
+            <span class="button-icon icon-x" aria-hidden="true"></span>
+          </button>
+        </div>
+        <div class="settings-runtime" aria-label="Runtime status">
+          <span class="settings-runtime-label">Runtime</span>
+          <div class="status">
+            <span id="automation-badge" class="badge api-badge" title="Local automation API">API starting</span>
+            <span id="backend-badge" class="badge" title="Active backend">-</span>
+            <span id="server-dot" class="dot" title="Server status"></span>
+            <span id="server-label" class="server-label">connecting…</span>
+          </div>
         </div>
         <div id="settings-body" class="modal-body"></div>
       </div>

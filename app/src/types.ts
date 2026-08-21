@@ -184,6 +184,15 @@ export interface ModelMetrics {
   dimensions?: ModelDimensions;
 }
 
+/** A generated model has effectively collapsed into a two-dimensional plane. */
+export interface GenerationQualityWarning {
+  code: "collapsed-plane";
+  message: string;
+  thinRatio: number;
+  threshold: number;
+  dimensions: ModelDimensions;
+}
+
 /** The operation that produced a version of an asset. */
 export type VersionOperation =
   | "generated"
@@ -243,6 +252,7 @@ export interface GenRecord {
   label?: string;
   favorite?: boolean;
   metrics?: ModelMetrics | null;
+  qualityWarning?: GenerationQualityWarning;
 }
 
 /** A fully normalized record returned by the version-aware store APIs. */

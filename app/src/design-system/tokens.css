@@ -1,0 +1,169 @@
+:root {
+  color-scheme: dark;
+
+  /* Typography: Segoe UI for interface copy, Cascadia for technical values. */
+  --font-family-sans: "Segoe UI Variable", "Segoe UI", system-ui, -apple-system, sans-serif;
+  --font-family-mono: "Cascadia Mono", "SFMono-Regular", Consolas, monospace;
+  --font-sans: var(--font-family-sans);
+  --font-mono: var(--font-family-mono);
+  --font-size-body: 14px;
+  --font-size-title: 17px;
+  --font-size-label: 13px;
+  --font-size-caption: 11px;
+  --font-size-micro: 10px;
+  --font-size-10: var(--font-size-micro);
+  --font-size-11: var(--font-size-caption);
+  --font-size-12: 12px;
+  --font-size-13: var(--font-size-label);
+  --font-size-14: var(--font-size-body);
+  --font-size-17: var(--font-size-title);
+  --font-weight-regular: 400;
+  --font-weight-medium: 500;
+  --font-weight-semibold: 600;
+  --font-weight-heading: 650;
+  --line-height-body: 1.4;
+  --line-height-tight: 1.2;
+  --line-height-label: 1.35;
+  --line-height-mono: 1.25;
+
+  /* Primitive surfaces. Keep the palette near-black and neutral. */
+  --color-canvas: #0f1115;
+  --color-viewer: #0b0e13;
+  --color-surface-1: #171a1f;
+  --color-surface-2: #1e2229;
+  --color-surface-3: #272c35;
+  --color-surface-raised: #1b1f26;
+  --color-surface-inset: #0e1014;
+  --color-surface-overlay: rgb(24 27 33 / 0.96);
+  --color-surface-backdrop: rgb(0 0 0 / 0.55);
+  --color-surface-scrim: rgb(14 16 20 / 0.82);
+  --color-surface-scrim-strong: rgb(0 0 0 / 0.6);
+  --color-surface-scrim-control: rgb(0 0 0 / 0.55);
+
+  /* Primitive content colors. */
+  --color-text: #edf0f4;
+  --color-text-secondary: #a2a9b7;
+  --color-text-tertiary: #747d8d;
+  --color-text-inverse: #17130e;
+
+  /* Borders and focus. Outlines are component boundaries, not separators. */
+  --color-border-subtle: #252a32;
+  --color-border: #2b313a;
+  --color-border-strong: #3b4451;
+  --color-focus: #d2a552;
+
+  /* Brand and semantic colors. */
+  --color-accent: #d2a552;
+  --color-accent-hover: #e0b665;
+  --color-accent-pressed: #b88835;
+  --color-accent-surface: #33291a;
+  --color-success: #38c978;
+  --color-success-content: #b9f5ce;
+  --color-success-surface: #1b3425;
+  --color-success-border: #326746;
+  --color-danger: #e36559;
+  --color-danger-content: #f2aaa1;
+  --color-danger-surface: #35211f;
+  --color-danger-border: #75453e;
+  --color-warning: #e4ab48;
+  --color-warning-content: #f0d79a;
+  --color-warning-surface: #3a2f1a;
+  --color-warning-border: #574421;
+
+  /* Semantic surfaces. Components should consume these names. */
+  --surface-canvas: var(--color-canvas);
+  --surface-viewer: var(--color-viewer);
+  --surface-panel: var(--color-surface-1);
+  --surface-control: var(--color-surface-2);
+  --surface-control-hover: var(--color-surface-3);
+  --surface-raised: var(--color-surface-raised);
+  --surface-inset: var(--color-surface-inset);
+  --surface-overlay: var(--color-surface-overlay);
+  --surface-backdrop: var(--color-surface-backdrop);
+  --surface-scrim: var(--color-surface-scrim);
+  --surface-scrim-strong: var(--color-surface-scrim-strong);
+  --surface-scrim-control: var(--color-surface-scrim-control);
+  --surface-accent: var(--color-accent-surface);
+  --surface-success: var(--color-success-surface);
+  --surface-danger: var(--color-danger-surface);
+  --surface-warning: var(--color-warning-surface);
+
+  /* Semantic content. */
+  --content-primary: var(--color-text);
+  --content-secondary: var(--color-text-secondary);
+  --content-muted: var(--color-text-tertiary);
+  --content-inverse: var(--color-text-inverse);
+  --content-accent: var(--color-accent);
+  --content-success: var(--color-success-content);
+  --content-danger: var(--color-danger-content);
+  --content-warning: var(--color-warning-content);
+
+  /* Semantic borders and focus. */
+  --border-subtle: var(--color-border-subtle);
+  --border-default: var(--color-border);
+  --border-strong: var(--color-border-strong);
+  --border-focus: var(--color-focus);
+  --border-success: var(--color-success-border);
+  --border-danger: var(--color-danger-border);
+  --border-warning: var(--color-warning-border);
+
+  /* Status foregrounds for badges and live runtime state. */
+  --status-success: var(--color-success);
+  --status-danger: var(--color-danger);
+  --status-warning: var(--color-warning);
+
+  /* Spacing: 4 px base unit. */
+  --space-0: 0;
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 20px;
+  --space-6: 24px;
+  --space-xs: var(--space-1);
+  --space-sm: var(--space-2);
+  --space-md: var(--space-3);
+  --space-lg: var(--space-4);
+  --space-xl: var(--space-5);
+  --space-2xl: var(--space-6);
+
+  /* Shape: controls, cards, panels, and modals each have one role. */
+  --radius-sm: 5px;
+  --radius-md: 8px;
+  --radius-lg: 10px;
+  --radius-xl: 12px;
+  --radius-control: var(--radius-sm);
+  --radius-card: var(--radius-md);
+  --radius-panel: var(--radius-lg);
+  --radius-modal: var(--radius-xl);
+  --radius-pill: 999px;
+
+  /* Layout and elevation. */
+  --rail-width: 78px;
+  --controls-width: 320px;
+  --topbar-height: 52px;
+  --asset-dock-max-height: 30dvh;
+  --elevation-raised: 0 14px 36px rgb(0 0 0 / 0.32);
+  --elevation-modal: 0 24px 80px rgb(0 0 0 / 0.5);
+  --elevation-toast: 0 6px 20px rgb(0 0 0 / 0.4);
+  --shadow-raised: var(--elevation-raised);
+  --shadow-modal: var(--elevation-modal);
+  --duration-fast: 120ms;
+  --duration-normal: 180ms;
+  --ease-standard: cubic-bezier(0.2, 0, 0, 1);
+
+  /* Compatibility aliases for older feature slices. New CSS should use the
+     semantic names above. */
+  --bg: var(--surface-canvas);
+  --panel: var(--surface-panel);
+  --panel-2: var(--surface-control);
+  --panel-3: var(--surface-control-hover);
+  --border: var(--border-default);
+  --text: var(--content-primary);
+  --muted: var(--content-secondary);
+  --accent: var(--content-accent);
+  --accent-2: var(--color-accent-pressed);
+  --ok: var(--status-success);
+  --err: var(--status-danger);
+  --warn: var(--status-warning);
+}

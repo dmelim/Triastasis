@@ -2,6 +2,12 @@ import "./ui.css";
 import type { BufferGeometry, Mesh, Object3D } from "three";
 import { generate, health } from "./api";
 import { loadConfig } from "./config";
+import { createButton } from "./design-system/button";
+import {
+  detectPlaneCollapse,
+  inspectGeneratedGlb,
+  REFERENCE_GUIDANCE,
+} from "./generation-quality";
 import type { ComponentAnalysis, EditHistory } from "./editing";
 import { renderSettings } from "./settings";
 import type {
@@ -22,7 +28,19 @@ import {
   renameVersion,
   setVersionFavorite,
 } from "./store";
-import { automationInfo, isTauri, listen, previewAlpha, saveBytes, saveToOutputDir } from "./tauri";
+import {
+  automationInfo,
+  automationJobFiles,
+  automationJobs,
+  isTauri,
+  listen,
+  listenForNativeFileDrops,
+  previewAlpha,
+  readDroppedImage,
+  saveBytes,
+  saveToOutputDir,
+} from "./tauri";
+import type { AutomationJob } from "./tauri";
 import type { CameraPreset, CameraType, DisplayMode, TopologyDetail, Viewer, ViewerSelection, ViewerStats } from "./viewer";
 import {
   DEFAULT_PARAMS,
@@ -48,11 +66,17 @@ const dropHint = $("dropzone-hint");
 const generateBtn = $<HTMLButtonElement>("generate-btn");
 const sweepBtn = $<HTMLButtonElement>("sweep-btn");
 const progress = $("progress");
+const progressTitle = $("progress-title");
+const progressQueue = $("progress-queue");
 const progressStage = $("progress-stage");
 const progressElapsed = $("progress-elapsed");
+const progressBar = $("progress-bar");
+const progressBarFill = $("progress-bar-fill");
+const progressCard = progress.querySelector<HTMLElement>(".progress-card")!;
+const progressCollapseBtn = $<HTMLButtonElement>("progress-collapse-btn");
 const cancelBtn = $<HTMLButtonElement>("cancel-btn");
+const clearQueueBtn = $<HTMLButtonElement>("clear-queue-btn");
 const resetViewBtn = $<HTMLButtonElement>("reset-view");
-const openViewBtn = $<HTMLButtonElement>("open-view");
 const saveGlbBtn = $<HTMLButtonElement>("save-glb");
 const viewerCaption = $("viewer-caption");
 const viewerEmpty = $("viewer-empty");
@@ -64,7 +88,7 @@ const inspectEmpty = $("inspect-empty");
 const inspectContent = $("inspect-content");
 const gallerySummary = $("gallery-summary");
 const galleryEl = $("gallery");
-const clearGalleryBtn = $("clear-gallery");
+const clearGalleryBtn = $<HTMLButtonElement>("clear-gallery");
 const backendBadge = $("backend-badge");
 const automationBadge = $("automation-badge");
 const serverDot = $("server-dot");
@@ -75,6 +99,9 @@ const candidateGallery = $("candidate-gallery");
 const candidateSummary = $("candidate-summary");
 const clearCandidatesBtn = $<HTMLButtonElement>("clear-candidates");
 const viewerMount = $("viewer-mount");
+const viewerReferenceToggle = $<HTMLButtonElement>("viewer-reference-toggle");
+const viewerReferencePopover = $("viewer-reference-popover");
+const viewerReferenceImage = $<HTMLImageElement>("viewer-reference-image");
 const topologyDetailSelect = $<HTMLSelectElement>("view-topology-detail");
 const cameraTypeSelect = $<HTMLSelectElement>("view-camera-type");
 const meshPartSelect = $<HTMLSelectElement>("mesh-part-select");
@@ -108,6 +135,11 @@ const atlasSizeWrap = $("ctl-atlas-size-wrap");
 const remeshBandMode = $<HTMLSelectElement>("ctl-remesh-band-mode");
 const remeshBandInput = $<HTMLInputElement>("ctl-remesh-band");
 const remeshBandWrap = $("ctl-remesh-band-wrap");
+const resolutionSelect = $<HTMLSelectElement>("ctl-res");
+const textureSelect = $<HTMLSelectElement>("ctl-texture");
+const textureResolutionSelect = $<HTMLSelectElement>("ctl-texture-resolution");
+const targetFacesHelp = $("ctl-target-faces-help");
+const textureResolutionHelp = $("texture-resolution-help");
 
 // ---- state ----
 let viewer: Viewer | null = null;
@@ -168,8 +200,21 @@ let candidateUrls: string[] = [];
 let warnedEphemeral = false;
 let maskObjectUrl: string | null = null;
 let inputObjectUrl: string | null = null;
-let progressPrefix = "";
 let activeLabel = "";
+
+function updateViewerCaption(): void {
+  if (!activeLabel) {
+    viewerCaption.textContent = "";
+    return;
+  }
+  const parts = [activeLabel];
+  if (activeParams) {
+    parts.push(String(activeParams.resolution));
+    parts.push(`seed ${activeParams.seed}`);
+  }
+  if (currentGlb) parts.push(`${(currentGlb.size / 1e6).toFixed(1)} MB`);
+  viewerCaption.textContent = parts.join(" | ");
+}
 
 type WorkspaceMode = "generate" | "view";
 
@@ -182,8 +227,44 @@ interface CandidateSlot {
 }
 let candidates: CandidateSlot[] = [];
 
+interface SweepMembership {
+  id: string;
+  index: number;
+  count: number;
+}
+
+interface GenerationJob {
+  image: Blob;
+  name: string;
+  params: GenParams;
+  label: string;
+  autoOpen: boolean;
+  sweep?: SweepMembership;
+  candidate?: CandidateSlot;
+}
+
+let generationQueue: GenerationJob[] = [];
+let currentJob: GenerationJob | null = null;
+let progressStageLabel = "Preparing job";
+let progressStageStart = 2;
+let progressStageEnd = 8;
+let progressHasServerStart = false;
+
 // ---- workspace modes and viewer inspector ----
+let workspaceMode: WorkspaceMode = "generate";
+
+function syncViewerReference(): void {
+  const available = workspaceMode === "view" && Boolean(currentGlb && inputObjectUrl);
+  viewerReferenceToggle.classList.toggle("hidden", !available);
+  if (available && inputObjectUrl) viewerReferenceImage.src = inputObjectUrl;
+  if (!available) {
+    viewerReferencePopover.classList.add("hidden");
+    viewerReferenceToggle.setAttribute("aria-expanded", "false");
+  }
+}
+
 function setWorkspaceMode(mode: WorkspaceMode): void {
+  workspaceMode = mode;
   const generatingMode = mode === "generate";
   generateModeBtn.classList.toggle("active", generatingMode);
   viewModeBtn.classList.toggle("active", !generatingMode);
@@ -191,6 +272,7 @@ function setWorkspaceMode(mode: WorkspaceMode): void {
   viewModeBtn.setAttribute("aria-selected", String(!generatingMode));
   generateModePanel.classList.toggle("hidden", !generatingMode);
   viewModePanel.classList.toggle("hidden", generatingMode);
+  syncViewerReference();
 }
 
 function compactNumber(value: number): string {
@@ -289,7 +371,24 @@ function renderViewerStats(stats: ViewerStats | null, params: GenParams | null =
 }
 
 function updateCustomParamVisibility(): void {
-  targetFacesWrap.classList.toggle("hidden", targetFacesMode.value !== "custom");
+  const textureEnabled = textureSelect.value === "on";
+  if (!textureEnabled) targetFacesMode.value = "auto";
+  targetFacesMode.disabled = !textureEnabled;
+  targetFacesInput.disabled = !textureEnabled || targetFacesMode.value !== "custom";
+  targetFacesWrap.classList.toggle("hidden", !textureEnabled || targetFacesMode.value !== "custom");
+  targetFacesHelp.textContent = textureEnabled
+    ? "Custom target faces is applied by the current textured QEM path."
+    : "Geometry-only output currently uses the backend's automatic face target; custom target faces is unavailable.";
+
+  const supportsExplicit1024 = resolutionSelect.value === "1024";
+  const texture1024Option = textureResolutionSelect.querySelector<HTMLOptionElement>('option[value="1024"]');
+  if (texture1024Option) texture1024Option.disabled = !supportsExplicit1024;
+  if (!supportsExplicit1024 && textureResolutionSelect.value === "1024") {
+    textureResolutionSelect.value = "auto";
+  }
+  textureResolutionHelp.textContent = supportsExplicit1024
+    ? "1024 px decode is available with 1024 geometry; 512 px works at every geometry resolution."
+    : "This geometry resolution supports Auto or 512 px texture decode; 1024 px is limited to 1024 geometry.";
   atlasSizeWrap.classList.toggle("hidden", atlasSizeMode.value !== "custom");
   remeshBandWrap.classList.toggle("hidden", remeshBandMode.value !== "custom");
 }
@@ -335,7 +434,15 @@ function renderMeshParts(instance: Viewer): void {
   renderEditorActions();
 }
 
-function captureEditorState(root: Object3D, operations: Array<Record<string, unknown>> = []): EditorState {
+async function withEditorOriginalMaterials<T>(
+  root: Object3D,
+  operation: (root: Object3D) => Promise<T> | T,
+): Promise<T> {
+  if (viewer?.getLoadedRoot() === root) return viewer.withOriginalMaterials(operation);
+  return operation(root);
+}
+
+async function captureEditorState(root: Object3D, operations: Array<Record<string, unknown>> = []): Promise<EditorState> {
   if (!sceneEditsModule) throw new Error("Editing helpers are not loaded");
   const geometryByUuid = new Map<string, BufferGeometry>();
   const transforms = new Map<string, TransformSnapshot>();
@@ -346,10 +453,14 @@ function captureEditorState(root: Object3D, operations: Array<Record<string, unk
       geometryByUuid.set(object.uuid, candidate.geometry.clone());
     }
   });
+  const materials = await withEditorOriginalMaterials(
+    root,
+    (originalRoot) => sceneEditsModule!.captureMaterialSnapshots(originalRoot),
+  );
   return {
     geometryByUuid,
     transforms,
-    materials: sceneEditsModule.captureMaterialSnapshots(root),
+    materials,
     operations: operations.map((operation) => ({ ...operation })),
   };
 }
@@ -359,19 +470,21 @@ function disposeEditorState(state: EditorState): void {
   for (const geometry of geometries) geometry.dispose();
 }
 
-function applyEditorState(root: Object3D, state: EditorState): void {
+async function applyEditorState(root: Object3D, state: EditorState): Promise<void> {
   if (!sceneEditsModule) throw new Error("Editing helpers are not loaded");
-  const objects = new Map<string, Object3D>();
-  root.traverse((object) => objects.set(object.uuid, object));
-  for (const [uuid, geometry] of state.geometryByUuid) {
-    const object = objects.get(uuid) as (Mesh & { geometry?: BufferGeometry }) | undefined;
-    if (object?.geometry) object.geometry = geometry;
-  }
-  for (const snapshot of state.transforms.values()) {
-    const object = objects.get(snapshot.objectUuid);
-    if (object) sceneEditsModule.restoreTransformSnapshot(object, snapshot);
-  }
-  sceneEditsModule.restoreMaterialSnapshots(root, state.materials);
+  await withEditorOriginalMaterials(root, (originalRoot) => {
+    const objects = new Map<string, Object3D>();
+    originalRoot.traverse((object) => objects.set(object.uuid, object));
+    for (const [uuid, geometry] of state.geometryByUuid) {
+      const object = objects.get(uuid) as (Mesh & { geometry?: BufferGeometry }) | undefined;
+      if (object?.geometry) object.geometry = geometry;
+    }
+    for (const snapshot of state.transforms.values()) {
+      const object = objects.get(snapshot.objectUuid);
+      if (object) sceneEditsModule!.restoreTransformSnapshot(object, snapshot);
+    }
+    sceneEditsModule!.restoreMaterialSnapshots(originalRoot, state.materials);
+  });
 }
 
 function currentEditableMesh(): Mesh | null {
@@ -416,7 +529,10 @@ function colorHex(value: readonly number[] | undefined): string {
   return `#${value.map((channel) => Math.round(Math.max(0, Math.min(1, channel)) * 255).toString(16).padStart(2, "0")).join("")}`;
 }
 
-function renderMaterialFields(mesh: Mesh | null): void {
+let materialFieldsRenderToken = 0;
+
+async function renderMaterialFields(mesh: Mesh | null): Promise<void> {
+  const renderToken = ++materialFieldsRenderToken;
   const color = $<HTMLInputElement>("edit-base-color");
   const metalness = $<HTMLInputElement>("edit-metalness");
   const roughness = $<HTMLInputElement>("edit-roughness");
@@ -425,9 +541,14 @@ function renderMaterialFields(mesh: Mesh | null): void {
     metalness.value = "0";
     roughness.value = "0.5";
   } else {
+    const root = viewer?.getLoadedRoot() ?? mesh;
     const snapshots = sceneEditsModule
-      ? sceneEditsModule.captureMaterialSnapshots(mesh).filter((snapshot) => snapshot.objectUuid === mesh.uuid)
+      ? await withEditorOriginalMaterials(
+        root,
+        () => sceneEditsModule!.captureMaterialSnapshots(mesh).filter((snapshot) => snapshot.objectUuid === mesh.uuid),
+      )
       : [];
+    if (renderToken !== materialFieldsRenderToken || currentEditableMesh() !== mesh) return;
     const snapshot = snapshots[0];
     color.value = colorHex(snapshot?.baseColor);
     metalness.value = String(snapshot?.metalness ?? 0);
@@ -510,7 +631,7 @@ function renderEditorActions(): void {
   editExportBtn.disabled = !session || hasAnimationClips;
   editSaveDerivedBtn.disabled = !session || hasAnimationClips || !session.history.dirty || !activeId;
   renderTransformFields(mesh);
-  renderMaterialFields(mesh);
+  void renderMaterialFields(mesh).catch(() => undefined);
 }
 
 function renderSelection(selection: ViewerSelection | null): void {
@@ -537,6 +658,16 @@ function disposeEditorSession(): void {
   renderEditorActions();
 }
 
+function editHistoryLimit(stats: ViewerStats): number {
+  // Each snapshot owns a full geometry clone. Keep ordinary models pleasant
+  // to undo while putting a hard cap on retained GPU memory for dense assets.
+  const complexity = Math.max(stats.triangles, stats.renderVertices * 0.6);
+  if (complexity >= 2_000_000) return 3;
+  if (complexity >= 1_000_000) return 5;
+  if (complexity >= 500_000) return 8;
+  return 12;
+}
+
 async function startEditing(): Promise<EditorSession | null> {
   if (editorSession) return editorSession;
   const instance = await getViewer();
@@ -553,13 +684,14 @@ async function startEditing(): Promise<EditorSession | null> {
   let scene: EditableScene | null = null;
   try {
     const [editing, sceneEdits] = await getEditingModules();
-    scene = sceneEdits.cloneEditableScene(sourceRoot);
+    scene = await instance.withOriginalMaterials((root) => sceneEdits.cloneEditableScene(root));
     const stats = instance.loadRoot(scene.root, currentGlb?.size ?? activeStats?.fileSize ?? 0, activeStats?.animations ?? 0);
-    const initial = captureEditorState(scene.root);
+    const initial = await captureEditorState(scene.root);
+    const maxHistoryEntries = editHistoryLimit(stats);
     editorSession = {
       scene,
       history: new editing.EditHistory(initial, {
-        maxEntries: 12,
+        maxEntries: maxHistoryEntries,
         disposeSnapshot: disposeEditorState,
       }),
     };
@@ -569,7 +701,9 @@ async function startEditing(): Promise<EditorSession | null> {
     renderViewerStats(stats, activeParams);
     renderMeshParts(instance);
     renderSelection(instance.getSelection());
-    setEditNotice("Edits are held in memory until you export or save a derived version.");
+    setEditNotice(
+      `Edits are held in memory until you export or save a derived version. Undo keeps up to ${maxHistoryEntries} snapshots for this model.`,
+    );
     toast("Editable copy ready", "ok");
     return editorSession;
   } catch (error) {
@@ -596,17 +730,21 @@ function refreshEditorView(): void {
   renderEditorActions();
 }
 
-function commitEditorMutation(
+async function commitEditorMutation(
   label: string,
   operation: Record<string, unknown>,
   transientGeometries: BufferGeometry[] = [],
-): void {
+): Promise<void> {
   const session = editorSession;
   if (!session) return;
   const root = session.scene.root;
-  const next = captureEditorState(root, [...session.history.current.operations, operation]);
+  const next = await captureEditorState(root, [...session.history.current.operations, operation]);
+  if (editorSession !== session) {
+    disposeEditorState(next);
+    return;
+  }
   session.history.execute({ label, apply: () => next });
-  applyEditorState(root, next);
+  await applyEditorState(root, next);
   for (const geometry of transientGeometries) geometry.dispose();
   refreshEditorView();
 }
@@ -638,7 +776,7 @@ async function applyTransformEdit(): Promise<void> {
       setEditNotice("The transform values are unchanged.");
       return;
     }
-    commitEditorMutation("Apply transform", {
+    await commitEditorMutation("Apply transform", {
       kind: "transform",
       mesh: mesh.name || mesh.uuid,
       position,
@@ -659,16 +797,17 @@ async function applyMaterialEditToSelection(): Promise<void> {
   const roughness = Number($<HTMLInputElement>("edit-roughness").value);
   try {
     if (!sceneEditsModule) throw new Error("Editing helpers are not loaded");
-    const result = sceneEditsModule.applyMaterialEdit(mesh, {
+    const root = viewer?.getLoadedRoot() ?? mesh;
+    const result = await withEditorOriginalMaterials(root, () => sceneEditsModule!.applyMaterialEdit(mesh, {
       baseColor: $<HTMLInputElement>("edit-base-color").value,
       metalness,
       roughness,
-    });
+    }));
     if (!result.changed) {
       setEditNotice(result.limitations.join(" ") || "The material values are unchanged.");
       return;
     }
-    commitEditorMutation("Apply material", {
+    await commitEditorMutation("Apply material", {
       kind: "material",
       mesh: mesh.name || mesh.uuid,
       baseColor: $<HTMLInputElement>("edit-base-color").value,
@@ -702,7 +841,7 @@ async function deleteSelectedComponent(): Promise<void> {
     return;
   }
   selectedComponentId = null;
-  commitEditorMutation("Delete connected component", {
+  await commitEditorMutation("Delete connected component", {
     kind: "delete-component",
     mesh: mesh.name || mesh.uuid,
     componentId,
@@ -725,7 +864,7 @@ async function repairSelectedNormals(): Promise<void> {
     result.geometry.dispose();
     return;
   }
-  commitEditorMutation("Recompute normals", { kind: "recompute-normals", mesh: mesh.name || mesh.uuid }, [result.geometry]);
+  await commitEditorMutation("Recompute normals", { kind: "recompute-normals", mesh: mesh.name || mesh.uuid }, [result.geometry]);
   setEditNotice(result.limitations.join(" "));
 }
 
@@ -744,15 +883,15 @@ async function reverseSelectedWinding(): Promise<void> {
     result.geometry.dispose();
     return;
   }
-  commitEditorMutation("Reverse triangle winding", { kind: "reverse-winding", mesh: mesh.name || mesh.uuid }, [result.geometry]);
+  await commitEditorMutation("Reverse triangle winding", { kind: "reverse-winding", mesh: mesh.name || mesh.uuid }, [result.geometry]);
   setEditNotice(result.limitations.join(" "));
 }
 
-function applyEditorHistory(direction: "undo" | "redo"): void {
+async function applyEditorHistory(direction: "undo" | "redo"): Promise<void> {
   const session = editorSession;
   if (!session) return;
   const state = direction === "undo" ? session.history.undo() : session.history.redo();
-  applyEditorState(session.scene.root, state);
+  await applyEditorState(session.scene.root, state);
   refreshEditorView();
   setEditNotice(direction === "undo" ? "Undid the last edit." : "Redid the last edit.");
 }
@@ -763,7 +902,11 @@ async function exportEditedBlob(): Promise<Blob> {
     throw new Error("Edited export is unavailable while animation clips are present");
   }
   const [, , exporter] = await getEditingModules();
-  return exporter.exportGlb(editorSession.scene.root, { onlyVisible: false });
+  const root = editorSession.scene.root;
+  if (viewer?.getLoadedRoot() === root) {
+    return viewer.withOriginalMaterials((sourceRoot) => exporter.exportGlb(sourceRoot, { onlyVisible: false }));
+  }
+  return exporter.exportGlb(root, { onlyVisible: false });
 }
 
 async function exportEditedModel(): Promise<void> {
@@ -807,7 +950,7 @@ async function saveEditedDerivedVersion(): Promise<void> {
       renderViewerStats(refreshedStats, activeParams);
     }
     session.history.markClean();
-    viewerCaption.textContent = `${derived.label} | ${activeParams?.resolution ?? "model"}`;
+    updateViewerCaption();
     await refreshGallery();
     renderEditorActions();
     toast("Derived version saved", "ok");
@@ -818,7 +961,6 @@ async function saveEditedDerivedVersion(): Promise<void> {
 
 generateModeBtn.addEventListener("click", () => setWorkspaceMode("generate"));
 viewModeBtn.addEventListener("click", () => setWorkspaceMode("view"));
-openViewBtn.addEventListener("click", () => setWorkspaceMode("view"));
 
 document.querySelectorAll<HTMLButtonElement>("[data-display-mode]").forEach((button) => {
   button.addEventListener("click", () => {
@@ -876,8 +1018,8 @@ editApplyMaterialBtn.addEventListener("click", () => { void applyMaterialEditToS
 editDeleteComponentBtn.addEventListener("click", () => { void deleteSelectedComponent(); });
 editRecomputeNormalsBtn.addEventListener("click", () => { void repairSelectedNormals(); });
 editReverseWindingBtn.addEventListener("click", () => { void reverseSelectedWinding(); });
-editUndoBtn.addEventListener("click", () => applyEditorHistory("undo"));
-editRedoBtn.addEventListener("click", () => applyEditorHistory("redo"));
+editUndoBtn.addEventListener("click", () => { void applyEditorHistory("undo"); });
+editRedoBtn.addEventListener("click", () => { void applyEditorHistory("redo"); });
 editExportBtn.addEventListener("click", () => { void exportEditedModel(); });
 editSaveDerivedBtn.addEventListener("click", () => { void saveEditedDerivedVersion(); });
 $<HTMLInputElement>("edit-metalness").addEventListener("input", (event) => {
@@ -903,7 +1045,7 @@ viewerMount.addEventListener("pointerup", (event) => {
   }
 });
 
-for (const control of [targetFacesMode, atlasSizeMode, remeshBandMode]) {
+for (const control of [targetFacesMode, atlasSizeMode, remeshBandMode, textureSelect, resolutionSelect, textureResolutionSelect]) {
   control.addEventListener("change", updateCustomParamVisibility);
 }
 updateCustomParamVisibility();
@@ -976,14 +1118,17 @@ function setInputPreviewBlob(blob: Blob): void {
   if (inputObjectUrl) URL.revokeObjectURL(inputObjectUrl);
   inputObjectUrl = URL.createObjectURL(blob);
   inputPreview.src = inputObjectUrl;
+  syncViewerReference();
 }
 
 function clearInputPreview(): void {
   if (inputObjectUrl) URL.revokeObjectURL(inputObjectUrl);
   inputObjectUrl = null;
   inputPreview.removeAttribute("src");
+  viewerReferenceImage.removeAttribute("src");
   inputPreview.classList.add("hidden");
   dropHint.classList.remove("hidden");
+  syncViewerReference();
 }
 
 function clearCurrentModelState(): void {
@@ -1026,7 +1171,12 @@ function clearMaskPreview(): void {
   if (maskObjectUrl) URL.revokeObjectURL(maskObjectUrl);
   maskObjectUrl = null;
   maskPreview.removeAttribute("src");
+  maskPreview.classList.add("hidden");
   maskTab.disabled = true;
+  sourceTab.classList.add("active");
+  maskTab.classList.remove("active");
+  sourceTab.setAttribute("aria-selected", "true");
+  maskTab.setAttribute("aria-selected", "false");
   previewMaskBtn.disabled = !inputImage || !isTauri();
   previewMaskBtn.textContent = "Preview mask";
   maskHelp.textContent = isTauri()
@@ -1068,7 +1218,11 @@ previewMaskBtn.addEventListener("click", async () => {
 
 dropzone.addEventListener("click", () => fileInput.click());
 dropzone.addEventListener("keydown", (e) => {
-  if ((e as KeyboardEvent).key === "Enter") fileInput.click();
+  const event = e as KeyboardEvent;
+  if (event.key === "Enter" || event.key === " ") {
+    event.preventDefault();
+    fileInput.click();
+  }
 });
 fileInput.addEventListener("change", () => {
   const f = fileInput.files?.[0];
@@ -1090,6 +1244,22 @@ dropzone.addEventListener("drop", (e) => {
   const f = (e as DragEvent).dataTransfer?.files?.[0];
   if (f && f.type.startsWith("image/")) setInput(f, f.name);
 });
+void listenForNativeFileDrops(async (event) => {
+  if (event.type === "enter" || event.type === "over") {
+    dropzone.classList.add("drag");
+    return;
+  }
+  dropzone.classList.remove("drag");
+  if (event.type !== "drop" || !event.paths.length) return;
+  try {
+    const image = await readDroppedImage(event.paths[0]);
+    setInput(image.blob, image.name);
+  } catch (error) {
+    toast((error as Error).message || "Could not open the dropped image", "err");
+  }
+}).catch((error) => {
+  console.warn("Could not subscribe to native file drops", error);
+});
 window.addEventListener("paste", async (e: ClipboardEvent) => {
   for (const item of e.clipboardData?.items ?? []) {
     const image = item.type.startsWith("image/") && item.getAsFile();
@@ -1107,6 +1277,31 @@ window.addEventListener("paste", async (e: ClipboardEvent) => {
   }
 });
 
+function isEditableShortcutTarget(target: EventTarget | null): boolean {
+  return target instanceof HTMLElement && (
+    target.isContentEditable ||
+    target.matches("input, textarea, select, button, [contenteditable='true']")
+  );
+}
+
+window.addEventListener("keydown", (event) => {
+  if (
+    event.defaultPrevented ||
+    event.ctrlKey ||
+    event.metaKey ||
+    event.altKey ||
+    event.shiftKey ||
+    isEditableShortcutTarget(event.target)
+  ) return;
+  if (event.key.toLowerCase() === "g") {
+    event.preventDefault();
+    setWorkspaceMode("generate");
+  } else if (event.key.toLowerCase() === "v") {
+    event.preventDefault();
+    setWorkspaceMode("view");
+  }
+});
+
 // ---- generate ----
 function fmtElapsed(ms: number): string {
   const s = Math.floor(ms / 1000);
@@ -1114,52 +1309,122 @@ function fmtElapsed(ms: number): string {
 }
 
 function updateGenerateEnabled(): void {
-  const enabled = Boolean(serverOnline && inputImage && !generating);
+  const enabled = Boolean(serverOnline && inputImage);
   generateBtn.disabled = !enabled;
   sweepBtn.disabled = !enabled;
   previewMaskBtn.disabled = !inputImage || generating || !isTauri();
+  clearGalleryBtn.disabled = generating;
+  clearCandidatesBtn.disabled = generating;
+  generateBtn.textContent = generating || generationQueue.length ? "Add to queue" : "Generate 3D";
+  clearQueueBtn.disabled = generationQueue.length === 0;
 }
 
-function startRun(prefix = ""): void {
-  generating = true;
-  progressPrefix = prefix;
+function setProgress(percent: number, label: string): void {
+  const value = Math.max(0, Math.min(100, Math.round(percent)));
+  progressStage.textContent = label;
+  progressBarFill.style.width = `${value}%`;
+  progressBar.setAttribute("aria-valuenow", String(value));
+}
+
+function setProgressStage(label: string, start: number, end: number): void {
+  progressStageLabel = label;
+  progressStageStart = start;
+  progressStageEnd = end;
+  setProgress(start, label);
+}
+
+function updateProgressFromServerLog(line: string): void {
+  const text = line.replace(/\x1b\[[0-9;]*m/g, "").trim();
+  if (/^\[trellis-server\]\s+generate:/i.test(text)) {
+    progressHasServerStart = true;
+    setProgressStage("Preparing the job", 2, 5);
+    return;
+  }
+  if (!progressHasServerStart) return;
+  const stageMatch = text.match(/^\[(\d+)\/(\d+)\]\s*(.*)$/);
+  if (stageMatch) {
+    const stage = Number(stageMatch[1]);
+    const stages: Record<number, [string, number, number]> = {
+      1: ["Preparing the image", 5, 14],
+      2: ["Understanding the image", 14, 25],
+      3: ["Building the coarse shape", 25, 40],
+      4: ["Refining the 3D structure", 40, 63],
+      5: ["Building the mesh", 63, 75],
+      6: ["Generating materials", 75, 92],
+      7: ["Packing the 3D model", 92, 98],
+    };
+    const mapped = stages[stage];
+    if (mapped) setProgressStage(...mapped);
+    return;
+  }
+
+  const flowMatch = text.match(/\[flow\]\s+\[[^\]]*\]\s*(\d+)\/(\d+)/);
+  if (flowMatch) {
+    const done = Number(flowMatch[1]);
+    const total = Math.max(1, Number(flowMatch[2]));
+    const percent = progressStageStart + (progressStageEnd - progressStageStart) * (done / total);
+    const etaMatch = text.match(/~\d+s left/);
+    const eta = etaMatch ? ` · ${etaMatch[0]}` : "";
+    setProgress(percent, `${progressStageLabel} · Step ${done} of ${total}${eta}`);
+    return;
+  }
+
+  if (/^done in\s/i.test(text)) setProgress(100, "Model ready");
+}
+
+function updateQueueStatus(): void {
+  const queued = generationQueue.length;
+  progressQueue.textContent = queued
+    ? `1 running · ${queued} queued`
+    : "1 running";
+  clearQueueBtn.disabled = queued === 0;
   updateGenerateEnabled();
+}
+
+function startRun(job: GenerationJob): void {
+  generating = true;
+  progressHasServerStart = !isTauri();
+  progressTitle.textContent = job.label;
+  viewerReferencePopover.classList.add("hidden");
+  viewerReferenceToggle.setAttribute("aria-expanded", "false");
   progress.classList.remove("hidden");
-  progressStage.textContent = prefix ? `${prefix}: starting` : "starting";
+  setProgressStage("Preparing the job", 2, 5);
   const started = Date.now();
   progressElapsed.textContent = "0:00";
   elapsedTimer = window.setInterval(() => {
     progressElapsed.textContent = fmtElapsed(Date.now() - started);
   }, 1000);
   abort = new AbortController();
+  updateQueueStatus();
 }
 
 function finishRun(): void {
   generating = false;
-  progressPrefix = "";
   if (elapsedTimer) window.clearInterval(elapsedTimer);
   elapsedTimer = null;
-  progress.classList.add("hidden");
-  updateGenerateEnabled();
+  if (!generationQueue.length) progress.classList.add("hidden");
 }
 
-interface SweepMembership {
-  id: string;
-  index: number;
-  count: number;
+function queueJob(job: GenerationJob): void {
+  const waiting = Boolean(currentJob || generationQueue.length);
+  generationQueue.push(job);
+  updateQueueStatus();
+  if (waiting) toast(`${job.label} added to the queue`, "ok");
+  void runGenerationQueue();
 }
 
 async function generateRecord(
   params: GenParams,
+  sourceImage: Blob,
+  sourceName: string,
+  signal: AbortSignal,
+  autoOpen: boolean,
   announce = true,
   sweep?: SweepMembership,
 ): Promise<VersionRecord> {
-  if (!inputImage) throw new Error("choose an input image first");
   const normalizedParams = normalizeGenParams(params);
-  const sourceImage = inputImage;
-  const sourceName = inputName;
-  const { glb } = await generate(sourceImage, normalizedParams, abort?.signal);
-  currentGlb = glb;
+  const { glb } = await generate(sourceImage, normalizedParams, signal);
+  const inspection = await inspectGeneratedGlb(glb).catch(() => ({ dimensions: null, warning: null }));
 
   const recordId = newId();
   const createdAt = Date.now();
@@ -1182,7 +1447,8 @@ async function generateRecord(
     createdAt,
     label: sourceName,
     favorite: false,
-    metrics: null,
+    metrics: { fileSize: glb.size, ...(inspection.dimensions ? { dimensions: inspection.dimensions } : {}) },
+    qualityWarning: inspection.warning ?? undefined,
   };
 
   let savedPath: string | null = null;
@@ -1196,7 +1462,13 @@ async function generateRecord(
       toast(`Auto-save to output folder failed: ${(e as Error).message}`, "err");
     }
   }
-  if (announce) toast(savedPath ? `Saved to ${savedPath}` : "Generation complete", "ok");
+  if (announce) {
+    if (rec.qualityWarning) {
+      toast(`Collapsed into a plane. ${REFERENCE_GUIDANCE} The GLB was still saved.`, "err");
+    } else {
+      toast(savedPath ? `Saved to ${savedPath}` : "Generation complete", "ok");
+    }
+  }
 
   await put(rec);
   if (isEphemeral() && !warnedEphemeral) {
@@ -1206,23 +1478,23 @@ async function generateRecord(
       "err",
     );
   }
-  activeId = rec.id;
-  activeParams = normalizedParams;
-  activeLabel = rec.label;
-  setViewerTools(true);
-  viewerCaption.textContent = `${normalizedParams.resolution} | seed ${normalizedParams.seed} | ${(glb.size / 1e6).toFixed(1)} MB`;
   await refreshGallery();
 
-  try {
+  if (autoOpen && !activeId && !currentGlb) try {
     const instance = await getViewer();
     disposeEditorSession();
     const stats = await instance.load(glb);
     rec.metrics = statsToMetrics(stats);
+    currentGlb = glb;
+    activeId = rec.id;
     activeParams = normalizedParams;
+    activeLabel = rec.label;
+    setViewerTools(true);
+    updateViewerCaption();
     renderViewerStats(stats, normalizedParams);
     renderMeshParts(instance);
     await put(rec);
-    if (announce) setWorkspaceMode("view");
+    setWorkspaceMode("view");
     const thumb = await instance.thumbnail();
     if (thumb) {
       rec.thumb = thumb;
@@ -1235,8 +1507,73 @@ async function generateRecord(
   return rec;
 }
 
-async function doGenerate(): Promise<void> {
-  if (!inputImage || generating) return;
+const announcedSweeps = new Set<string>();
+const sweepCandidates = new Map<string, CandidateSlot[]>();
+
+function announceSweepWhenComplete(sweepId: string): void {
+  if (announcedSweeps.has(sweepId)) return;
+  const slots = sweepCandidates.get(sweepId);
+  if (!slots || slots.some((slot) => slot.status === "queued" || slot.status === "generating")) return;
+  announcedSweeps.add(sweepId);
+  sweepCandidates.delete(sweepId);
+  const ready = slots.filter((slot) => slot.status === "ready").length;
+  const collapsed = slots.filter((slot) => slot.record?.qualityWarning).length;
+  toast(
+    collapsed
+      ? `Seed sweep complete: ${ready}/${slots.length} candidates; ${collapsed} collapsed into a plane. ${REFERENCE_GUIDANCE}`
+      : `Seed sweep complete: ${ready}/${slots.length} candidates`,
+    ready && !collapsed ? "ok" : "err",
+  );
+}
+
+async function runGenerationQueue(): Promise<void> {
+  if (currentJob) return;
+  const job = generationQueue.shift();
+  if (!job) {
+    progress.classList.add("hidden");
+    updateGenerateEnabled();
+    return;
+  }
+  currentJob = job;
+  if (job.candidate) {
+    job.candidate.status = "generating";
+    renderCandidates();
+  }
+  startRun(job);
+  try {
+    const rec = await generateRecord(
+      job.params,
+      job.image,
+      job.name,
+      abort!.signal,
+      job.autoOpen,
+      !job.sweep,
+      job.sweep,
+    );
+    if (job.candidate) {
+      job.candidate.record = rec;
+      job.candidate.status = "ready";
+    }
+  } catch (error) {
+    const cancelled = Boolean(abort?.signal.aborted);
+    if (job.candidate) {
+      job.candidate.status = cancelled ? "cancelled" : "failed";
+      job.candidate.error = cancelled ? undefined : (error as Error).message || "generation failed";
+    }
+    toast(cancelled ? `${job.label} cancelled` : (error as Error).message || "generation failed", cancelled ? "" : "err");
+  } finally {
+    finishRun();
+    currentJob = null;
+    abort = null;
+    renderCandidates();
+    if (job.sweep) announceSweepWhenComplete(job.sweep.id);
+    updateQueueStatus();
+    void runGenerationQueue();
+  }
+}
+
+function doGenerate(): void {
+  if (!inputImage) return;
   let params: GenParams;
   try {
     params = readParams();
@@ -1245,22 +1582,43 @@ async function doGenerate(): Promise<void> {
     showParamError(error);
     return;
   }
-  startRun();
-  try {
-    await generateRecord(params);
-  } catch (e) {
-    if (abort?.signal.aborted) toast("Generation cancelled");
-    else toast((e as Error).message || "generation failed", "err");
-  } finally {
-    finishRun();
-  }
+  const noModelYet = !activeId && !currentGlb && !currentJob && generationQueue.length === 0;
+  queueJob({
+    image: inputImage,
+    name: inputName,
+    params,
+    label: `${inputName.replace(/\.[^.]+$/, "") || "Model"} · seed ${params.seed}`,
+    autoOpen: noModelYet,
+  });
 }
 
 generateBtn.addEventListener("click", doGenerate);
+progressCollapseBtn.addEventListener("click", () => {
+  const collapsed = progressCard.classList.toggle("collapsed");
+  progressCollapseBtn.setAttribute("aria-expanded", String(!collapsed));
+  progressCollapseBtn.setAttribute("aria-label", collapsed ? "Expand job progress" : "Minimize job progress");
+  progressCollapseBtn.title = collapsed ? "Expand job progress" : "Minimize job progress";
+  const icon = progressCollapseBtn.querySelector(".button-icon");
+  icon?.classList.toggle("icon-minus", !collapsed);
+  icon?.classList.toggle("icon-plus", collapsed);
+});
 cancelBtn.addEventListener("click", () => abort?.abort());
+clearQueueBtn.addEventListener("click", () => {
+  if (!generationQueue.length) return;
+  const removed = generationQueue.splice(0);
+  const affectedSweeps = new Set<string>();
+  for (const job of removed) {
+    if (job.candidate?.status === "queued") job.candidate.status = "cancelled";
+    if (job.sweep) affectedSweeps.add(job.sweep.id);
+  }
+  renderCandidates();
+  affectedSweeps.forEach(announceSweepWhenComplete);
+  updateQueueStatus();
+  toast(`${removed.length} queued job${removed.length === 1 ? "" : "s"} removed`);
+});
 
-async function doSweep(): Promise<void> {
-  if (!inputImage || generating) return;
+function doSweep(): void {
+  if (!inputImage) return;
   let baseParams: GenParams;
   try {
     baseParams = readParams();
@@ -1276,47 +1634,28 @@ async function doSweep(): Promise<void> {
     seed: firstSeed + index,
     status: "queued" as CandidateStatus,
   }));
+  sweepCandidates.set(sweepGroupId, candidates);
   candidateWrap.classList.remove("hidden");
   renderCandidates();
-  startRun(`Candidate 1/${count}`);
-  try {
-    for (let index = 0; index < candidates.length; index += 1) {
-      if (abort?.signal.aborted) break;
-      const slot = candidates[index];
-      slot.status = "generating";
-      progressPrefix = `Candidate ${index + 1}/${count}, seed ${slot.seed}`;
-      progressStage.textContent = `${progressPrefix}: starting`;
-      renderCandidates();
-      try {
-        slot.record = await generateRecord(
-          { ...baseParams, resolution: 512, seed: slot.seed },
-          false,
-          { id: sweepGroupId, index, count },
-        );
-        slot.status = "ready";
-      } catch (e) {
-        if (abort?.signal.aborted) {
-          slot.status = "cancelled";
-          break;
-        }
-        slot.status = "failed";
-        slot.error = (e as Error).message || "generation failed";
-      }
-      renderCandidates();
-    }
-    if (abort?.signal.aborted) {
-      for (const slot of candidates) {
-        if (slot.status === "queued") slot.status = "cancelled";
-      }
-      toast("Seed sweep cancelled");
-    } else {
-      const ready = candidates.filter((slot) => slot.status === "ready").length;
-      toast(`Seed sweep complete: ${ready}/${count} candidates`, ready ? "ok" : "err");
-    }
-  } finally {
-    renderCandidates();
-    finishRun();
-  }
+  const sweepImage = inputImage;
+  const sweepName = inputName;
+  const canOpenFirst = !activeId && !currentGlb && !currentJob && generationQueue.length === 0;
+  candidates.forEach((slot, index) => {
+    queueJob({
+      image: sweepImage,
+      name: sweepName,
+      params: {
+        ...baseParams,
+        resolution: 512,
+        seed: slot.seed,
+        textureResolution: baseParams.textureResolution === 1024 ? "auto" : baseParams.textureResolution,
+      },
+      label: `Candidate ${index + 1}/${count} · seed ${slot.seed}`,
+      autoOpen: canOpenFirst && index === 0,
+      sweep: { id: sweepGroupId, index, count },
+      candidate: slot,
+    });
+  });
 }
 
 sweepBtn.addEventListener("click", doSweep);
@@ -1324,10 +1663,15 @@ sweepBtn.addEventListener("click", doSweep);
 // ---- viewer tools ----
 function setViewerTools(on: boolean): void {
   resetViewBtn.disabled = !on;
-  openViewBtn.disabled = !on;
   saveGlbBtn.disabled = !on;
   if (!on) renderSelection(null);
+  syncViewerReference();
 }
+viewerReferenceToggle.addEventListener("click", () => {
+  const expanded = viewerReferencePopover.classList.contains("hidden");
+  viewerReferencePopover.classList.toggle("hidden", !expanded);
+  viewerReferenceToggle.setAttribute("aria-expanded", String(expanded));
+});
 resetViewBtn.addEventListener("click", () => runViewer((instance) => instance.resetView()));
 saveGlbBtn.addEventListener("click", async () => {
   try {
@@ -1360,16 +1704,38 @@ async function loadRecordData(rec: VersionRecord): Promise<void> {
   setWorkspaceMode("view");
   inputImage = rec.input;
   inputName = rec.name;
+  clearMaskPreview();
   setInputPreviewBlob(rec.input);
   inputPreview.classList.remove("hidden");
   dropHint.classList.add("hidden");
+  showInputPreview("source");
   applyParams(rec.params);
   currentGlb = rec.glb;
   activeId = rec.id;
   activeLabel = rec.label;
   setViewerTools(true);
-  viewerCaption.textContent = `${rec.label} | ${activeParams.resolution} | seed ${activeParams.seed}`;
+  updateViewerCaption();
   updateGenerateEnabled();
+  let recordChanged = false;
+  const measuredMetrics = statsToMetrics(stats);
+  if (!rec.metrics || !rec.metrics.dimensions) {
+    rec.metrics = measuredMetrics;
+    recordChanged = true;
+  }
+  const measuredWarning = detectPlaneCollapse(measuredMetrics.dimensions);
+  if (measuredWarning && !rec.qualityWarning) {
+    rec.qualityWarning = measuredWarning;
+    recordChanged = true;
+    toast(`Collapsed into a plane. ${REFERENCE_GUIDANCE}`, "err");
+  }
+  if (!rec.thumb) {
+    const thumb = await instance.thumbnail().catch(() => null);
+    if (thumb) {
+      rec.thumb = thumb;
+      recordChanged = true;
+    }
+  }
+  if (recordChanged) await put(rec);
   await refreshGallery();
   renderCandidates();
 }
@@ -1385,9 +1751,11 @@ function renderCandidates(): void {
   candidateSummary.textContent = `${complete}/${candidates.length} complete. Click a result to select its seed.`;
 
   for (const slot of candidates) {
-    const item = document.createElement("button");
-    item.type = "button";
-    item.className = `candidate ${slot.status}${slot.record?.id === activeId ? " active" : ""}`;
+    const item = createButton({
+      label: `Seed ${slot.seed}`,
+      variant: "secondary",
+      className: `candidate ${slot.status}${slot.record?.id === activeId ? " active" : ""}${slot.record?.qualityWarning ? " quality-warning" : ""}`,
+    });
     item.disabled = !slot.record;
     item.title = slot.error || `Seed ${slot.seed}`;
 
@@ -1412,7 +1780,9 @@ function renderCandidates(): void {
     const seed = document.createElement("strong");
     seed.textContent = `Seed ${slot.seed}`;
     const status = document.createElement("span");
-    status.textContent = slot.record?.id === activeId
+    status.textContent = slot.record?.qualityWarning
+      ? "Plane collapse"
+      : slot.record?.id === activeId
       ? "Selected"
       : slot.status === "ready" ? "Select" : slot.status;
     meta.append(seed, status);
@@ -1429,6 +1799,10 @@ function renderCandidates(): void {
 }
 
 clearCandidatesBtn.addEventListener("click", () => {
+  if (generating) {
+    toast("Wait for generation to finish before clearing candidates", "err");
+    return;
+  }
   candidates = [];
   renderCandidates();
 });
@@ -1459,15 +1833,6 @@ async function refreshGallery(): Promise<void> {
     const assetGroup = document.createElement("section");
     assetGroup.className = "asset-group";
 
-    const assetHead = document.createElement("div");
-    assetHead.className = "asset-head";
-    const assetTitle = document.createElement("strong");
-    assetTitle.textContent = records[0].label || records[0].name;
-    const assetMeta = document.createElement("span");
-    assetMeta.textContent = `${records.length} version${records.length === 1 ? "" : "s"}`;
-    assetHead.append(assetTitle, assetMeta);
-    assetGroup.appendChild(assetHead);
-
     const versions = document.createElement("div");
     versions.className = "asset-versions";
     const renderedSweeps = new Set<string>();
@@ -1482,13 +1847,36 @@ async function refreshGallery(): Promise<void> {
       if (sweepId) renderedSweeps.add(sweepId);
       const representative = versionRecords.find((candidate) => candidate.id === activeId) ?? versionRecords[0];
       const isSweep = versionRecords.length > 1 || Boolean(sweepId);
+      const warnings = versionRecords
+        .map((candidate) => candidate.qualityWarning ?? detectPlaneCollapse(candidate.metrics?.dimensions))
+        .filter((warning) => warning !== null && warning !== undefined);
       const item = document.createElement("article");
-      item.className = `version-item${versionRecords.some((candidate) => candidate.id === activeId) ? " active" : ""}`;
+      item.className = `version-item${versionRecords.some((candidate) => candidate.id === activeId) ? " active" : ""}${warnings.length ? " quality-warning" : ""}`;
       item.tabIndex = 0;
       item.setAttribute("role", "button");
-      item.title = isSweep
+      item.title = warnings.length
+        ? `${representative.label} | collapsed into a plane | ${REFERENCE_GUIDANCE}`
+        : isSweep
         ? `${representative.label} | seed sweep with ${versionRecords.length} candidates`
         : `${representative.label} | ${new Date(representative.createdAt).toLocaleString()}`;
+
+      const itemHead = document.createElement("div");
+      itemHead.className = "version-item-head";
+      const itemIdentity = document.createElement("div");
+      itemIdentity.className = "version-item-identity";
+      const itemTitle = document.createElement("strong");
+      itemTitle.textContent = representative.label || representative.name;
+      const versionCount = document.createElement("span");
+      versionCount.className = "version-count";
+      versionCount.title = `${versionRecords.length} version${versionRecords.length === 1 ? "" : "s"}`;
+      versionCount.setAttribute("aria-label", versionCount.title);
+      const versionCountIcon = document.createElement("span");
+      versionCountIcon.className = "button-icon icon-stack";
+      versionCountIcon.setAttribute("aria-hidden", "true");
+      versionCount.append(versionCountIcon, String(versionRecords.length));
+      itemIdentity.append(itemTitle, versionCount);
+      itemHead.appendChild(itemIdentity);
+      item.appendChild(itemHead);
 
       const img = document.createElement("img");
       const url = URL.createObjectURL(representative.thumb ?? representative.input);
@@ -1499,27 +1887,31 @@ async function refreshGallery(): Promise<void> {
 
       const versionMeta = document.createElement("div");
       versionMeta.className = "version-meta";
-      const versionLabel = document.createElement("strong");
-      versionLabel.textContent = representative.label;
       const versionDetails = document.createElement("span");
       const actualFaces = representative.metrics?.triangles;
       const parent = representative.parentVersionId
         ? records.find((candidate) => candidate.versionId === representative.parentVersionId)
         : undefined;
       const comparison = parentComparisonText(representative, parent);
-      versionDetails.textContent = isSweep
+      versionDetails.textContent = warnings.length
+        ? isSweep
+          ? `Seed sweep, ${versionRecords.length} candidates | ${warnings.length} plane collapse${warnings.length === 1 ? "" : "s"}`
+          : "Collapsed into a plane | use a three-quarter reference"
+        : isSweep
         ? `Seed sweep, ${versionRecords.length} candidates`
         : `${representative.operation} | ${actualFaces !== undefined ? compactNumber(actualFaces) + " triangles" : "metrics pending"}${comparison ? ` | ${comparison}` : ""}`;
-      versionMeta.append(versionLabel, versionDetails);
+      versionMeta.append(versionDetails);
       item.appendChild(versionMeta);
 
       const actions = document.createElement("div");
       actions.className = "version-actions";
-      const favoriteBtn = document.createElement("button");
-      favoriteBtn.type = "button";
-      favoriteBtn.className = "g-action";
-      favoriteBtn.textContent = representative.favorite ? "Unfavorite" : "Favorite";
-      favoriteBtn.setAttribute("aria-label", favoriteBtn.textContent + " version");
+      const favoriteBtn = createButton({
+        label: representative.favorite ? "Remove from favorites" : "Add to favorites",
+        variant: "icon",
+        size: "sm",
+        icon: "star",
+        className: `g-action favorite-action${representative.favorite ? " active" : ""}`,
+      });
       favoriteBtn.addEventListener("click", async (event) => {
         event.stopPropagation();
         try {
@@ -1531,16 +1923,23 @@ async function refreshGallery(): Promise<void> {
       });
       actions.appendChild(favoriteBtn);
 
-      const renameBtn = document.createElement("button");
-      renameBtn.type = "button";
-      renameBtn.className = "g-action";
-      renameBtn.textContent = "Rename";
+      const renameBtn = createButton({
+        label: "Rename version",
+        variant: "icon",
+        size: "sm",
+        icon: "pencil-simple",
+        className: "g-action rename-action",
+      });
       renameBtn.addEventListener("click", async (event) => {
         event.stopPropagation();
         const nextLabel = window.prompt("Version name", representative.label);
         if (nextLabel === null) return;
         try {
-          await renameVersion(representative.versionId, nextLabel);
+          const renamed = await renameVersion(representative.versionId, nextLabel);
+          if (renamed.id === activeId || renamed.versionId === activeId) {
+            activeLabel = renamed.label;
+            updateViewerCaption();
+          }
           await refreshGallery();
         } catch (error) {
           toast((error as Error).message || "Could not rename version", "err");
@@ -1548,13 +1947,32 @@ async function refreshGallery(): Promise<void> {
       });
       actions.appendChild(renameBtn);
 
-      const removeBtn = document.createElement("button");
-      removeBtn.type = "button";
-      removeBtn.className = "g-action danger";
-      removeBtn.textContent = "Remove";
+      const removeBtn = createButton({
+        label: "Remove version",
+        variant: "icon",
+        size: "sm",
+        icon: "trash",
+        className: "g-action remove-action danger",
+      });
       removeBtn.addEventListener("click", async (event) => {
         event.stopPropagation();
+        if (generating) {
+          toast("Wait for generation to finish before removing versions", "err");
+          return;
+        }
         try {
+          // Preflight the whole sweep before deleting anything. A derived
+          // child makes the branch unsafe to remove with the non-cascading
+          // store API; checking all records first prevents partial sweeps.
+          const recordsBeforeDelete = await all();
+          const targetIds = new Set(versionRecords.flatMap((version) => [version.id, version.versionId]));
+          const dependent = recordsBeforeDelete.find(
+            (record) => record.parentVersionId && targetIds.has(record.parentVersionId),
+          );
+          if (dependent) {
+            toast("Remove derived versions before removing this sweep", "err");
+            return;
+          }
           for (const version of versionRecords) await removeRecord(version.id);
           if (versionRecords.some((version) => version.id === activeId)) {
             clearCurrentModelState();
@@ -1567,7 +1985,7 @@ async function refreshGallery(): Promise<void> {
         }
       });
       actions.appendChild(removeBtn);
-      item.appendChild(actions);
+      itemHead.appendChild(actions);
 
       const openVersion = async (): Promise<void> => {
         if (isSweep) {
@@ -1593,13 +2011,108 @@ async function refreshGallery(): Promise<void> {
   }
 }
 
+let automationSync: Promise<number> | null = null;
+let automationJobsCache: { apiUrl: string; fetchedAt: number; jobs: AutomationJob[] } | null = null;
+
+async function loadAutomationJobs(apiUrl: string, force = false): Promise<AutomationJob[]> {
+  const now = Date.now();
+  if (
+    !force &&
+    automationJobsCache &&
+    automationJobsCache.apiUrl === apiUrl &&
+    now - automationJobsCache.fetchedAt < 1000
+  ) {
+    return automationJobsCache.jobs;
+  }
+  const jobs = await automationJobs(apiUrl);
+  automationJobsCache = { apiUrl, fetchedAt: now, jobs };
+  return jobs;
+}
+
+function syncAutomationResults(): Promise<number> {
+  if (!isTauri()) return Promise.resolve(0);
+  if (automationSync) return automationSync;
+  automationSync = (async () => {
+    try {
+      const api = await automationInfo();
+      if (!api?.running) return 0;
+      const [jobs, existing] = await Promise.all([loadAutomationJobs(api.url), all()]);
+      const existingIds = new Set(existing.map((record) => record.id));
+      let imported = 0;
+      let importedWarnings = 0;
+
+      for (const job of jobs) {
+        if (job.status !== "succeeded") continue;
+        const recordId = `automation-${job.id}`;
+        if (existingIds.has(recordId)) continue;
+        try {
+          const { glb, input } = await automationJobFiles(api.url, job.id);
+          const inspection = await inspectGeneratedGlb(glb).catch(() => ({ dimensions: null, warning: null }));
+          const createdAt = job.submittedAt || Date.now();
+          const params = normalizeGenParams(job.params);
+          const record: VersionRecord = {
+            id: recordId,
+            ts: createdAt,
+            name: job.sourceName || "Automation source",
+            params,
+            input,
+            glb,
+            thumb: null,
+            assetId: recordId,
+            versionId: recordId,
+            operation: "generated",
+            operationParams: { automationJobId: job.id },
+            createdAt,
+            label: job.sourceName || `Automation ${job.id}`,
+            favorite: false,
+            metrics: { fileSize: glb.size, ...(inspection.dimensions ? { dimensions: inspection.dimensions } : {}) },
+            qualityWarning: job.qualityWarning ?? inspection.warning ?? undefined,
+          };
+          await put(record);
+          if (record.qualityWarning) importedWarnings += 1;
+          existingIds.add(recordId);
+          imported += 1;
+        } catch (error) {
+          console.warn(`Could not import automation job ${job.id}`, error);
+        }
+      }
+      if (imported > 0) {
+        await refreshGallery();
+        toast(
+          importedWarnings
+            ? `${imported} automation model${imported === 1 ? "" : "s"} added to Assets; ${importedWarnings} collapsed into a plane. ${REFERENCE_GUIDANCE}`
+            : `${imported} automation model${imported === 1 ? "" : "s"} added to Assets`,
+          importedWarnings ? "err" : "ok",
+        );
+      }
+      return imported;
+    } catch (error) {
+      console.warn("Could not sync automation results; keeping the local gallery available", error);
+      return 0;
+    }
+  })().finally(() => {
+    automationSync = null;
+  });
+  return automationSync;
+}
+
 clearGalleryBtn.addEventListener("click", async () => {
+  if (generating) {
+    toast("Wait for generation to finish before clearing the gallery", "err");
+    return;
+  }
   if (!confirm("Delete all saved generations?")) return;
-  await clearStore();
-  clearCurrentModelState();
-  viewer?.clear();
-  if (viewer) renderMeshParts(viewer);
-  await refreshGallery();
+  try {
+    await clearStore();
+    candidates = [];
+    renderCandidates();
+    clearCurrentModelState();
+    viewer?.clear();
+    if (viewer) renderMeshParts(viewer);
+    await refreshGallery();
+  } catch (error) {
+    toast((error as Error).message || "Could not clear the gallery", "err");
+  }
 });
 
 // ---- settings modal ----
@@ -1620,7 +2133,7 @@ modal.addEventListener("click", (e) => {
 });
 
 // ---- server status ----
-async function pollHealth(): Promise<void> {
+async function pollHealthInternal(): Promise<void> {
   const cfg = await loadConfig(true);
   backendBadge.textContent = cfg.backend !== "unknown" ? cfg.backend : "-";
   const ok = await health();
@@ -1641,7 +2154,16 @@ async function pollHealth(): Promise<void> {
   if (isTauri()) {
     try {
       const api = await automationInfo();
-      automationBadge.textContent = api?.running ? `API :${api.port} · queue only` : "API offline";
+      if (!api?.running) automationJobsCache = null;
+      const jobs = api?.running ? await loadAutomationJobs(api.url) : [];
+      const runningJobs = jobs.filter((job) => job.status === "running").length;
+      const queuedJobs = jobs.filter((job) => job.status === "queued").length;
+      const queueLabel = runningJobs || queuedJobs
+        ? ` · ${runningJobs} running · ${queuedJobs} queued`
+        : " · queue idle";
+      automationBadge.textContent = api?.running
+        ? `API :${api.port}${queueLabel}`
+        : "API offline";
       automationBadge.classList.toggle("ok", Boolean(api?.running));
       automationBadge.title = api
         ? `${api.url}\nConcurrency ${api.maxConcurrency}: ${api.reason}`
@@ -1655,10 +2177,46 @@ async function pollHealth(): Promise<void> {
   }
 }
 
+async function pollHealth(): Promise<void> {
+  try {
+    await pollHealthInternal();
+  } catch (error) {
+    console.warn("Could not refresh Trellis server status", error);
+    serverOnline = false;
+    serverDot.className = "dot err";
+    serverLabel.textContent = "offline";
+    automationBadge.textContent = "API offline";
+    automationBadge.classList.remove("ok");
+    updateGenerateEnabled();
+  }
+}
+
 // ---- server log -> progress (Tauri only) ----
-listen<string>("server-log", (line) => {
-  const t = String(line).trim();
-  if (generating && t) progressStage.textContent = progressPrefix ? `${progressPrefix}: ${t}` : t;
+function listenSafely<T>(event: string, handler: (payload: T) => void): void {
+  void listen<T>(event, handler).catch((error) => {
+    console.warn(`Could not subscribe to ${event}`, error);
+  });
+}
+
+listenSafely<string>("server-log", (line) => {
+  if (generating) updateProgressFromServerLog(String(line));
+});
+listenSafely<string>("tray-action-blocked", (message) => {
+  toast(String(message), "err");
+});
+listenSafely("studio-shown", () => {
+  void syncAutomationResults();
+});
+listenSafely("server-restarted", () => {
+  automationJobsCache = null;
+  void pollHealth();
+});
+
+window.addEventListener("focus", () => {
+  void syncAutomationResults();
+});
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "visible") void syncAutomationResults();
 });
 
 // ---- boot ----
@@ -1666,12 +2224,15 @@ async function boot(): Promise<void> {
   setViewerTools(false);
   renderViewerStats(null);
   setWorkspaceMode("generate");
-  await refreshGallery();
   await pollHealth();
+  await syncAutomationResults();
+  await refreshGallery();
   window.setInterval(pollHealth, 4000);
   if (!isTauri()) {
     // Browser mode: no shell to report a backend.
     backendBadge.textContent = "browser";
   }
 }
-boot();
+void boot().catch((error) => {
+  console.error("Trellis Studio boot failed", error);
+});

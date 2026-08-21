@@ -37,6 +37,7 @@ The ggml submodule is not populated in every source checkout. Release packaging 
 | Three.js TypeScript definitions | DefinitelyTyped contributors | MIT | `app/package.json`, <https://github.com/DefinitelyTyped/DefinitelyTyped> |
 | model-viewer | Google LLC | Apache-2.0 | `app/public/vendor/model-viewer.min.js`, <https://github.com/google/model-viewer> |
 | Lit code contained in the vendored model-viewer bundle | Google LLC | BSD 3-Clause | License headers inside `app/public/vendor/model-viewer.min.js` |
+| Phosphor Icons | Copyright 2023 Phosphor Icons | MIT | `app/public/icons`, <https://github.com/phosphor-icons/core> |
 | TypeScript | Microsoft Corporation | Apache-2.0 | `app/package.json`, <https://github.com/microsoft/TypeScript> |
 | Vite | Evan You and Vite contributors | MIT | `app/package.json`, <https://github.com/vitejs/vite> |
 

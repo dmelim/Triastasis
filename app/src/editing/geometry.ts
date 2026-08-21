@@ -179,6 +179,9 @@ export const removeComponents = removeConnectedComponents;
 /**
  * Swap the second and third index of every triangle. Existing normals are
  * negated when possible; callers can request a full normal rebuild instead.
+ * A conventional vec4 tangent keeps its xyz direction but changes handedness
+ * when the triangle winding is reversed, so its w component is flipped too.
+ * Malformed tangent attributes are removed rather than left silently stale.
  */
 export function reverseTriangleWinding(
   source: BufferGeometry,
@@ -219,6 +222,26 @@ export function reverseTriangleWinding(
     normal.needsUpdate = true;
   } else {
     limitations.push("No normal attribute was present; recalculate normals before shaded rendering.");
+  }
+
+  const tangent = geometry.getAttribute("tangent") as BufferAttribute | undefined;
+  if (tangent) {
+    const position = geometry.getAttribute("position") as BufferAttribute | undefined;
+    if (tangent.itemSize !== 4 || !position || tangent.count !== position.count) {
+      geometry.deleteAttribute("tangent");
+      limitations.push(
+        "The tangent attribute was removed because it was not a matching vec4 per-vertex attribute; " +
+          "recalculate tangents before normal-mapped rendering.",
+      );
+    } else {
+      // For a standard tangent frame, reversing the triangle order flips N
+      // while the UV-derived tangent direction stays the same. Negating w
+      // preserves the bitangent orientation reconstructed by the shader.
+      for (let vertexIndex = 0; vertexIndex < tangent.count; vertexIndex += 1) {
+        tangent.setW(vertexIndex, -tangent.getW(vertexIndex));
+      }
+      tangent.needsUpdate = true;
+    }
   }
   if (index.count % 3 !== 0) limitations.push("Trailing non-triangle index data was left unchanged.");
 

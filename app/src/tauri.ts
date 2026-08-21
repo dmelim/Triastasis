@@ -4,7 +4,11 @@
 
 import { invoke as tauriInvoke } from "@tauri-apps/api/core";
 import { listen as tauriListen, type UnlistenFn } from "@tauri-apps/api/event";
-import type { BgRemoval } from "./types";
+import type { BgRemoval, GenerationQualityWarning } from "./types";
+
+export type NativeFileDropEvent =
+  | { type: "enter" | "over" | "leave" }
+  | { type: "drop"; paths: string[] };
 
 export interface AutomationInfo {
   running: boolean;
@@ -16,6 +20,32 @@ export interface AutomationInfo {
   vramTotalMb: number;
   vramFreeMb: number;
   reason: string;
+}
+
+export interface AutomationJobParams {
+  seed: number;
+  resolution: 512 | 1024 | 1536;
+  bgRemoval: "auto" | "birefnet" | "threshold";
+  uv: "xatlas" | "box";
+}
+
+export interface AutomationJob {
+  id: string;
+  status: "queued" | "running" | "succeeded" | "failed" | "cancelled";
+  statusUrl: string;
+  modelUrl: string;
+  imageUrl: string;
+  submittedAt: number;
+  startedAt: number | null;
+  finishedAt: number | null;
+  outputPath: string | null;
+  error: string | null;
+  sourceName: string;
+  sourceType: string;
+  params: AutomationJobParams;
+  queuePosition: number | null;
+  jobsAhead: number;
+  qualityWarning: GenerationQualityWarning | null;
 }
 
 export function isTauri(): boolean {
@@ -34,6 +64,40 @@ export async function listen<T>(
 ): Promise<UnlistenFn> {
   if (!isTauri()) return () => {};
   return tauriListen<T>(event, (e) => handler(e.payload as T));
+}
+
+/** Receive files dragged from the operating system into the native webview. */
+export async function listenForNativeFileDrops(
+  handler: (event: NativeFileDropEvent) => void | Promise<void>,
+): Promise<UnlistenFn> {
+  if (!isTauri()) return () => {};
+  const { getCurrentWebview } = await import("@tauri-apps/api/webview");
+  return getCurrentWebview().onDragDropEvent((event) => {
+    const payload = event.payload;
+    if (payload.type === "drop") void handler({ type: "drop", paths: payload.paths });
+    else void handler({ type: payload.type });
+  });
+}
+
+/** Read a native dropped image after Tauri has supplied its absolute path. */
+export async function readDroppedImage(path: string): Promise<{ blob: Blob; name: string }> {
+  if (!isTauri()) throw new Error("Native file drop is unavailable in the browser");
+  const extension = path.split(".").pop()?.toLowerCase() ?? "";
+  const mimeTypes: Record<string, string> = {
+    png: "image/png",
+    jpg: "image/jpeg",
+    jpeg: "image/jpeg",
+    webp: "image/webp",
+    bmp: "image/bmp",
+    gif: "image/gif",
+  };
+  const type = mimeTypes[extension];
+  if (!type) throw new Error("Drop a PNG, JPEG, WebP, BMP, or GIF image");
+  const { readFile } = await import("@tauri-apps/plugin-fs");
+  const bytes = await readFile(path);
+  if (!bytes.length) throw new Error("The dropped image is empty");
+  const name = path.split(/[\\/]/).pop() || `dropped.${extension}`;
+  return { blob: new Blob([bytes], { type }), name };
 }
 
 /**
@@ -116,4 +180,27 @@ export async function previewAlpha(image: Blob, bgRemoval: BgRemoval): Promise<B
 export async function automationInfo(): Promise<AutomationInfo | null> {
   if (!isTauri()) return null;
   return invoke<AutomationInfo>("automation_info");
+}
+
+/** Jobs submitted through the tray-resident automation API. */
+export async function automationJobs(apiUrl: string): Promise<AutomationJob[]> {
+  const response = await fetch(`${apiUrl}/jobs`);
+  if (!response.ok) throw new Error(`Automation jobs request failed (${response.status})`);
+  const payload = await response.json() as { jobs?: AutomationJob[] };
+  return Array.isArray(payload.jobs) ? payload.jobs : [];
+}
+
+/** Download one successful automation job's model and original source image. */
+export async function automationJobFiles(
+  apiUrl: string,
+  jobId: string,
+): Promise<{ glb: Blob; input: Blob }> {
+  const [modelResponse, imageResponse] = await Promise.all([
+    fetch(`${apiUrl}/jobs/${encodeURIComponent(jobId)}/model`),
+    fetch(`${apiUrl}/jobs/${encodeURIComponent(jobId)}/image`),
+  ]);
+  if (!modelResponse.ok) throw new Error(`Automation model download failed (${modelResponse.status})`);
+  if (!imageResponse.ok) throw new Error(`Automation source download failed (${imageResponse.status})`);
+  const [glb, input] = await Promise.all([modelResponse.blob(), imageResponse.blob()]);
+  return { glb, input };
 }

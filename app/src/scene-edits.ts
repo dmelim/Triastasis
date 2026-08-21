@@ -486,7 +486,10 @@ export function applyMaterialEdit(
     }
     if (opacity !== undefined) {
       record.opacity = opacity;
-      if (opacity < 1) material.transparent = true;
+      // Keep the blend state in sync with the edited opacity. In particular,
+      // changing a previously translucent material back to 1 must leave the
+      // material on the opaque render path instead of retaining stale blending.
+      material.transparent = opacity < 1;
     }
     material.needsUpdate = true;
   }

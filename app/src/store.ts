@@ -1,5 +1,6 @@
-// Persistent gallery of past generations, backed by IndexedDB. GLBs are
-// 10–15 MB each — far over the ~5 MB localStorage cap — so blobs live here.
+// Persistent gallery of past generations. The desktop app stores records in
+// Tauri's app-local data directory so development and packaged webview origins
+// see the same assets. Plain-browser builds retain the IndexedDB backend.
 //
 // IndexedDB isn't always available: some WebKitGTK builds can't create its
 // backing file, and private-mode / sandboxed webviews reject it outright. When
@@ -9,12 +10,22 @@
 
 import type {
   GenRecord,
+  GenerationQualityWarning,
   ModelDimensions,
   ModelMetrics,
   OperationParams,
   VersionOperation,
   VersionRecord,
 } from "./types";
+import { isTauri } from "./tauri";
+import {
+  clearNativeGallery,
+  deleteNativeRecords,
+  loadNativeGallery,
+  markNativeMigrationCompleted,
+  nativeMigrationWasCompleted,
+  writeNativeRecord,
+} from "./native-gallery";
 
 const DB_NAME = "trellis-studio";
 /** Schema v2 adds asset/version fields and indexes, while retaining `id`. */
@@ -23,7 +34,38 @@ const STORE = "generations";
 
 let dbp: Promise<IDBDatabase> | null = null;
 let useMemory = false;
+/** True after IndexedDB has successfully opened for this session. */
+let persistentDbEstablished = false;
+/** A persistent operation failed after the database was available. */
+let persistentDbFailure: unknown = null;
+let nativeInitialization: Promise<boolean> | null = null;
+let nativePersistenceFailure: unknown = null;
 const mem = new Map<string, VersionRecord>();
+
+export type DestructiveStoreOperation = "delete" | "clear";
+
+/**
+ * A destructive gallery operation could not be confirmed against persistent storage.
+ * The in-memory fallback remains available for reads, but we deliberately do
+ * not claim that records were removed while the persistent store may still
+ * contain them.
+ */
+export class GalleryPersistenceError extends Error {
+  readonly operation: DestructiveStoreOperation;
+  readonly causeError: unknown;
+
+  constructor(operation: DestructiveStoreOperation, cause: unknown) {
+    const detail = cause instanceof Error && cause.message ? ` (${cause.message})` : "";
+    super(
+      `Could not ${operation === "clear" ? "clear the persistent gallery" : "delete the saved model"} ` +
+        `from disk. The persistent records were not confirmed changed. ` +
+        `Reload Polyloom and retry; if the problem continues, check the app's storage permissions${detail}.`,
+    );
+    this.name = "GalleryPersistenceError";
+    this.operation = operation;
+    this.causeError = cause;
+  }
+}
 
 function isObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
@@ -70,6 +112,19 @@ function normalizeMetrics(value: unknown): ModelMetrics | null {
   return metrics;
 }
 
+function normalizeQualityWarning(value: unknown): GenerationQualityWarning | undefined {
+  if (!isObject(value) || value.code !== "collapsed-plane") return undefined;
+  const dimensions = normalizeDimensions(value.dimensions);
+  if (!dimensions) return undefined;
+  return {
+    code: "collapsed-plane",
+    message: nonEmptyString(value.message) ?? "Collapsed into a plane",
+    thinRatio: finiteNumber(value.thinRatio, 0),
+    threshold: finiteNumber(value.threshold, 0.05),
+    dimensions,
+  };
+}
+
 /**
  * Fill the v2 fields without changing the legacy key or blobs. The fallback
  * choices are deterministic for every valid v1 record:
@@ -105,6 +160,7 @@ function normalizeRecord(record: GenRecord): VersionRecord {
     label,
     favorite: record.favorite === true,
     metrics: normalizeMetrics(record.metrics),
+    qualityWarning: normalizeQualityWarning(record.qualityWarning),
     thumb: record.thumb ?? null,
   };
 }
@@ -146,7 +202,10 @@ function db(): Promise<IDBDatabase> {
       // normalized whenever an app version opens an older schema.
       migrateRecords(store);
     };
-    req.onsuccess = () => resolve(req.result);
+    req.onsuccess = () => {
+      persistentDbEstablished = true;
+      resolve(req.result);
+    };
     req.onerror = () => reject(req.error);
     req.onblocked = () => reject(new Error("IndexedDB blocked"));
   });
@@ -164,16 +223,86 @@ function wrap<T>(req: IDBRequest<T>): Promise<T> {
   });
 }
 
+async function indexedRecords(): Promise<VersionRecord[]> {
+  const recs = await wrap((await tx("readonly")).getAll() as IDBRequest<GenRecord[]>);
+  return recs.map(normalizeRecord).sort((a, b) => b.createdAt - a.createdAt);
+}
+
+/**
+ * Load the native gallery and, when running under the old packaged origin,
+ * copy every legacy IndexedDB record once. The old database is deliberately
+ * left untouched, making the migration rollback-safe.
+ */
+async function initializeNativeStore(): Promise<boolean> {
+  if (!isTauri()) return false;
+  if (nativeInitialization) return nativeInitialization;
+  nativeInitialization = (async () => {
+    const nativeRecords = (await loadNativeGallery()).map(normalizeRecord);
+    mem.clear();
+    for (const record of nativeRecords) mem.set(record.id, record);
+
+    if (!(await nativeMigrationWasCompleted())) {
+      let legacyRecords: VersionRecord[];
+      try {
+        legacyRecords = await indexedRecords();
+      } catch (error) {
+        // The Vite origin normally has no legacy database. Do not create the
+        // marker there: the next packaged-origin launch must still get a chance
+        // to discover and migrate the user's existing IndexedDB records.
+        console.warn("Legacy gallery migration was not available on this origin", error);
+        return true;
+      }
+
+      if (legacyRecords.length > 0) {
+        // Populate the session cache first. If an already-running old shell has
+        // not picked up the new filesystem capability yet, the user still sees
+        // every legacy asset and destructive actions remain safely disabled.
+        for (const record of legacyRecords) mem.set(record.id, record);
+        try {
+          for (const record of legacyRecords) {
+            if (!nativeRecords.some((nativeRecord) => nativeRecord.id === record.id)) {
+              await writeNativeRecord(record);
+            }
+          }
+          await markNativeMigrationCompleted();
+          console.info(`Migrated ${legacyRecords.length} gallery records to app-local storage.`);
+        } catch (error) {
+          const detail = error instanceof Error && error.message ? `: ${error.message}` : "";
+          throw new Error(`Could not migrate the legacy gallery to app-local storage${detail}`);
+        }
+      }
+    }
+    return true;
+  })().catch((error) => {
+    nativePersistenceFailure = error;
+    fallback(error);
+    return false;
+  });
+  return nativeInitialization;
+}
+
 /** Switch to the in-memory fallback and warn once. */
 function fallback(e: unknown): void {
+  if (persistentDbEstablished) {
+    // Keep the memory fallback useful for reads in this session, but remember
+    // that persistent state is no longer trustworthy for destructive calls.
+    // Those calls must surface an actionable error instead of deleting only
+    // the in-memory copy and reporting success.
+    persistentDbFailure ??= e;
+  }
   if (!useMemory) {
     useMemory = true;
     console.warn(
-      "IndexedDB unavailable — gallery persistence disabled for this session " +
+      "Gallery storage unavailable — persistence disabled for this session " +
         "(generations are still saved to the output folder).",
       e,
     );
   }
+}
+
+function assertDestructivePersistenceAvailable(operation: DestructiveStoreOperation): void {
+  if (nativePersistenceFailure) throw new GalleryPersistenceError(operation, nativePersistenceFailure);
+  if (persistentDbFailure) throw new GalleryPersistenceError(operation, persistentDbFailure);
 }
 
 export function newId(): string {
@@ -184,6 +313,17 @@ export function newId(): string {
 /** Store a record while retaining the legacy `id`, fields, and blobs. */
 export async function put(rec: GenRecord): Promise<void> {
   const normalized = normalizeRecord(rec);
+  if (await initializeNativeStore()) {
+    try {
+      await writeNativeRecord(normalized);
+      mem.set(normalized.id, normalized);
+    } catch (error) {
+      nativePersistenceFailure = error;
+      fallback(error);
+      mem.set(normalized.id, normalized);
+    }
+    return;
+  }
   if (useMemory) {
     mem.set(normalized.id, normalized);
     return;
@@ -198,12 +338,14 @@ export async function put(rec: GenRecord): Promise<void> {
 
 /** List all versions, newest first. */
 export async function all(): Promise<VersionRecord[]> {
+  if (await initializeNativeStore()) {
+    return [...mem.values()].sort((a, b) => b.createdAt - a.createdAt);
+  }
   if (useMemory) {
     return [...mem.values()].sort((a, b) => b.createdAt - a.createdAt);
   }
   try {
-    const recs = await wrap((await tx("readonly")).getAll() as IDBRequest<GenRecord[]>);
-    return recs.map(normalizeRecord).sort((a, b) => b.createdAt - a.createdAt);
+    return await indexedRecords();
   } catch (e) {
     fallback(e);
     return [...mem.values()].sort((a, b) => b.createdAt - a.createdAt);
@@ -212,6 +354,7 @@ export async function all(): Promise<VersionRecord[]> {
 
 /** Legacy key lookup. `id` remains the IndexedDB key for old callers. */
 export async function get(id: string): Promise<VersionRecord | undefined> {
+  if (await initializeNativeStore()) return mem.get(id);
   if (useMemory) return mem.get(id);
   try {
     const rec = await wrap((await tx("readonly")).get(id) as IDBRequest<GenRecord | undefined>);
@@ -335,6 +478,17 @@ export async function setVersionFavorite(
 
 async function deleteIds(ids: string[]): Promise<void> {
   if (!ids.length) return;
+  assertDestructivePersistenceAvailable("delete");
+  if (await initializeNativeStore()) {
+    try {
+      await deleteNativeRecords(ids);
+      ids.forEach((id) => mem.delete(id));
+      return;
+    } catch (error) {
+      nativePersistenceFailure = error;
+      throw new GalleryPersistenceError("delete", error);
+    }
+  }
   if (useMemory) {
     ids.forEach((id) => mem.delete(id));
     return;
@@ -351,6 +505,7 @@ async function deleteIds(ids: string[]): Promise<void> {
     });
   } catch (e) {
     fallback(e);
+    if (persistentDbEstablished) throw new GalleryPersistenceError("delete", e);
     ids.forEach((id) => mem.delete(id));
   }
 }
@@ -369,7 +524,12 @@ export async function deleteVersion(
   versionId: string,
   options: DeleteVersionOptions = {},
 ): Promise<void> {
+  assertDestructivePersistenceAvailable("delete");
   const records = await all();
+  // `all()` may have discovered a persistent read failure and switched reads
+  // to the in-memory fallback. Refuse to turn that stale view into a false
+  // deletion success.
+  assertDestructivePersistenceAvailable("delete");
   const target = records.find((record) => record.id === versionId || record.versionId === versionId);
   if (!target) return;
 
@@ -417,12 +577,50 @@ export async function deleteGeneration(id: string): Promise<void> {
 }
 
 export async function clear(): Promise<void> {
-  mem.clear();
-  if (useMemory) return;
+  assertDestructivePersistenceAvailable("clear");
+  if (await initializeNativeStore()) {
+    try {
+      await clearNativeGallery();
+      mem.clear();
+      return;
+    } catch (error) {
+      nativePersistenceFailure = error;
+      throw new GalleryPersistenceError("clear", error);
+    }
+  }
+  if (useMemory) {
+    mem.clear();
+    return;
+  }
   try {
-    await wrap((await tx("readwrite")).clear());
+    const d = await db();
+    await new Promise<void>((resolve, reject) => {
+      let settled = false;
+      const transaction = d.transaction(STORE, "readwrite");
+      const fail = (error: unknown): void => {
+        if (settled) return;
+        settled = true;
+        reject(error instanceof Error ? error : new Error(String(error ?? "IndexedDB transaction failed")));
+      };
+      transaction.oncomplete = () => {
+        if (settled) return;
+        settled = true;
+        resolve();
+      };
+      transaction.onerror = () => fail(transaction.error);
+      transaction.onabort = () => fail(transaction.error ?? new Error("IndexedDB transaction aborted"));
+      try {
+        const request = transaction.objectStore(STORE).clear();
+        request.onerror = () => fail(request.error);
+      } catch (error) {
+        fail(error);
+      }
+    });
+    mem.clear();
   } catch (e) {
     fallback(e);
+    if (persistentDbEstablished) throw new GalleryPersistenceError("clear", e);
+    mem.clear();
   }
 }
 
