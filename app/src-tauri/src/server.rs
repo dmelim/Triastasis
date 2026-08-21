@@ -46,7 +46,7 @@ fn now_epoch() -> u64 {
 fn civil_from_days(z: i64) -> (i64, u32, u32) {
     let z = z + 719468;
     let era = if z >= 0 { z } else { z - 146096 } / 146097;
-    let doe = (z - era * 146097) as i64; // [0, 146096]
+    let doe = z - era * 146097; // [0, 146096]
     let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365; // [0, 399]
     let y = yoe + era * 400;
     let doy = doe - (365 * yoe + yoe / 4 - yoe / 100); // [0, 365]
@@ -285,6 +285,13 @@ pub fn is_running(state: &ServerState) -> bool {
         Some(child) => matches!(child.try_wait(), Ok(None)),
         None => false,
     }
+}
+
+/// Whether the configured native server is reachable. This also reports true
+/// when the app adopted a server launched by another process, in which case
+/// `ServerState` intentionally has no child handle to inspect.
+pub fn is_available(state: &ServerState, cfg: &Config) -> bool {
+    is_running(state) || port_open(&cfg.host, cfg.port)
 }
 
 /// Path of the current/last launch's log file, if one was opened.

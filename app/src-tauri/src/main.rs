@@ -9,10 +9,12 @@
 mod automation;
 mod config;
 mod server;
+mod tray;
 
 use automation::AutomationState;
 use server::ServerState;
-use tauri::Manager;
+use tauri::{Emitter, Manager};
+use tray::LifecycleState;
 
 #[tauri::command]
 async fn preview_alpha(image: Vec<u8>, bg_removal: String) -> Result<Vec<u8>, String> {
@@ -165,17 +167,8 @@ fn current_log_path(state: tauri::State<ServerState>) -> Option<String> {
 }
 
 #[tauri::command]
-fn restart_server(
-    app: tauri::AppHandle,
-    state: tauri::State<ServerState>,
-    automation_state: tauri::State<AutomationState>,
-) -> Result<(), String> {
-    let cfg = config::load().ok_or("no config.json found")?;
-    // Explicit restart: the user just changed settings, so never reuse a stale
-    // server on the port — spawn fresh so the new config actually takes effect.
-    server::start(&app, &cfg, state.inner(), false)?;
-    automation::start(&cfg, automation_state.inner())?;
-    Ok(())
+fn restart_server(app: tauri::AppHandle) -> Result<(), String> {
+    tray::restart_services(&app)
 }
 
 #[tauri::command]
@@ -200,10 +193,14 @@ fn main() {
     }
 
     tauri::Builder::default()
+        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+            tray::show_main_window(app);
+        }))
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())
         .manage(ServerState::default())
         .manage(AutomationState::default())
+        .manage(LifecycleState::default())
         .invoke_handler(tauri::generate_handler![
             get_config,
             save_config,
@@ -234,12 +231,16 @@ fn main() {
                     }
                 }
             }
+            tray::setup(app)?;
             Ok(())
         })
         .on_window_event(|window, event| {
-            if let tauri::WindowEvent::CloseRequested { .. } = event {
-                automation::stop(window.state::<AutomationState>().inner());
-                server::stop(window.state::<ServerState>().inner());
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                if !window.state::<LifecycleState>().is_quitting() {
+                    api.prevent_close();
+                    let _ = window.hide();
+                    let _ = window.emit("studio-hidden", ());
+                }
             }
         })
         .build(tauri::generate_context!())

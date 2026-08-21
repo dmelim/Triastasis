@@ -1,44 +1,34 @@
-import net from "node:net";
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
+import { mkdirSync } from "node:fs";
 
-function isFree(port) {
-  return new Promise((resolve) => {
-    const server = net.createServer();
-    server.once("error", () => resolve(false));
-    server.once("listening", () => server.close(() => resolve(true)));
-    server.listen(port, "127.0.0.1");
-  });
+mkdirSync(".reload", { recursive: true });
+
+// With `--no-dev-server`, Tauri embeds `dist` while compiling the debug shell.
+// Build it before Tauri starts so the compiler can never capture an empty
+// output directory on the first launch.
+const npmExecPath = process.env.npm_execpath;
+if (!npmExecPath) {
+  throw new Error("npm_execpath is unavailable; start development with npm run tauri:dev");
 }
-
-async function findFreePort(start, attempts = 50) {
-  for (let port = start; port < start + attempts; port += 1) {
-    if (await isFree(port)) return port;
-  }
-  throw new Error(`No free port found in range ${start}-${start + attempts}`);
-}
-
-const preferred = Number(process.env.TRELLIS_DEV_PORT) || 1420;
-const port = await findFreePort(preferred);
-
-console.log(
-  port === preferred
-    ? `[dev] using port ${port}`
-    : `[dev] port ${preferred} busy - using ${port} instead`,
-);
-
-const tauriConfig = JSON.stringify({
-  build: { devUrl: `http://localhost:${port}` },
+const initialBuild = spawnSync(process.execPath, [npmExecPath, "run", "build"], {
+  stdio: "inherit",
+  env: process.env,
 });
+if (initialBuild.status !== 0) {
+  process.exit(initialBuild.status ?? 1);
+}
+
 const tauriArgs = [
   "node_modules/@tauri-apps/cli/tauri.js",
   "dev",
-  "--config",
-  tauriConfig,
+  "--no-dev-server",
+  "--additional-watch-folders",
+  "../.reload",
 ];
 
 const child = spawn(process.execPath, tauriArgs, {
   stdio: "inherit",
-  env: { ...process.env, TRELLIS_DEV_PORT: String(port) },
+  env: process.env,
 });
 
 child.on("exit", (code) => process.exit(code ?? 0));

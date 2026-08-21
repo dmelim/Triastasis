@@ -11,6 +11,7 @@ use tiny_http::{Header, Method, Request, Response, Server, StatusCode};
 use crate::config::{self, Config};
 
 const MAX_REQUEST_BYTES: usize = 64 * 1024 * 1024;
+const PLANE_COLLAPSE_RATIO: f64 = 0.05;
 static JOB_COUNTER: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Clone, Serialize)]
@@ -53,16 +54,63 @@ enum JobStatus {
     Cancelled,
 }
 
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct JobParams {
+    seed: u64,
+    resolution: u16,
+    bg_removal: String,
+    uv: String,
+}
+
+impl Default for JobParams {
+    fn default() -> Self {
+        Self {
+            seed: 42,
+            resolution: 512,
+            bg_removal: "auto".to_string(),
+            uv: "xatlas".to_string(),
+        }
+    }
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ModelDimensions {
+    x: f64,
+    y: f64,
+    z: f64,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct QualityWarning {
+    code: String,
+    message: String,
+    thin_ratio: f64,
+    threshold: f64,
+    dimensions: ModelDimensions,
+}
+
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct JobView {
     id: String,
     status: JobStatus,
+    status_url: String,
+    model_url: String,
+    image_url: String,
     submitted_at: u64,
     started_at: Option<u64>,
     finished_at: Option<u64>,
     output_path: Option<String>,
     error: Option<String>,
+    source_name: String,
+    source_type: String,
+    params: JobParams,
+    queue_position: Option<usize>,
+    jobs_ahead: usize,
+    quality_warning: Option<QualityWarning>,
 }
 
 struct Job {
@@ -73,22 +121,149 @@ struct Job {
     finished_at: Option<u64>,
     content_type: String,
     body: Vec<u8>,
+    source_image: Vec<u8>,
+    source_name: String,
+    source_type: String,
+    source_path: Option<String>,
+    params: JobParams,
     output_path: Option<String>,
     error: Option<String>,
+    quality_warning: Option<QualityWarning>,
 }
 
 impl Job {
-    fn view(&self) -> JobView {
+    fn view(&self, base_url: &str, queue_position: Option<usize>, jobs_ahead: usize) -> JobView {
+        let id = &self.id;
         JobView {
-            id: self.id.clone(),
+            id: id.clone(),
             status: self.status,
+            status_url: format!("{base_url}/jobs/{id}"),
+            model_url: format!("{base_url}/jobs/{id}/model"),
+            image_url: format!("{base_url}/jobs/{id}/image"),
             submitted_at: self.submitted_at,
             started_at: self.started_at,
             finished_at: self.finished_at,
             output_path: self.output_path.clone(),
             error: self.error.clone(),
+            source_name: self.source_name.clone(),
+            source_type: self.source_type.clone(),
+            params: self.params.clone(),
+            queue_position,
+            jobs_ahead,
+            quality_warning: self.quality_warning.clone(),
         }
     }
+}
+
+fn glb_json(bytes: &[u8]) -> Option<serde_json::Value> {
+    if bytes.len() < 20 || &bytes[0..4] != b"glTF" {
+        return None;
+    }
+    let version = u32::from_le_bytes(bytes[4..8].try_into().ok()?);
+    if version != 2 {
+        return None;
+    }
+    let mut offset = 12usize;
+    while offset.checked_add(8)? <= bytes.len() {
+        let length = u32::from_le_bytes(bytes[offset..offset + 4].try_into().ok()?) as usize;
+        let chunk_type = u32::from_le_bytes(bytes[offset + 4..offset + 8].try_into().ok()?);
+        let start = offset.checked_add(8)?;
+        let end = start.checked_add(length)?;
+        if end > bytes.len() {
+            return None;
+        }
+        if chunk_type == 0x4e4f534a {
+            let json = std::str::from_utf8(&bytes[start..end])
+                .ok()?
+                .trim_end_matches(['\0', ' ']);
+            return serde_json::from_str(json).ok();
+        }
+        offset = end;
+    }
+    None
+}
+
+fn vector3(value: &serde_json::Value) -> Option<[f64; 3]> {
+    let values = value.as_array()?;
+    if values.len() < 3 {
+        return None;
+    }
+    Some([
+        values[0].as_f64()?,
+        values[1].as_f64()?,
+        values[2].as_f64()?,
+    ])
+}
+
+fn inspect_glb_quality(bytes: &[u8]) -> Option<QualityWarning> {
+    let json = glb_json(bytes)?;
+    let meshes = json.get("meshes")?.as_array()?;
+    let accessors = json.get("accessors")?.as_array()?;
+    let mut lower = [f64::INFINITY; 3];
+    let mut upper = [f64::NEG_INFINITY; 3];
+    let mut found = false;
+
+    for mesh in meshes {
+        let Some(primitives) = mesh.get("primitives").and_then(|value| value.as_array()) else {
+            continue;
+        };
+        for primitive in primitives {
+            let Some(index) = primitive
+                .get("attributes")
+                .and_then(|value| value.get("POSITION"))
+                .and_then(|value| value.as_u64())
+                .and_then(|value| usize::try_from(value).ok())
+            else {
+                continue;
+            };
+            let Some(accessor) = accessors.get(index) else {
+                continue;
+            };
+            let (Some(min), Some(max)) = (
+                accessor.get("min").and_then(vector3),
+                accessor.get("max").and_then(vector3),
+            ) else {
+                continue;
+            };
+            found = true;
+            for axis in 0..3 {
+                lower[axis] = lower[axis].min(min[axis]);
+                upper[axis] = upper[axis].max(max[axis]);
+            }
+        }
+    }
+    if !found {
+        return None;
+    }
+    let dimensions = ModelDimensions {
+        x: upper[0] - lower[0],
+        y: upper[1] - lower[1],
+        z: upper[2] - lower[2],
+    };
+    let axes = [dimensions.x, dimensions.y, dimensions.z];
+    let largest = axes.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+    let thinnest = axes.iter().copied().fold(f64::INFINITY, f64::min);
+    if !largest.is_finite() || largest <= f64::EPSILON || thinnest < 0.0 {
+        return None;
+    }
+    let thin_ratio = thinnest / largest;
+    if thin_ratio >= PLANE_COLLAPSE_RATIO {
+        return None;
+    }
+    Some(QualityWarning {
+        code: "collapsed-plane".to_string(),
+        message: "Collapsed into a plane".to_string(),
+        thin_ratio,
+        threshold: PLANE_COLLAPSE_RATIO,
+        dimensions,
+    })
+}
+
+struct MultipartInput {
+    image: Vec<u8>,
+    source_name: String,
+    source_type: String,
+    params: JobParams,
 }
 
 #[derive(Default)]
@@ -97,10 +272,21 @@ struct QueueData {
     pending: VecDeque<String>,
 }
 
+struct AdmissionState {
+    accepting: bool,
+}
+
+impl Default for AdmissionState {
+    fn default() -> Self {
+        Self { accepting: true }
+    }
+}
+
 #[derive(Default)]
 struct JobQueue {
     data: Mutex<QueueData>,
     changed: Condvar,
+    admission: Mutex<AdmissionState>,
 }
 
 struct Control {
@@ -113,6 +299,33 @@ struct Control {
 pub struct AutomationState {
     control: Mutex<Option<Control>>,
     info: Mutex<AutomationInfo>,
+    maintenance: AtomicBool,
+}
+
+/// `start` first tears down the previous control. If binding the replacement
+/// API then fails, the old queue must stay gone while maintenance becomes
+/// retryable instead of remaining latched forever.
+struct StartRecovery<'a> {
+    state: &'a AutomationState,
+    armed: bool,
+}
+
+impl<'a> StartRecovery<'a> {
+    fn new(state: &'a AutomationState) -> Self {
+        Self { state, armed: true }
+    }
+
+    fn complete(&mut self) {
+        self.armed = false;
+    }
+}
+
+impl Drop for StartRecovery<'_> {
+    fn drop(&mut self) {
+        if self.armed {
+            self.state.maintenance.store(false, Ordering::Release);
+        }
+    }
 }
 
 fn now_ms() -> u64 {
@@ -143,6 +356,67 @@ fn json_response(status: u16, body: String) -> Response<Cursor<Vec<u8>>> {
 
 fn error_response(status: u16, message: &str) -> Response<Cursor<Vec<u8>>> {
     json_response(status, serde_json::json!({ "error": message }).to_string())
+}
+
+fn allowed_origin(origin: Option<&str>) -> bool {
+    let Some(origin) = origin else {
+        return true;
+    };
+    let origin = origin.trim();
+    let (authority, is_tauri_scheme) = if let Some(authority) = origin.strip_prefix("tauri://") {
+        (authority, true)
+    } else if let Some(authority) = origin
+        .strip_prefix("http://")
+        .or_else(|| origin.strip_prefix("https://"))
+    {
+        (authority, false)
+    } else {
+        return false;
+    };
+    if authority.is_empty() || authority.contains('/') || authority.contains('@') {
+        return false;
+    }
+
+    let (host, port) = if let Some(rest) = authority.strip_prefix('[') {
+        let Some(end) = rest.find(']') else {
+            return false;
+        };
+        let host = &rest[..end];
+        let suffix = &rest[end + 1..];
+        let port = if suffix.is_empty() {
+            true
+        } else {
+            suffix
+                .strip_prefix(':')
+                .map(|value| !value.is_empty() && value.chars().all(|ch| ch.is_ascii_digit()))
+                .unwrap_or(false)
+        };
+        (host, port)
+    } else if let Some((host, port)) = authority.rsplit_once(':') {
+        (
+            host,
+            !port.is_empty() && port.chars().all(|ch| ch.is_ascii_digit()),
+        )
+    } else {
+        (authority, true)
+    };
+
+    port && if is_tauri_scheme {
+        host.eq_ignore_ascii_case("localhost") || host.eq_ignore_ascii_case("tauri.localhost")
+    } else {
+        matches!(
+            host.to_ascii_lowercase().as_str(),
+            "localhost" | "127.0.0.1" | "::1" | "tauri.localhost"
+        )
+    }
+}
+
+fn request_origins_allowed(request: &Request) -> bool {
+    request
+        .headers()
+        .iter()
+        .filter(|header| header.field.equiv("Origin"))
+        .all(|header| allowed_origin(Some(header.value.as_str())))
 }
 
 fn gpu_capability(cfg: &Config, api_port: u16) -> AutomationInfo {
@@ -204,6 +478,226 @@ fn queue_counts(queue: &JobQueue) -> (usize, usize, usize) {
     (queued, running, data.jobs.len())
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct QueueSnapshot {
+    pub queued: usize,
+    pub running: usize,
+}
+
+pub fn queue_snapshot(state: &AutomationState) -> QueueSnapshot {
+    let guard = state.control.lock().unwrap();
+    let Some(control) = guard.as_ref() else {
+        return QueueSnapshot {
+            queued: 0,
+            running: 0,
+        };
+    };
+    let (queued, running, _) = queue_counts(&control.queue);
+    QueueSnapshot { queued, running }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MaintenanceError {
+    Busy(QueueSnapshot),
+    AlreadyInProgress,
+}
+
+/// Atomically pause new submissions if the current queue is idle. The
+/// admission lock is held while checking and changing the queue, so a POST
+/// cannot slip in between the idle check and the pause.
+pub fn quiesce_if_idle(state: &AutomationState) -> Result<(), MaintenanceError> {
+    if state.maintenance.swap(true, Ordering::AcqRel) {
+        return Err(MaintenanceError::AlreadyInProgress);
+    }
+
+    let result = {
+        let guard = state.control.lock().unwrap();
+        if let Some(control) = guard.as_ref() {
+            let mut admission = control.queue.admission.lock().unwrap();
+            let (queued, running, _) = queue_counts(&control.queue);
+            if queued > 0 || running > 0 {
+                Err(MaintenanceError::Busy(QueueSnapshot { queued, running }))
+            } else {
+                admission.accepting = false;
+                Ok(())
+            }
+        } else {
+            Ok(())
+        }
+    };
+
+    if result.is_err() {
+        state.maintenance.store(false, Ordering::Release);
+    }
+    result
+}
+
+/// Resume submissions after a failed restart, or after a new automation
+/// control has been installed. This is deliberately idempotent.
+pub fn resume(state: &AutomationState) {
+    state.maintenance.store(false, Ordering::Release);
+    let guard = state.control.lock().unwrap();
+    if let Some(control) = guard.as_ref() {
+        control.queue.admission.lock().unwrap().accepting = true;
+    }
+}
+
+fn find_bytes(haystack: &[u8], needle: &[u8]) -> Option<usize> {
+    if needle.is_empty() {
+        return Some(0);
+    }
+    haystack
+        .windows(needle.len())
+        .position(|window| window == needle)
+}
+
+fn quoted_header_value(headers: &str, key: &str) -> Option<String> {
+    let disposition = headers.lines().find_map(|line| {
+        let (name, value) = line.split_once(':')?;
+        name.trim()
+            .eq_ignore_ascii_case("Content-Disposition")
+            .then_some(value)
+    })?;
+    disposition.split(';').find_map(|part| {
+        let (name, value) = part.split_once('=')?;
+        if !name.trim().eq_ignore_ascii_case(key) {
+            return None;
+        }
+        Some(value.trim().trim_matches('"').to_string())
+    })
+}
+
+fn sanitize_source_name(filename: &str) -> String {
+    let candidate = filename.rsplit(['/', '\\']).next().unwrap_or_default();
+    let safe: String = candidate
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || matches!(ch, '.' | '_' | '-') {
+                ch
+            } else {
+                '_'
+            }
+        })
+        .take(128)
+        .collect();
+    if safe.is_empty() {
+        "automation-source.png".to_string()
+    } else {
+        safe
+    }
+}
+
+fn parse_multipart(content_type: &str, body: &[u8]) -> Result<MultipartInput, String> {
+    let boundary = content_type
+        .split(';')
+        .map(str::trim)
+        .find_map(|part| part.strip_prefix("boundary="))
+        .map(|value| value.trim_matches('"'))
+        .filter(|value| !value.is_empty())
+        .ok_or("multipart boundary is missing")?;
+    let marker = format!("--{boundary}").into_bytes();
+    let next_marker = format!("\r\n--{boundary}").into_bytes();
+    let mut cursor = 0;
+    let mut image = None;
+    let mut source_name = "automation-source.png".to_string();
+    let mut source_type = "image/png".to_string();
+    let mut params = JobParams::default();
+
+    while let Some(relative) = find_bytes(&body[cursor..], &marker) {
+        let mut part_start = cursor + relative + marker.len();
+        if body.get(part_start..part_start + 2) == Some(b"--") {
+            break;
+        }
+        if body.get(part_start..part_start + 2) == Some(b"\r\n") {
+            part_start += 2;
+        }
+        let Some(header_len) = find_bytes(&body[part_start..], b"\r\n\r\n") else {
+            break;
+        };
+        let data_start = part_start + header_len + 4;
+        let Some(data_len) = find_bytes(&body[data_start..], &next_marker) else {
+            break;
+        };
+        let headers = String::from_utf8_lossy(&body[part_start..part_start + header_len]);
+        let name = quoted_header_value(&headers, "name").unwrap_or_default();
+        let value = &body[data_start..data_start + data_len];
+
+        if name == "image" {
+            image = Some(value.to_vec());
+            if let Some(filename) = quoted_header_value(&headers, "filename") {
+                source_name = sanitize_source_name(&filename);
+            }
+            if let Some(content_type) = headers.lines().find_map(|line| {
+                let (name, value) = line.split_once(':')?;
+                name.trim()
+                    .eq_ignore_ascii_case("Content-Type")
+                    .then_some(value.trim())
+                    .filter(|value| value.to_ascii_lowercase().starts_with("image/"))
+            }) {
+                source_type = content_type.to_string();
+            }
+        } else if let Ok(text) = std::str::from_utf8(value) {
+            match name.as_str() {
+                "seed" => params.seed = text.trim().parse().unwrap_or(params.seed),
+                "resolution" => {
+                    params.resolution = text.trim().parse().unwrap_or(params.resolution)
+                }
+                "bg_removal" => params.bg_removal = text.trim().to_string(),
+                "uv" => params.uv = text.trim().to_string(),
+                _ => {}
+            }
+        }
+        cursor = data_start + data_len + 2;
+    }
+
+    let image = image
+        .filter(|bytes| !bytes.is_empty())
+        .ok_or("image field is missing")?;
+    Ok(MultipartInput {
+        image,
+        source_name,
+        source_type,
+        params,
+    })
+}
+
+fn job_queue_position(data: &QueueData, id: &str) -> (Option<usize>, usize) {
+    let Some(job) = data.jobs.get(id) else {
+        return (None, 0);
+    };
+    if job.status == JobStatus::Running {
+        return (Some(1), 0);
+    }
+    if job.status != JobStatus::Queued {
+        return (None, 0);
+    }
+    let running = data
+        .jobs
+        .values()
+        .filter(|candidate| candidate.status == JobStatus::Running)
+        .count();
+    let Some(pending_index) = data.pending.iter().position(|pending| pending == id) else {
+        return (None, 0);
+    };
+    let pending_before = data
+        .pending
+        .iter()
+        .take(pending_index)
+        .filter(|pending| {
+            data.jobs
+                .get(*pending)
+                .map(|candidate| candidate.status == JobStatus::Queued)
+                .unwrap_or(false)
+        })
+        .count();
+    let jobs_ahead = running + pending_before;
+    (Some(jobs_ahead + 1), jobs_ahead)
+}
+
+fn remove_pending_job(data: &mut QueueData, id: &str) {
+    data.pending.retain(|pending| pending != id);
+}
+
 fn submit_job(mut request: Request, queue: &Arc<JobQueue>, base_url: &str) {
     let content_type = request
         .headers()
@@ -238,6 +732,26 @@ fn submit_job(mut request: Request, queue: &Arc<JobQueue>, base_url: &str) {
         return;
     }
 
+    let multipart = match parse_multipart(&content_type, &body) {
+        Ok(input) => input,
+        Err(error) => {
+            let _ = request.respond(error_response(
+                400,
+                &format!("invalid generation request: {error}"),
+            ));
+            return;
+        }
+    };
+
+    let admission = queue.admission.lock().unwrap();
+    if !admission.accepting {
+        let _ = request.respond(error_response(
+            503,
+            "automation API is temporarily paused while Trellis Studio is restarting or quitting",
+        ));
+        return;
+    }
+
     let id = next_job_id();
     let job = Job {
         id: id.clone(),
@@ -247,32 +761,65 @@ fn submit_job(mut request: Request, queue: &Arc<JobQueue>, base_url: &str) {
         finished_at: None,
         content_type,
         body,
+        source_image: multipart.image,
+        source_name: multipart.source_name,
+        source_type: multipart.source_type,
+        source_path: None,
+        params: multipart.params,
         output_path: None,
         error: None,
+        quality_warning: None,
     };
-    {
+    let (queue_position, jobs_ahead, queued, running) = {
         let mut data = queue.data.lock().unwrap();
         data.pending.push_back(id.clone());
         data.jobs.insert(id.clone(), job);
-    }
+        let (queue_position, jobs_ahead) = job_queue_position(&data, &id);
+        let queued = data
+            .jobs
+            .values()
+            .filter(|candidate| candidate.status == JobStatus::Queued)
+            .count();
+        let running = data
+            .jobs
+            .values()
+            .filter(|candidate| candidate.status == JobStatus::Running)
+            .count();
+        (queue_position, jobs_ahead, queued, running)
+    };
+    drop(admission);
     queue.changed.notify_one();
+    let message = if jobs_ahead == 0 {
+        "Job accepted and next to run".to_string()
+    } else {
+        format!(
+            "Job queued with {jobs_ahead} job{} ahead",
+            if jobs_ahead == 1 { "" } else { "s" }
+        )
+    };
     let body = serde_json::json!({
         "id": id,
         "status": "queued",
         "statusUrl": format!("{base_url}/jobs/{id}"),
-        "modelUrl": format!("{base_url}/jobs/{id}/model")
+        "modelUrl": format!("{base_url}/jobs/{id}/model"),
+        "imageUrl": format!("{base_url}/jobs/{id}/image"),
+        "queuePosition": queue_position,
+        "jobsAhead": jobs_ahead,
+        "queue": { "queued": queued, "running": running },
+        "message": message
     });
     let _ = request.respond(json_response(202, body.to_string()));
 }
 
-fn list_jobs(request: Request, queue: &JobQueue) {
-    let mut jobs: Vec<JobView> = queue
-        .data
-        .lock()
-        .unwrap()
+fn list_jobs(request: Request, queue: &JobQueue, base_url: &str) {
+    let data = queue.data.lock().unwrap();
+    let mut jobs: Vec<JobView> = data
         .jobs
         .values()
-        .map(Job::view)
+        .map(|job| {
+            let (position, ahead) = job_queue_position(&data, &job.id);
+            job.view(base_url, position, ahead)
+        })
         .collect();
     jobs.sort_by_key(|j| std::cmp::Reverse(j.submitted_at));
     let _ = request.respond(json_response(
@@ -281,17 +828,58 @@ fn list_jobs(request: Request, queue: &JobQueue) {
     ));
 }
 
-fn get_job(request: Request, queue: &JobQueue, id: &str) {
+fn get_job(request: Request, queue: &JobQueue, id: &str, base_url: &str) {
     let data = queue.data.lock().unwrap();
     match data.jobs.get(id) {
         Some(job) => {
+            let (position, ahead) = job_queue_position(&data, id);
             let _ = request.respond(json_response(
                 200,
-                serde_json::to_string(&job.view()).unwrap(),
+                serde_json::to_string(&job.view(base_url, position, ahead)).unwrap(),
             ));
         }
         None => {
             let _ = request.respond(error_response(404, "job not found"));
+        }
+    }
+}
+
+fn get_image(request: Request, queue: &JobQueue, id: &str) {
+    let result = {
+        let data = queue.data.lock().unwrap();
+        data.jobs.get(id).map(|job| {
+            (
+                job.status,
+                job.source_path.clone(),
+                job.source_type.clone(),
+                job.source_name.clone(),
+            )
+        })
+    };
+    match result {
+        None => {
+            let _ = request.respond(error_response(404, "job not found"));
+        }
+        Some((JobStatus::Succeeded, Some(path), content_type, filename)) => {
+            match std::fs::read(path) {
+                Ok(bytes) => {
+                    let response = Response::from_data(bytes)
+                        .with_header(header("Content-Type", &content_type))
+                        .with_header(header(
+                            "Content-Disposition",
+                            &format!("attachment; filename=\"{filename}\""),
+                        ))
+                        .with_header(header("Access-Control-Allow-Origin", "*"));
+                    let _ = request.respond(response);
+                }
+                Err(_) => {
+                    let _ =
+                        request.respond(error_response(410, "source image is no longer available"));
+                }
+            }
+        }
+        Some(_) => {
+            let _ = request.respond(error_response(409, "source image is not ready"));
         }
     }
 }
@@ -335,36 +923,56 @@ fn get_model(request: Request, queue: &JobQueue, id: &str) {
     }
 }
 
-fn cancel_job(request: Request, queue: &JobQueue, id: &str) {
+fn cancel_job(request: Request, queue: &JobQueue, id: &str, base_url: &str) {
     let mut data = queue.data.lock().unwrap();
-    match data.jobs.get_mut(id) {
-        None => {
-            let _ = request.respond(error_response(404, "job not found"));
-        }
-        Some(job) if job.status == JobStatus::Queued => {
+    let Some(status) = data.jobs.get(id).map(|job| job.status) else {
+        let _ = request.respond(error_response(404, "job not found"));
+        return;
+    };
+
+    if status == JobStatus::Queued {
+        remove_pending_job(&mut data, id);
+        if let Some(job) = data.jobs.get_mut(id) {
             job.status = JobStatus::Cancelled;
             job.finished_at = Some(now_ms());
-            let _ = request.respond(json_response(
-                200,
-                serde_json::to_string(&job.view()).unwrap(),
-            ));
+            job.body.clear();
+            job.source_image.clear();
         }
-        Some(job) if job.status == JobStatus::Running => {
-            let _ = request.respond(error_response(
-                409,
-                "a running native GPU job cannot be interrupted safely",
-            ));
-        }
-        Some(job) => {
-            let _ = request.respond(json_response(
-                200,
-                serde_json::to_string(&job.view()).unwrap(),
-            ));
-        }
+        let (position, ahead) = job_queue_position(&data, id);
+        let Some(job) = data.jobs.get(id) else {
+            let _ = request.respond(error_response(404, "job not found"));
+            return;
+        };
+        let body = serde_json::to_string(&job.view(base_url, position, ahead)).unwrap();
+        let _ = request.respond(json_response(200, body));
+        return;
     }
+
+    if status == JobStatus::Running {
+        let _ = request.respond(error_response(
+            409,
+            "a running native GPU job cannot be interrupted safely",
+        ));
+        return;
+    }
+
+    let (position, ahead) = job_queue_position(&data, id);
+    let Some(job) = data.jobs.get(id) else {
+        let _ = request.respond(error_response(404, "job not found"));
+        return;
+    };
+    let body = serde_json::to_string(&job.view(base_url, position, ahead)).unwrap();
+    let _ = request.respond(json_response(200, body));
 }
 
 fn handle_request(request: Request, queue: &Arc<JobQueue>, info: &AutomationInfo, base_url: &str) {
+    if !request_origins_allowed(&request) {
+        let _ = request.respond(error_response(
+            403,
+            "automation API only accepts loopback, Tauri, or same-machine development origins",
+        ));
+        return;
+    }
     let method = request.method().clone();
     let path = request.url().split('?').next().unwrap_or("/").to_string();
     if method == Method::Options {
@@ -389,7 +997,7 @@ fn handle_request(request: Request, queue: &Arc<JobQueue>, info: &AutomationInfo
             "apiVersion": 1,
             "capabilities": info,
             "queue": { "queued": queued, "running": running, "total": total },
-            "endpoints": ["POST /jobs", "GET /jobs", "GET /jobs/{id}", "GET /jobs/{id}/model", "DELETE /jobs/{id}"]
+            "endpoints": ["POST /jobs", "GET /jobs", "GET /jobs/{id}", "GET /jobs/{id}/model", "GET /jobs/{id}/image", "DELETE /jobs/{id}"]
         });
         let _ = request.respond(json_response(200, body.to_string()));
         return;
@@ -399,7 +1007,7 @@ fn handle_request(request: Request, queue: &Arc<JobQueue>, info: &AutomationInfo
         return;
     }
     if method == Method::Get && path == "/jobs" {
-        list_jobs(request, queue);
+        list_jobs(request, queue, base_url);
         return;
     }
 
@@ -407,15 +1015,19 @@ fn handle_request(request: Request, queue: &Arc<JobQueue>, info: &AutomationInfo
     if parts.len() >= 2 && parts[0] == "jobs" {
         let id = parts[1];
         if method == Method::Get && parts.len() == 2 {
-            get_job(request, queue, id);
+            get_job(request, queue, id, base_url);
             return;
         }
         if method == Method::Get && parts.len() == 3 && parts[2] == "model" {
             get_model(request, queue, id);
             return;
         }
+        if method == Method::Get && parts.len() == 3 && parts[2] == "image" {
+            get_image(request, queue, id);
+            return;
+        }
         if method == Method::Delete && parts.len() == 2 {
-            cancel_job(request, queue, id);
+            cancel_job(request, queue, id, base_url);
             return;
         }
     }
@@ -447,13 +1059,19 @@ fn worker_loop(queue: Arc<JobQueue>, stop: Arc<AtomicBool>) {
             }
             job.status = JobStatus::Running;
             job.started_at = Some(now_ms());
-            Some((id, job.content_type.clone(), job.body.clone()))
+            Some((
+                id,
+                job.content_type.clone(),
+                job.body.clone(),
+                job.source_image.clone(),
+                job.source_name.clone(),
+            ))
         };
 
-        let Some((id, content_type, body)) = work else {
+        let Some((id, content_type, body, source_image, source_name)) = work else {
             continue;
         };
-        let result = (|| -> Result<String, String> {
+        let result = (|| -> Result<(String, String, Option<QualityWarning>), String> {
             let cfg = config::load().ok_or("Trellis server configuration is unavailable")?;
             let url = format!("http://{}:{}/generate", cfg.host, cfg.port);
             let response = client
@@ -473,20 +1091,39 @@ fn worker_loop(queue: Arc<JobQueue>, stop: Arc<AtomicBool>) {
             if bytes.is_empty() {
                 return Err("Trellis server returned an empty model".to_string());
             }
+            let quality_warning = inspect_glb_quality(&bytes);
             let output = config::resolve_output_dir()?.join(format!("automation_{id}.glb"));
             std::fs::write(&output, &bytes)
                 .map_err(|e| format!("could not save generated model: {e}"))?;
-            Ok(output.to_string_lossy().into_owned())
+            let extension = std::path::Path::new(&source_name)
+                .extension()
+                .and_then(|value| value.to_str())
+                .filter(|value| {
+                    value.len() <= 8 && value.chars().all(|ch| ch.is_ascii_alphanumeric())
+                })
+                .unwrap_or("img");
+            let source_path =
+                config::resolve_output_dir()?.join(format!("automation_{id}_source.{extension}"));
+            std::fs::write(&source_path, &source_image)
+                .map_err(|e| format!("could not save automation source image: {e}"))?;
+            Ok((
+                output.to_string_lossy().into_owned(),
+                source_path.to_string_lossy().into_owned(),
+                quality_warning,
+            ))
         })();
 
         let mut data = queue.data.lock().unwrap();
         if let Some(job) = data.jobs.get_mut(&id) {
             job.body.clear();
+            job.source_image.clear();
             job.finished_at = Some(now_ms());
             match result {
-                Ok(path) => {
+                Ok((path, source_path, quality_warning)) => {
                     job.status = JobStatus::Succeeded;
                     job.output_path = Some(path);
+                    job.source_path = Some(source_path);
+                    job.quality_warning = quality_warning;
                 }
                 Err(error) => {
                     job.status = JobStatus::Failed;
@@ -499,11 +1136,13 @@ fn worker_loop(queue: Arc<JobQueue>, stop: Arc<AtomicBool>) {
 
 pub fn start(cfg: &Config, state: &AutomationState) -> Result<AutomationInfo, String> {
     stop(state);
+    let mut recovery = StartRecovery::new(state);
     let api_port = cfg.port.checked_add(1).ok_or("server port is too high")?;
     let addr = format!("127.0.0.1:{api_port}");
     let server = Arc::new(Server::http(&addr).map_err(|e| format!("automation API: {e}"))?);
     let stop_flag = Arc::new(AtomicBool::new(false));
     let queue = Arc::new(JobQueue::default());
+    queue.admission.lock().unwrap().accepting = !state.maintenance.load(Ordering::Acquire);
     let info = gpu_capability(cfg, api_port);
     let base_url = info.url.clone();
 
@@ -527,16 +1166,22 @@ pub fn start(cfg: &Config, state: &AutomationState) -> Result<AutomationInfo, St
     std::thread::spawn(move || worker_loop(worker_queue, worker_stop));
 
     *state.info.lock().unwrap() = info.clone();
+    let next_queue = queue.clone();
     *state.control.lock().unwrap() = Some(Control {
         stop: stop_flag,
         server,
         queue,
     });
+    state.maintenance.store(false, Ordering::Release);
+    next_queue.admission.lock().unwrap().accepting = true;
+    recovery.complete();
     Ok(info)
 }
 
 pub fn stop(state: &AutomationState) {
+    state.maintenance.store(true, Ordering::Release);
     if let Some(control) = state.control.lock().unwrap().take() {
+        control.queue.admission.lock().unwrap().accepting = false;
         control.stop.store(true, Ordering::Relaxed);
         control.queue.changed.notify_all();
         control.server.unblock();
@@ -546,4 +1191,254 @@ pub fn stop(state: &AutomationState) {
 
 pub fn info(state: &AutomationState) -> AutomationInfo {
     state.info.lock().unwrap().clone()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::net::TcpListener;
+
+    fn job(id: &str, status: JobStatus) -> Job {
+        Job {
+            id: id.to_string(),
+            status,
+            submitted_at: 0,
+            started_at: None,
+            finished_at: None,
+            content_type: "multipart/form-data".to_string(),
+            body: Vec::new(),
+            source_image: Vec::new(),
+            source_name: "source.png".to_string(),
+            source_type: "image/png".to_string(),
+            source_path: None,
+            params: JobParams::default(),
+            output_path: None,
+            error: None,
+            quality_warning: None,
+        }
+    }
+
+    #[test]
+    fn queued_job_reports_running_and_pending_jobs_ahead() {
+        let mut data = QueueData::default();
+        data.jobs
+            .insert("running".to_string(), job("running", JobStatus::Running));
+        data.jobs
+            .insert("first".to_string(), job("first", JobStatus::Queued));
+        data.jobs
+            .insert("second".to_string(), job("second", JobStatus::Queued));
+        data.pending
+            .extend(["first".to_string(), "second".to_string()]);
+
+        assert_eq!(job_queue_position(&data, "first"), (Some(2), 1));
+        assert_eq!(job_queue_position(&data, "second"), (Some(3), 2));
+        assert_eq!(job_queue_position(&data, "running"), (Some(1), 0));
+    }
+
+    #[test]
+    fn finished_or_missing_jobs_have_no_queue_position() {
+        let mut data = QueueData::default();
+        data.jobs
+            .insert("done".to_string(), job("done", JobStatus::Succeeded));
+
+        assert_eq!(job_queue_position(&data, "done"), (None, 0));
+        assert_eq!(job_queue_position(&data, "missing"), (None, 0));
+    }
+
+    #[test]
+    fn job_view_exposes_stable_urls_and_queue_metadata() {
+        let value = serde_json::to_value(job("abc", JobStatus::Queued).view(
+            "http://127.0.0.1:8082",
+            Some(3),
+            2,
+        ))
+        .unwrap();
+
+        assert_eq!(value["id"], "abc");
+        assert_eq!(value["statusUrl"], "http://127.0.0.1:8082/jobs/abc");
+        assert_eq!(value["modelUrl"], "http://127.0.0.1:8082/jobs/abc/model");
+        assert_eq!(value["imageUrl"], "http://127.0.0.1:8082/jobs/abc/image");
+        assert_eq!(value["queuePosition"], 3);
+        assert_eq!(value["jobsAhead"], 2);
+        assert!(value["qualityWarning"].is_null());
+    }
+
+    fn test_glb(dimensions: [f64; 3]) -> Vec<u8> {
+        let mut json = serde_json::json!({
+            "asset": { "version": "2.0" },
+            "meshes": [{ "primitives": [{ "attributes": { "POSITION": 0 } }] }],
+            "accessors": [{ "min": [0.0, 0.0, 0.0], "max": dimensions }]
+        })
+        .to_string()
+        .into_bytes();
+        while json.len() % 4 != 0 {
+            json.push(b' ');
+        }
+        let total_length = 12 + 8 + json.len();
+        let mut glb = Vec::with_capacity(total_length);
+        glb.extend_from_slice(b"glTF");
+        glb.extend_from_slice(&2u32.to_le_bytes());
+        glb.extend_from_slice(&(total_length as u32).to_le_bytes());
+        glb.extend_from_slice(&(json.len() as u32).to_le_bytes());
+        glb.extend_from_slice(&0x4e4f534au32.to_le_bytes());
+        glb.extend_from_slice(&json);
+        glb
+    }
+
+    #[test]
+    fn flags_a_generated_model_collapsed_into_a_plane() {
+        let warning = inspect_glb_quality(&test_glb([1.0, 1.0, 0.004])).unwrap();
+        assert_eq!(warning.code, "collapsed-plane");
+        assert!((warning.thin_ratio - 0.004).abs() < f64::EPSILON);
+        assert_eq!(warning.threshold, 0.05);
+    }
+
+    #[test]
+    fn accepts_a_model_with_visible_volume() {
+        assert!(inspect_glb_quality(&test_glb([1.0, 0.7, 0.2])).is_none());
+    }
+
+    #[test]
+    fn multipart_parser_keeps_binary_image_and_all_generation_fields() {
+        let boundary = "----trellis-test-boundary";
+        let mut body = Vec::new();
+        body.extend_from_slice(
+            format!(
+                "--{boundary}\r\nContent-Disposition: form-data; name=\"image\"; filename=\"C:\\\\tmp\\\\hero.png\"\r\nContent-Type: image/png\r\n\r\n"
+            )
+            .as_bytes(),
+        );
+        body.extend_from_slice(&[0, 1, 2, 255, 0]);
+        body.extend_from_slice(
+            format!(
+                "\r\n--{boundary}\r\nContent-Disposition: form-data; name=\"seed\"\r\n\r\n123\r\n--{boundary}\r\nContent-Disposition: form-data; name=\"resolution\"\r\n\r\n1024\r\n--{boundary}\r\nContent-Disposition: form-data; name=\"bg_removal\"\r\n\r\nbirefnet\r\n--{boundary}\r\nContent-Disposition: form-data; name=\"uv\"\r\n\r\nxatlas\r\n--{boundary}--\r\n"
+            )
+            .as_bytes(),
+        );
+
+        let parsed =
+            parse_multipart(&format!("multipart/form-data; boundary={boundary}"), &body).unwrap();
+        assert_eq!(parsed.image, vec![0, 1, 2, 255, 0]);
+        assert_eq!(parsed.source_name, "hero.png");
+        assert_eq!(parsed.source_type, "image/png");
+        assert_eq!(parsed.params.seed, 123);
+        assert_eq!(parsed.params.resolution, 1024);
+        assert_eq!(parsed.params.bg_removal, "birefnet");
+        assert_eq!(parsed.params.uv, "xatlas");
+    }
+
+    #[test]
+    fn cancelled_job_is_removed_from_later_queue_positions() {
+        let mut data = QueueData::default();
+        data.jobs
+            .insert("cancelled".to_string(), job("cancelled", JobStatus::Queued));
+        data.jobs
+            .insert("later".to_string(), job("later", JobStatus::Queued));
+        data.pending
+            .extend(["cancelled".to_string(), "later".to_string()]);
+
+        remove_pending_job(&mut data, "cancelled");
+        data.jobs.get_mut("cancelled").unwrap().status = JobStatus::Cancelled;
+
+        assert_eq!(job_queue_position(&data, "later"), (Some(1), 0));
+    }
+
+    #[test]
+    fn origin_policy_allows_local_clients_and_rejects_remote_origins() {
+        for origin in [
+            None,
+            Some("http://localhost:5173"),
+            Some("https://127.0.0.1:1420"),
+            Some("http://tauri.localhost"),
+            Some("tauri://localhost"),
+            Some("http://[::1]:5173"),
+        ] {
+            assert!(
+                allowed_origin(origin),
+                "expected allowed origin: {origin:?}"
+            );
+        }
+        for origin in [
+            Some("null"),
+            Some("https://example.com"),
+            Some("https://localhost.evil"),
+            Some("http://127.0.0.1.evil:8080"),
+            Some("tauri://example.com"),
+        ] {
+            assert!(
+                !allowed_origin(origin),
+                "expected rejected origin: {origin:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn maintenance_quiesce_is_atomic_and_resumable() {
+        let state = AutomationState::default();
+        let queue = Arc::new(JobQueue::default());
+        queue
+            .data
+            .lock()
+            .unwrap()
+            .jobs
+            .insert("busy".to_string(), job("busy", JobStatus::Running));
+        let server = Arc::new(Server::http("127.0.0.1:0").unwrap());
+        *state.control.lock().unwrap() = Some(Control {
+            stop: Arc::new(AtomicBool::new(false)),
+            server,
+            queue: queue.clone(),
+        });
+
+        assert_eq!(
+            quiesce_if_idle(&state),
+            Err(MaintenanceError::Busy(QueueSnapshot {
+                queued: 0,
+                running: 1
+            }))
+        );
+        queue.data.lock().unwrap().jobs.clear();
+        assert_eq!(quiesce_if_idle(&state), Ok(()));
+        assert!(!queue.admission.lock().unwrap().accepting);
+        assert_eq!(
+            quiesce_if_idle(&state),
+            Err(MaintenanceError::AlreadyInProgress)
+        );
+        resume(&state);
+        assert!(queue.admission.lock().unwrap().accepting);
+    }
+
+    #[test]
+    fn failed_start_releases_maintenance_without_restoring_old_control() {
+        let state = AutomationState::default();
+        let cfg = Config {
+            server_bin: String::new(),
+            models_dir: String::new(),
+            backend: "test".to_string(),
+            gpu: 0,
+            host: "127.0.0.1".to_string(),
+            port: u16::MAX,
+            output_dir: String::new(),
+        };
+
+        let error = match start(&cfg, &state) {
+            Ok(_) => panic!("an overflowing port must fail before binding"),
+            Err(error) => error,
+        };
+
+        assert_eq!(error, "server port is too high");
+        assert!(!state.maintenance.load(Ordering::Acquire));
+        assert!(state.control.lock().unwrap().is_none());
+        assert!(!info(&state).running);
+
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let held_port = listener.local_addr().unwrap().port();
+        let cfg = Config {
+            port: held_port.checked_sub(1).expect("ephemeral port is nonzero"),
+            ..cfg
+        };
+
+        assert!(start(&cfg, &state).is_err());
+        assert!(!state.maintenance.load(Ordering::Acquire));
+        assert!(state.control.lock().unwrap().is_none());
+    }
 }

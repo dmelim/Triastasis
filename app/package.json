@@ -6,6 +6,7 @@
   "description": "Trellis Studio — desktop app for local image→3D generation with trellis.cpp",
   "scripts": {
     "dev": "vite",
+    "dev:tauri": "node scripts/build-watch.mjs",
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview",
     "tauri": "tauri",

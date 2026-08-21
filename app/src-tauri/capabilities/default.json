@@ -8,6 +8,24 @@
     "core:event:default",
     "dialog:default",
     "fs:default",
+    "fs:allow-applocaldata-write-recursive",
+    {
+      "identifier": "fs:allow-read-file",
+      "allow": [
+        { "path": "**/*.png" },
+        { "path": "**/*.PNG" },
+        { "path": "**/*.jpg" },
+        { "path": "**/*.JPG" },
+        { "path": "**/*.jpeg" },
+        { "path": "**/*.JPEG" },
+        { "path": "**/*.webp" },
+        { "path": "**/*.WEBP" },
+        { "path": "**/*.bmp" },
+        { "path": "**/*.BMP" },
+        { "path": "**/*.gif" },
+        { "path": "**/*.GIF" }
+      ]
+    },
     {
       "identifier": "fs:allow-write-file",
       "allow": [{ "path": "**" }]
