@@ -5,6 +5,32 @@
 import { loadConfig, saveConfig } from "./config";
 import { invoke, isTauri, logsDir, openLogsDir, openOutputDir, pickDirectory } from "./tauri";
 
+export type ProgressDisplayMode = "notification" | "sidebar";
+export const PROGRESS_DISPLAY_MODE_KEY = "polyloom.progress-display-mode";
+
+export function progressDisplayMode(): ProgressDisplayMode {
+  return localStorage.getItem(PROGRESS_DISPLAY_MODE_KEY) === "sidebar" ? "sidebar" : "notification";
+}
+
+function progressDisplayField(): string {
+  const selected = progressDisplayMode();
+  return `<label class="ctl"><span>Generation progress</span>
+    <select id="set-progress-display">
+      <option value="notification"${selected === "notification" ? " selected" : ""}>Notification</option>
+      <option value="sidebar"${selected === "sidebar" ? " selected" : ""}>Right sidebar</option>
+    </select></label>`;
+}
+
+function bindProgressDisplay(body: HTMLElement): void {
+  const select = body.querySelector<HTMLSelectElement>("#set-progress-display");
+  if (!select) return;
+  select.onchange = () => {
+    const mode: ProgressDisplayMode = select.value === "sidebar" ? "sidebar" : "notification";
+    localStorage.setItem(PROGRESS_DISPLAY_MODE_KEY, mode);
+    window.dispatchEvent(new CustomEvent("polyloom-progress-display", { detail: mode }));
+  };
+}
+
 function field(label: string, id: string, value: string, type = "text"): string {
   return `<label class="ctl"><span>${label}</span>
     <input id="${id}" type="${type}" value="${value.replace(/"/g, "&quot;")}" /></label>`;
@@ -46,6 +72,7 @@ export async function renderSettings(
     body.innerHTML = `
       ${ro("Backend", cfg.backend)}
       ${ro("Server binary", cfg.serverBin)}
+      ${progressDisplayField()}
       ${field("Models directory", "set-models", cfg.modelsDir)}
       ${dirField("Output folder (generated GLBs are saved here)", "set-output", outputDir)}
       ${field("GPU index (&lt;0 = CPU)", "set-gpu", String(cfg.gpu), "number")}
@@ -59,6 +86,7 @@ export async function renderSettings(
         <button id="set-restart" class="button button--secondary" type="button">Restart server</button>
         <button id="set-save" class="button button--primary" type="button">Save &amp; restart</button>
       </div>`;
+    bindProgressDisplay(body);
 
     (body.querySelector("#set-logs-open") as HTMLButtonElement).onclick = async () => {
       try {
@@ -112,11 +140,13 @@ export async function renderSettings(
   } else {
     body.innerHTML = `
       <div class="kv">Running in a browser. Connecting to a trellis-server you launched.</div>
+      ${progressDisplayField()}
       ${field("Host", "set-host", cfg.host)}
       ${field("Port", "set-port", String(cfg.port), "number")}
       <div class="modal-actions">
         <button id="set-save" class="button button--primary" type="button">Save</button>
       </div>`;
+    bindProgressDisplay(body);
     (body.querySelector("#set-save") as HTMLButtonElement).onclick = async () => {
       const host = (body.querySelector("#set-host") as HTMLInputElement).value.trim() || "127.0.0.1";
       const port = parseInt((body.querySelector("#set-port") as HTMLInputElement).value, 10);

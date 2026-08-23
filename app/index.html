@@ -32,6 +32,11 @@
       <button id="banner-settings" class="link-btn">Open settings</button>
     </div>
 
+    <div id="recovery-banner" class="banner hidden" role="status">
+      <span></span>
+      <button id="recovery-review" class="link-btn">Review interrupted generations</button>
+    </div>
+
     <main class="workspace">
       <aside class="panel panel-left" aria-label="Workspace controls">
         <section id="generate-mode-panel" class="mode-panel">
@@ -47,7 +52,13 @@
               <button id="preview-source-tab" class="preview-tab active" type="button" role="tab" aria-selected="true">Source</button>
               <button id="preview-mask-tab" class="preview-tab" type="button" role="tab" aria-selected="false" disabled>Model input</button>
             </div>
-            <button id="preview-mask-btn" class="link-btn" type="button" disabled>Preview mask</button>
+            <div class="input-head-actions">
+              <button id="preview-mask-btn" class="link-btn" type="button" disabled>Preview mask</button>
+              <details class="inline-tip">
+                <summary aria-label="Image generation tips" title="Image generation tips"><span class="button-icon icon-info" aria-hidden="true"></span></summary>
+                <p class="tip-popover">For stronger volume, use a three-quarter view with visible depth, clear lighting, and a neutral background. Preview the model input before generating.</p>
+              </details>
+            </div>
           </div>
 
           <div id="dropzone" class="dropzone" tabindex="0" role="button" aria-label="Choose an input image" aria-controls="file-input">
@@ -60,15 +71,53 @@
             </div>
             <input id="file-input" type="file" accept="image/*" hidden />
           </div>
-          <div id="mask-help" class="input-help muted">For stronger volume, use a three-quarter view with visible depth, clear lighting, and a neutral background. Preview the model input before generating.</div>
+          <div id="mask-help" class="input-help muted hidden" aria-live="polite"></div>
 
-          <div class="controls">
+          <div class="quality-picker" role="group" aria-labelledby="quality-picker-label">
+            <div class="quality-heading">
+              <span id="quality-picker-label">Generation quality</span>
+              <details class="inline-tip">
+                <summary aria-label="About generation quality" title="About generation quality"><span class="button-icon icon-info" aria-hidden="true"></span></summary>
+                <p id="quality-preset-description" class="tip-popover" aria-live="polite">Recommended balance of detail, texture quality, and generation time.</p>
+              </details>
+            </div>
+            <div class="quality-options">
+              <label class="quality-option">
+                <input type="radio" name="generation-quality" value="low" />
+                <span class="quality-option-body">
+                  <strong>Low</strong>
+                  <span>Faster</span>
+                </span>
+              </label>
+              <label class="quality-option">
+                <input type="radio" name="generation-quality" value="medium" checked />
+                <span class="quality-option-body">
+                  <strong>Medium</strong>
+                  <span>Recommended</span>
+                </span>
+              </label>
+              <label class="quality-option">
+                <input type="radio" name="generation-quality" value="high" />
+                <span class="quality-option-body">
+                  <strong>High</strong>
+                  <span>More detail</span>
+                </span>
+              </label>
+            </div>
+          </div>
+
+          <details id="advanced-settings" class="advanced-settings">
+            <summary>
+              <span>Advanced settings</span>
+              <span id="advanced-settings-state" class="advanced-settings-state">Medium</span>
+            </summary>
+            <div class="controls">
             <div class="ctl">
               <label id="ctl-res-label" for="ctl-res">Resolution</label>
               <select id="ctl-res">
                 <option value="512">512 light</option>
                 <option value="1024" selected>1024 cascade</option>
-                <option value="1536">1536 high</option>
+                <option value="1536">1536 experimental</option>
               </select>
             </div>
             <div class="ctl">
@@ -159,7 +208,8 @@
                 <option value="png">PNG</option>
               </select>
             </div>
-          </div>
+            </div>
+          </details>
           <div id="generation-param-error" class="field-error" role="alert"></div>
 
           <div class="generate-actions">
@@ -224,6 +274,7 @@
                   <option value="coarse">Coarse overview</option>
                   <option value="full">Full triangle topology</option>
                 </select>
+                <span id="view-topology-detail-help" class="field-help">Used by Wireframe and Overlay views.</span>
               </div>
             </section>
 
@@ -253,6 +304,7 @@
             <section class="inspect-section">
               <h2>Camera</h2>
               <div class="camera-grid">
+                <button type="button" data-camera="reset">Reset view</button>
                 <button type="button" data-camera="isometric">ISO</button>
                 <button type="button" data-camera="front">Front</button>
                 <button type="button" data-camera="back">Back</button>
@@ -271,8 +323,8 @@
             </section>
 
             <section class="inspect-section selection-section">
-              <h2>Mesh-part selection</h2>
-              <p class="section-note">Select a mesh primitive or node. Choose a connected component in Edit copy to edit it.</p>
+              <h2>Mesh parts</h2>
+              <p class="section-note">Choose an independent part of the loaded model. Frame, Isolate, and Hide only affect the viewer. Geometry changes begin under Edit copy.</p>
               <div class="ctl">
                 <label id="mesh-part-select-label" for="mesh-part-select">Loaded mesh part</label>
                 <select id="mesh-part-select">
@@ -378,10 +430,11 @@
             <strong>Your model will appear here</strong>
             <span>Generate from an image or reopen a gallery result.</span>
           </div>
+          <span id="viewer-caption" class="viewer-caption viewer-caption-overlay muted"></span>
           <div id="progress" class="progress viewer-progress hidden" role="status" aria-live="polite">
             <div id="progress-card" class="progress-card">
               <button id="progress-minimize-btn" class="progress-minimize" type="button" aria-label="Minimize job card." title="Minimize job card.">
-                <span class="button-icon icon-x" aria-hidden="true"></span>
+                <span class="button-icon icon-minus" aria-hidden="true"></span>
               </button>
               <div class="progress-head">
                 <div class="progress-titles">
@@ -408,26 +461,26 @@
               <span id="progress-chip-percent" class="progress-chip-percent">2%</span>
               <span id="progress-chip-elapsed" class="progress-chip-elapsed">0:00</span>
               <span id="progress-chip-queued" class="progress-chip-queued hidden"></span>
-              <span class="button-icon progress-chip-expand" aria-hidden="true"></span>
+              <span class="button-icon icon-plus progress-chip-expand" aria-hidden="true"></span>
               <span class="progress-chip-bar" aria-hidden="true"><span id="progress-chip-bar-fill" class="bar-fill"></span></span>
             </button>
           </div>
-        </div>
-        <div class="viewer-toolbar">
-          <button id="reset-view" class="button button--secondary" disabled>Reset view</button>
-          <button id="save-glb" class="button button--secondary" disabled>Save GLB…</button>
-          <span id="viewer-caption" class="viewer-caption muted"></span>
         </div>
       </section>
 
       <section id="asset-dock" class="asset-dock" aria-label="Generated assets">
         <div class="dock-header">
-          <button id="asset-dock-toggle" class="dock-toggle" type="button" aria-expanded="true" aria-controls="asset-dock-body" title="Expand or collapse the assets dock">
-            <span class="button-icon dock-caret" aria-hidden="true"></span>
-            <span class="dock-title">Assets and versions</span>
-            <span id="dock-counts" class="dock-counts muted"></span>
-          </button>
-          <button id="clear-gallery" class="link-btn" type="button">Clear all</button>
+          <span class="dock-title">Library</span>
+          <span id="dock-counts" class="dock-counts muted"></span>
+          <div class="dock-header-actions">
+            <button id="open-glb-btn" class="link-btn" type="button">Open GLB…</button>
+            <button id="import-generation-btn" class="link-btn" type="button">Import…</button>
+            <span id="standalone-actions" class="standalone-actions hidden">
+              <button id="add-viewed-to-assets" class="link-btn" type="button">Add to Assets</button>
+              <button id="import-linked-manifest" class="link-btn hidden" type="button">Import linked generation</button>
+            </span>
+            <button id="clear-gallery" class="link-btn" type="button">Clear all</button>
+          </div>
         </div>
         <div id="asset-dock-body" class="dock-body">
           <section id="candidate-wrap" class="candidate-wrap hidden">
@@ -441,7 +494,21 @@
             <div id="candidate-gallery" class="candidate-gallery"></div>
           </section>
 
-          <section class="gallery-wrap">
+          <section id="versions-level" class="dock-level versions-wrap">
+            <button id="version-dock-toggle" class="dock-level-toggle" type="button" aria-expanded="true" aria-controls="version-gallery">
+              <span class="button-icon dock-caret" aria-hidden="true"></span>
+              <span>Versions</span>
+              <span id="version-level-count" class="dock-level-count muted"></span>
+            </button>
+            <div id="version-gallery" class="gallery version-gallery"></div>
+          </section>
+
+          <section id="assets-level" class="dock-level gallery-wrap">
+            <button id="asset-dock-toggle" class="dock-level-toggle" type="button" aria-expanded="true" aria-controls="gallery">
+              <span class="button-icon dock-caret" aria-hidden="true"></span>
+              <span>Assets</span>
+              <span id="asset-level-count" class="dock-level-count muted"></span>
+            </button>
             <div id="gallery" class="gallery"></div>
           </section>
         </div>
@@ -469,7 +536,19 @@
       </div>
     </div>
 
-    <div id="toasts" class="toasts"></div>
+    <div id="manifest-modal" class="modal hidden">
+      <div class="modal-card">
+        <div class="modal-head">
+          <span id="manifest-title">Generation</span>
+          <button id="manifest-close" class="button button--icon modal-close" type="button" aria-label="Close" title="Close">
+            <span class="button-icon icon-x" aria-hidden="true"></span>
+          </button>
+        </div>
+        <div id="manifest-body" class="modal-body" aria-live="polite"></div>
+      </div>
+    </div>
+
+    <div id="toasts" class="toasts" aria-live="polite"></div>
 
     <script type="module" src="./src/main.ts"></script>
   </body>

@@ -5,12 +5,51 @@ import { loadConfig } from "./config";
 import { createButton } from "./design-system/button";
 import { enhanceSelect, refreshSelect } from "./design-system/select";
 import {
+  busyContentFor,
+  canCloseModal,
+  captureControls,
+  classifyImportFailure,
+  manifestWriteFailureMessage,
+  restoreControls,
+  type BusyControlState,
+  type ManifestWriteFailureContext,
+} from "./modal-busy";
+import {
+  cancelCandidateManifest,
+  finishGenerationManifest,
+  finishResumedManifest,
+  hasDurableGeneratedArtifact,
+  metricsFromModelMetrics,
+  prepareSweepManifests,
+  safeStem,
+  setCandidateManifestState,
+  startGenerationManifest,
+  type ManifestContext,
+} from "./generation-manifest";
+import {
+  executeRecoveryPlan,
+  planRecoveryQueue,
+  queueableCandidates,
+  recoveryEligibility,
+  requiresTerminalFinalization,
+  sortBySweepIndex,
+  summarizeWarnings,
+  type RecoveryCandidate,
+} from "./sweep-recovery";
+import { escapeHtml, hasBlockingCoreIssue, manifestIssueText } from "./manifest-ui";
+import type { ManifestMetrics, ManifestQualityWarning } from "./types";
+import {
   detectPlaneCollapse,
   inspectGeneratedGlb,
   REFERENCE_GUIDANCE,
 } from "./generation-quality";
+import {
+  GENERATION_PRESETS,
+  matchingGenerationPreset,
+  type GenerationPreset,
+} from "./generation-presets";
 import type { ComponentAnalysis, EditHistory } from "./editing";
-import { renderSettings } from "./settings";
+import { progressDisplayMode, renderSettings, type ProgressDisplayMode } from "./settings";
 import type {
   EditableScene,
   MaterialSnapshot,
@@ -33,15 +72,23 @@ import {
   automationInfo,
   automationJobFiles,
   automationJobs,
+  findLinkedManifest,
+  importGenerationManifest,
   isTauri,
   listen,
   listenForNativeFileDrops,
+  listSiblingManifests,
   previewAlpha,
   readDroppedImage,
+  readGenerationManifest,
+  readManifestAsset,
+  relinkManifestFile,
   saveBytes,
   saveToOutputDir,
+  scanInterruptedManifests,
 } from "./tauri";
 import type { AutomationJob } from "./tauri";
+import type { GenerationManifest, GenerationQualityWarning } from "./types";
 import type { CameraPreset, CameraType, DisplayMode, TopologyDetail, Viewer, ViewerSelection, ViewerStats } from "./viewer";
 import {
   DEFAULT_PARAMS,
@@ -86,8 +133,6 @@ const progressChipQueued = $("progress-chip-queued");
 const chipBarFill = $<HTMLElement>("progress-chip-bar-fill");
 const cancelBtn = $<HTMLButtonElement>("cancel-btn");
 const clearQueueBtn = $<HTMLButtonElement>("clear-queue-btn");
-const resetViewBtn = $<HTMLButtonElement>("reset-view");
-const saveGlbBtn = $<HTMLButtonElement>("save-glb");
 const viewerCaption = $("viewer-caption");
 const viewerEmpty = $("viewer-empty");
 const generateModeBtn = $<HTMLButtonElement>("mode-generate");
@@ -97,9 +142,14 @@ const viewModePanel = $("view-mode-panel");
 const inspectEmpty = $("inspect-empty");
 const inspectContent = $("inspect-content");
 const gallerySummary = $("dock-counts");
-const assetDock = $("asset-dock");
+const assetLevel = $("assets-level");
+const versionLevel = $("versions-level");
 const dockToggle = $<HTMLButtonElement>("asset-dock-toggle");
+const versionDockToggle = $<HTMLButtonElement>("version-dock-toggle");
+const assetLevelCount = $("asset-level-count");
+const versionLevelCount = $("version-level-count");
 const galleryEl = $("gallery");
+const versionGalleryEl = $("version-gallery");
 const clearGalleryBtn = $<HTMLButtonElement>("clear-gallery");
 const backendBadge = $("backend-badge");
 const automationBadge = $("automation-badge");
@@ -152,6 +202,36 @@ const textureSelect = $<HTMLSelectElement>("ctl-texture");
 const textureResolutionSelect = $<HTMLSelectElement>("ctl-texture-resolution");
 const targetFacesHelp = $("ctl-target-faces-help");
 const textureResolutionHelp = $("texture-resolution-help");
+const advancedSettings = $<HTMLDetailsElement>("advanced-settings");
+const advancedSettingsState = $("advanced-settings-state");
+const qualityPresetDescription = $("quality-preset-description");
+const qualityPresetInputs = Array.from(
+  document.querySelectorAll<HTMLInputElement>('input[name="generation-quality"]'),
+);
+const inlineTips = Array.from(document.querySelectorAll<HTMLDetailsElement>(".inline-tip"));
+
+function applyProgressDisplayMode(mode: ProgressDisplayMode): void {
+  progress.classList.toggle("progress-mode-sidebar", mode === "sidebar");
+}
+
+applyProgressDisplayMode(progressDisplayMode());
+window.addEventListener("polyloom-progress-display", (event) => {
+  applyProgressDisplayMode((event as CustomEvent<ProgressDisplayMode>).detail);
+});
+
+for (const tip of inlineTips) {
+  tip.addEventListener("toggle", () => {
+    if (!tip.open) return;
+    for (const other of inlineTips) if (other !== tip) other.open = false;
+  });
+}
+document.addEventListener("pointerdown", (event) => {
+  if ((event.target as HTMLElement).closest(".inline-tip")) return;
+  for (const tip of inlineTips) tip.open = false;
+});
+document.addEventListener("keydown", (event) => {
+  if (event.key === "Escape") for (const tip of inlineTips) tip.open = false;
+});
 
 // ---- state ----
 let viewer: Viewer | null = null;
@@ -236,6 +316,8 @@ interface CandidateSlot {
   status: CandidateStatus;
   record?: VersionRecord;
   error?: string;
+  /** Durable manifest context persisted before the sweep starts. */
+  manifest?: ManifestContext;
 }
 let candidates: CandidateSlot[] = [];
 
@@ -253,10 +335,33 @@ interface GenerationJob {
   autoOpen: boolean;
   sweep?: SweepMembership;
   candidate?: CandidateSlot;
+  /** Set when requeueing an interrupted manifest: lineage is retained. */
+  resumeManifest?: ResumeManifest;
+}
+
+interface ResumeManifest {
+  path: string;
+  assetId: string;
+  versionId: string;
 }
 
 let generationQueue: GenerationJob[] = [];
 let currentJob: GenerationJob | null = null;
+/**
+ * Set when a terminal manifest write failed during the most recent
+ * generateRecord run. Recovery scanning is only refreshed after genuinely
+ * successful terminal writes — a stale interrupted manifest must stay listed.
+ */
+let lastManifestWriteFailed = false;
+
+function noteManifestWriteFailure(
+  error: unknown,
+  context: ManifestWriteFailureContext,
+): void {
+  lastManifestWriteFailed = true;
+  const message = (error as Error).message || String(error);
+  toast(manifestWriteFailureMessage(context, message), "err");
+}
 
 // ---- workspace modes and viewer inspector ----
 let workspaceMode: WorkspaceMode = "generate";
@@ -1003,10 +1108,29 @@ $<HTMLSelectElement>("view-background").addEventListener("change", (event) => {
   runViewer((instance) => instance.setBackground((event.currentTarget as HTMLSelectElement).value));
 });
 document.querySelectorAll<HTMLButtonElement>("[data-camera]").forEach((button) => {
-  button.addEventListener("click", () => runViewer((instance) => instance.setCameraPreset(button.dataset.camera as CameraPreset)));
+  button.addEventListener("click", () => {
+    if (button.dataset.camera === "reset") {
+      runViewer((instance) => instance.resetView());
+      return;
+    }
+    runViewer((instance) => instance.setCameraPreset(button.dataset.camera as CameraPreset));
+  });
 });
 topologyDetailSelect.addEventListener("change", () => {
-  runViewer((instance) => instance.setTopologyDetail(topologyDetailSelect.value as TopologyDetail));
+  const activeMode = document.querySelector<HTMLButtonElement>("[data-display-mode].active")?.dataset.displayMode;
+  const needsTopologyView = activeMode !== "wireframe" && activeMode !== "overlay";
+  runViewer((instance) => {
+    instance.setTopologyDetail(topologyDetailSelect.value as TopologyDetail);
+    if (needsTopologyView) instance.setDisplayMode("overlay");
+  });
+  if (needsTopologyView) {
+    document.querySelectorAll<HTMLButtonElement>("[data-display-mode]").forEach((button) => {
+      button.classList.toggle("active", button.dataset.displayMode === "overlay");
+    });
+    $("view-topology-detail-help").textContent = "Overlay enabled so the topology change is visible.";
+  } else {
+    $("view-topology-detail-help").textContent = "Topology density updated.";
+  }
 });
 cameraTypeSelect.addEventListener("change", () => {
   runViewer((instance) => instance.setCameraType(cameraTypeSelect.value as CameraType));
@@ -1096,7 +1220,52 @@ function applyParams(p: GenParams): void {
   remeshBandInput.value = normalized.remeshBand === "auto" ? remeshBandInput.value : String(normalized.remeshBand);
   $<HTMLSelectElement>("ctl-texture-encoding").value = normalized.textureEncoding;
   updateCustomParamVisibility();
+  syncQualityPreset();
 }
+
+function syncQualityPreset(): void {
+  let preset: GenerationPreset | null = null;
+  try {
+    preset = matchingGenerationPreset(normalizeGenParams(readParams()));
+  } catch {
+    preset = null;
+  }
+
+  for (const input of qualityPresetInputs) input.checked = input.value === preset;
+  if (preset) {
+    const definition = GENERATION_PRESETS[preset];
+    qualityPresetDescription.textContent = definition.description;
+    advancedSettingsState.textContent = definition.label;
+    advancedSettingsState.classList.remove("is-custom");
+  } else {
+    qualityPresetDescription.textContent =
+      "Advanced settings have been adjusted. Choose a quality level to reset them.";
+    advancedSettingsState.textContent = "Custom";
+    advancedSettingsState.classList.add("is-custom");
+  }
+}
+
+function applyQualityPreset(preset: GenerationPreset): void {
+  const seedValue = Number($<HTMLInputElement>("ctl-seed").value);
+  const seed = Number.isSafeInteger(seedValue) ? seedValue : DEFAULT_PARAMS.seed!;
+  const previousBackgroundRemoval = $<HTMLSelectElement>("ctl-bg").value;
+  applyParams({ ...GENERATION_PRESETS[preset].settings, seed });
+  clearParamErrors();
+  if ($<HTMLSelectElement>("ctl-bg").value !== previousBackgroundRemoval) clearMaskPreview();
+}
+
+for (const input of qualityPresetInputs) {
+  input.addEventListener("change", () => {
+    if (input.checked) applyQualityPreset(input.value as GenerationPreset);
+  });
+}
+
+advancedSettings.querySelectorAll<HTMLInputElement | HTMLSelectElement>("input, select")
+  .forEach((control) => {
+    control.addEventListener("change", syncQualityPreset);
+    if (control instanceof HTMLInputElement) control.addEventListener("input", syncQualityPreset);
+  });
+syncQualityPreset();
 
 function clearParamErrors(): void {
   $("generation-param-error").textContent = "";
@@ -1149,6 +1318,7 @@ function clearCurrentModelState(): void {
   activeLabel = "";
   inputImage = null;
   inputName = "input.png";
+  clearStandaloneView();
   clearInputPreview();
   clearMaskPreview();
   renderViewerStats(null);
@@ -1189,9 +1359,8 @@ function clearMaskPreview(): void {
   maskTab.setAttribute("aria-selected", "false");
   previewMaskBtn.disabled = !inputImage || !isTauri();
   previewMaskBtn.textContent = "Preview mask";
-  maskHelp.textContent = isTauri()
-    ? "Preview the exact background-removed image used for reconstruction."
-    : "Exact mask preview is available in the desktop app.";
+  maskHelp.textContent = "";
+  maskHelp.classList.add("hidden");
 }
 
 sourceTab.addEventListener("click", () => showInputPreview("source"));
@@ -1209,6 +1378,7 @@ previewMaskBtn.addEventListener("click", async () => {
   previewMaskBtn.disabled = true;
   previewMaskBtn.textContent = "Building mask...";
   maskHelp.textContent = "Running the same background-removal path used by TRELLIS.";
+  maskHelp.classList.remove("hidden");
   try {
     const blob = await previewAlpha(inputImage, params.bgRemoval);
     if (maskObjectUrl) URL.revokeObjectURL(maskObjectUrl);
@@ -1262,10 +1432,21 @@ void listenForNativeFileDrops(async (event) => {
   dropzone.classList.remove("drag");
   if (event.type !== "drop" || !event.paths.length) return;
   try {
-    const image = await readDroppedImage(event.paths[0]);
+    const droppedPath = event.paths[0];
+    const lowered = droppedPath.toLowerCase();
+    // Manifests and models get dedicated flows before the image path.
+    if (lowered.endsWith(".polyloom.json")) {
+      void openManifestPreview(droppedPath);
+      return;
+    }
+    if (lowered.endsWith(".glb") || lowered.endsWith(".gltf")) {
+      void viewGlbFile(droppedPath);
+      return;
+    }
+    const image = await readDroppedImage(droppedPath);
     setInput(image.blob, image.name);
   } catch (error) {
-    toast((error as Error).message || "Could not open the dropped image", "err");
+    toast((error as Error).message || "Could not open the dropped file", "err");
   }
 }).catch((error) => {
   console.warn("Could not subscribe to native file drops", error);
@@ -1640,19 +1821,82 @@ async function generateRecord(
   autoOpen: boolean,
   announce = true,
   sweep?: SweepMembership,
+  resume?: ResumeManifest,
+  candidateManifest?: ManifestContext,
 ): Promise<VersionRecord> {
   const normalizedParams = normalizeGenParams(params);
-  const requestId = newRequestId();
+  const requestId = candidateManifest?.requestId ?? newRequestId();
+  const recordId = resume?.versionId ?? candidateManifest?.jobId ?? newId();
+  const base = safeStem(sourceName);
+  const startedAtMs = Date.now();
+
+  // Manifest lifecycle (desktop only, warn-only): interrupted on submit so a
+  // crash leaves a resumable record; completed/failed/cancelled below. A
+  // resumed job updates its original manifest in place; a sweep candidate
+  // reuses its pre-persisted context (shared source image, queued state).
+  const manifestContext =
+    resume || candidateManifest
+      ? null
+      : await startGenerationManifest({
+          base,
+          jobId: recordId,
+          requestId,
+          label: sourceName.replace(/\.[^.]+$/, "") || "Model",
+          params: normalizedParams,
+          sourceBlob: sourceImage,
+        });
+  const activeContext = manifestContext ?? candidateManifest;
+  const hasManifest = requiresTerminalFinalization({
+    manifestContext,
+    resume,
+    candidateManifest,
+  });
+  interface TerminalPatch {
+    status: "completed" | "failed" | "cancelled";
+    error?: string;
+    metrics?: ManifestMetrics | null;
+    qualityWarning?: ManifestQualityWarning | null;
+    durationSeconds?: number;
+    modelName?: string;
+  }
+  const finishManifest = async (patch: TerminalPatch): Promise<void> => {
+    if (resume) {
+      await finishResumedManifest(resume.path, {
+        ...patch,
+        newJobId: recordId,
+        newRequestId: requestId,
+      });
+    } else if (activeContext) {
+      await finishGenerationManifest(activeContext, patch);
+    }
+  };
+
   const stopPolling = startProgressPolling(requestId, signal);
   let glb: Blob;
   try {
     ({ glb } = await generate(sourceImage, normalizedParams, signal, requestId));
-  } finally {
+  } catch (error) {
     stopPolling();
+    // Cancellation is a distinct terminal state, never a failure. A manifest
+    // finalization problem here must not mask the generation outcome.
+    const cancelled = signal.aborted;
+    try {
+      await finishManifest({
+        status: cancelled ? "cancelled" : "failed",
+        error: cancelled ? "Generation cancelled" : (error as Error).message || "generation failed",
+      });
+    } catch (manifestError) {
+      noteManifestWriteFailure(
+        manifestError,
+        cancelled ? "generation-cancelled" : "generation-failed",
+      );
+    }
+    throw error;
   }
+  stopPolling();
+  const durationSeconds = (Date.now() - startedAtMs) / 1000;
   const inspection = await inspectGeneratedGlb(glb).catch(() => ({ dimensions: null, warning: null }));
 
-  const recordId = newId();
   const createdAt = Date.now();
   const rec: VersionRecord = {
     id: recordId,
@@ -1677,22 +1921,18 @@ async function generateRecord(
     qualityWarning: inspection.warning ?? undefined,
   };
 
+  const modelName = `${base}_${normalizedParams.resolution}_seed${normalizedParams.seed}_${rec.id}.glb`;
+  // Persist the GLB first so a completed manifest can never point at a file
+  // that does not exist (the Rust writer computes its SHA-256 on write).
   let savedPath: string | null = null;
+  let autosaveError: string | null = null;
   if (isTauri()) {
     try {
       const bytes = new Uint8Array(await glb.arrayBuffer());
-      const base = sourceName.replace(/\.[^.]+$/, "") || "model";
-      const fname = `${base}_${normalizedParams.resolution}_seed${normalizedParams.seed}_${rec.id}.glb`;
-      savedPath = await saveToOutputDir(fname, bytes);
+      savedPath = await saveToOutputDir(modelName, bytes);
+      if (!savedPath) autosaveError = "the model could not be written to the output folder";
     } catch (e) {
-      toast(`Auto-save to output folder failed: ${(e as Error).message}`, "err");
-    }
-  }
-  if (announce) {
-    if (rec.qualityWarning) {
-      toast(`Collapsed into a plane. ${REFERENCE_GUIDANCE} The GLB was still saved.`, "err");
-    } else {
-      toast(savedPath ? `Saved to ${savedPath}` : "Generation complete", "ok");
+      autosaveError = (e as Error).message || "autosave failed";
     }
   }
 
@@ -1706,6 +1946,49 @@ async function generateRecord(
   }
   revealAssetDock();
   await refreshGallery();
+
+  // Awaited terminal write so later recovery scans cannot observe stale state.
+  // A model that never reached disk must not be recorded as completed.
+  if (hasManifest) {
+    try {
+      await finishManifest(
+        hasDurableGeneratedArtifact(isTauri(), savedPath)
+          ? {
+              status: "completed",
+              durationSeconds,
+              metrics: rec.metrics ? metricsFromModelMetrics(rec.metrics) : null,
+              qualityWarning: rec.qualityWarning ?? null,
+              modelName,
+            }
+          : {
+              status: "failed",
+              error: `Generated model kept in the app gallery only; ${autosaveError ?? "output-folder save was unavailable"}`,
+            },
+      );
+    } catch (manifestError) {
+      noteManifestWriteFailure(manifestError, "asset-persisted");
+    }
+  }
+
+  if (announce) {
+    // Completion message built from the actual outcome: warning presence,
+    // autosave success, and autosave failure never contradict each other.
+    const parts: string[] = [];
+    let severity: "" | "ok" | "err" = "ok";
+    if (rec.qualityWarning) {
+      parts.push(`${rec.qualityWarning.message}.`, REFERENCE_GUIDANCE);
+      severity = "err";
+    }
+    if (savedPath) {
+      parts.push(`Saved to ${savedPath}.`);
+    } else if (autosaveError) {
+      parts.push(`Output-folder saving failed (${autosaveError}); the model remains in the app gallery.`);
+      severity = "err";
+    } else if (!rec.qualityWarning) {
+      parts.push("Generation complete");
+    }
+    toast(parts.join(" "), severity);
+  }
 
   if (autoOpen && !activeId && !currentGlb) try {
     const instance = await getViewer();
@@ -1722,6 +2005,7 @@ async function generateRecord(
     renderMeshParts(instance);
     await put(rec);
     setWorkspaceMode("view");
+    clearStandaloneView();
     const thumb = await instance.thumbnail();
     if (thumb) {
       rec.thumb = thumb;
@@ -1744,12 +2028,14 @@ function announceSweepWhenComplete(sweepId: string): void {
   announcedSweeps.add(sweepId);
   sweepCandidates.delete(sweepId);
   const ready = slots.filter((slot) => slot.status === "ready").length;
-  const collapsed = slots.filter((slot) => slot.record?.qualityWarning).length;
+  const warningSummary = summarizeWarnings(
+    slots.map((slot) => slot.record?.qualityWarning?.message ?? "").filter(Boolean),
+  );
   toast(
-    collapsed
-      ? `Seed sweep complete: ${ready}/${slots.length} candidates; ${collapsed} collapsed into a plane. ${REFERENCE_GUIDANCE}`
+    warningSummary
+      ? `Seed sweep complete: ${ready}/${slots.length} candidates; ${warningSummary}. ${REFERENCE_GUIDANCE}`
       : `Seed sweep complete: ${ready}/${slots.length} candidates`,
-    ready && !collapsed ? "ok" : "err",
+    ready && !warningSummary ? "ok" : "err",
   );
 }
 
@@ -1762,9 +2048,15 @@ async function runGenerationQueue(): Promise<void> {
     return;
   }
   currentJob = job;
+  lastManifestWriteFailed = false;
   if (job.candidate) {
     job.candidate.status = "generating";
     renderCandidates();
+  }
+  // Persist the queued -> running transition BEFORE native generation begins
+  // so a crash during generation cannot leave the candidate marked queued.
+  if (job.candidate?.manifest) {
+    await setCandidateManifestState(job.candidate.manifest, "running");
   }
   startRun(job);
   try {
@@ -1776,6 +2068,8 @@ async function runGenerationQueue(): Promise<void> {
       job.autoOpen,
       !job.sweep,
       job.sweep,
+      job.resumeManifest,
+      job.candidate?.manifest,
     );
     if (job.candidate) {
       job.candidate.record = rec;
@@ -1796,6 +2090,9 @@ async function runGenerationQueue(): Promise<void> {
     renderCandidates();
     if (job.sweep) announceSweepWhenComplete(job.sweep.id);
     updateQueueStatus();
+    // A resumed job just resolved its manifest out of the interrupted list —
+    // but only refresh when the terminal write genuinely succeeded.
+    if (!lastManifestWriteFailed) void checkInterruptedManifests();
     void runGenerationQueue();
   }
 }
@@ -1828,6 +2125,8 @@ clearQueueBtn.addEventListener("click", () => {
   const affectedSweeps = new Set<string>();
   for (const job of removed) {
     if (job.candidate?.status === "queued") job.candidate.status = "cancelled";
+    // Persist the cancelled state so recovery never requeues it.
+    if (job.candidate?.manifest) void cancelCandidateManifest(job.candidate.manifest);
     if (job.sweep) affectedSweeps.add(job.sweep.id);
   }
   renderCandidates();
@@ -1836,7 +2135,7 @@ clearQueueBtn.addEventListener("click", () => {
   toast(`${removed.length} queued job${removed.length === 1 ? "" : "s"} removed`);
 });
 
-function doSweep(): void {
+async function doSweep(): Promise<void> {
   if (!inputImage) return;
   let baseParams: GenParams;
   try {
@@ -1849,9 +2148,43 @@ function doSweep(): void {
   const count = Math.max(2, Math.min(8, parseInt($<HTMLSelectElement>("ctl-sweep-count").value, 10) || 4));
   const firstSeed = Math.max(1, baseParams.seed || 1);
   const sweepGroupId = newId();
-  candidates = Array.from({ length: count }, (_, index) => ({
-    seed: firstSeed + index,
+  const sweepSeeds = Array.from({ length: count }, (_, index) => firstSeed + index);
+
+  // Persist every candidate manifest (plus one shared source image) BEFORE
+  // the first generation runs. If persistence fails, refuse to queue a
+  // half-recorded sweep.
+  let preparedContexts: Array<ManifestContext | null> | null = null;
+  if (isTauri()) {
+    try {
+      preparedContexts = await prepareSweepManifests({
+        base: safeStem(inputName),
+        groupId: sweepGroupId,
+        labelBase: inputName.replace(/\.[^.]+$/, "") || "Model",
+        params: {
+          resolution: 512,
+          bgRemoval: baseParams.bgRemoval,
+          uv: baseParams.uv,
+          texture: baseParams.texture ?? true,
+        },
+        seeds: sweepSeeds,
+        sourceBlob: inputImage,
+      });
+      if (preparedContexts.some((context) => context === null)) {
+        throw new Error("one or more candidate records could not be written");
+      }
+    } catch (error) {
+      toast(
+        `Sweep was not started: candidate records could not be persisted (${(error as Error).message})`,
+        "err",
+      );
+      return;
+    }
+  }
+
+  candidates = sweepSeeds.map((seed, index) => ({
+    seed,
     status: "queued" as CandidateStatus,
+    manifest: preparedContexts?.[index] ?? undefined,
   }));
   sweepCandidates.set(sweepGroupId, candidates);
   candidateWrap.classList.remove("hidden");
@@ -1877,12 +2210,12 @@ function doSweep(): void {
   });
 }
 
-sweepBtn.addEventListener("click", doSweep);
+sweepBtn.addEventListener("click", () => {
+  void doSweep();
+});
 
 // ---- viewer tools ----
 function setViewerTools(on: boolean): void {
-  resetViewBtn.disabled = !on;
-  saveGlbBtn.disabled = !on;
   if (!on) renderSelection(null);
   syncViewerReference();
 }
@@ -1891,42 +2224,40 @@ viewerReferenceToggle.addEventListener("click", () => {
   viewerReferencePopover.classList.toggle("hidden", !expanded);
   viewerReferenceToggle.setAttribute("aria-expanded", String(expanded));
 });
-resetViewBtn.addEventListener("click", () => runViewer((instance) => instance.resetView()));
-saveGlbBtn.addEventListener("click", async () => {
-  try {
-    const blob = editorSession ? await exportEditedBlob() : currentGlb;
-    if (!blob) return;
-    const bytes = new Uint8Array(await blob.arrayBuffer());
-    const base = (activeLabel || inputName).replace(/\.[^.]+$/, "") || "model";
-    const ok = await saveBytes(`${base}${editorSession ? "_edited" : ""}.glb`, bytes);
-    if (ok) toast(editorSession ? "Edited GLB exported" : "Saved", "ok");
-  } catch (error) {
-    toast((error as Error).message || "GLB export failed", "err");
-  }
-});
 
 // ---- gallery ----
-const DOCK_COLLAPSED_KEY = "polyloom.asset-dock.collapsed";
-let userCollapsedDockThisSession = false;
+const ASSETS_COLLAPSED_KEY = "polyloom.assets-level.collapsed";
+const VERSIONS_COLLAPSED_KEY = "polyloom.versions-level.collapsed";
+let userCollapsedAssetsThisSession = false;
+let userCollapsedVersionsThisSession = false;
 
-function applyDockCollapsed(collapsed: boolean): void {
-  assetDock.classList.toggle("is-collapsed", collapsed);
-  dockToggle.setAttribute("aria-expanded", String(!collapsed));
+function applyLevelCollapsed(level: HTMLElement, toggle: HTMLButtonElement, collapsed: boolean): void {
+  level.classList.toggle("is-collapsed", collapsed);
+  toggle.setAttribute("aria-expanded", String(!collapsed));
 }
 
 function initDockPreference(): void {
-  applyDockCollapsed(localStorage.getItem(DOCK_COLLAPSED_KEY) === "1");
+  applyLevelCollapsed(assetLevel, dockToggle, localStorage.getItem(ASSETS_COLLAPSED_KEY) === "1");
+  applyLevelCollapsed(versionLevel, versionDockToggle, localStorage.getItem(VERSIONS_COLLAPSED_KEY) === "1");
 }
 
 function revealAssetDock(): void {
-  if (!userCollapsedDockThisSession) applyDockCollapsed(false);
+  if (!userCollapsedAssetsThisSession) applyLevelCollapsed(assetLevel, dockToggle, false);
+  if (!userCollapsedVersionsThisSession) applyLevelCollapsed(versionLevel, versionDockToggle, false);
 }
 
 dockToggle.addEventListener("click", () => {
-  const collapsed = !assetDock.classList.contains("is-collapsed");
-  applyDockCollapsed(collapsed);
-  localStorage.setItem(DOCK_COLLAPSED_KEY, collapsed ? "1" : "0");
-  if (collapsed) userCollapsedDockThisSession = true;
+  const collapsed = !assetLevel.classList.contains("is-collapsed");
+  applyLevelCollapsed(assetLevel, dockToggle, collapsed);
+  localStorage.setItem(ASSETS_COLLAPSED_KEY, collapsed ? "1" : "0");
+  if (collapsed) userCollapsedAssetsThisSession = true;
+});
+
+versionDockToggle.addEventListener("click", () => {
+  const collapsed = !versionLevel.classList.contains("is-collapsed");
+  applyLevelCollapsed(versionLevel, versionDockToggle, collapsed);
+  localStorage.setItem(VERSIONS_COLLAPSED_KEY, collapsed ? "1" : "0");
+  if (collapsed) userCollapsedVersionsThisSession = true;
 });
 
 async function loadRecordData(rec: VersionRecord): Promise<void> {
@@ -1944,6 +2275,7 @@ async function loadRecordData(rec: VersionRecord): Promise<void> {
   renderViewerStats(stats, activeParams);
   renderMeshParts(instance);
   setWorkspaceMode("view");
+  clearStandaloneView();
   inputImage = rec.input;
   inputName = rec.name;
   clearMaskPreview();
@@ -1968,7 +2300,7 @@ async function loadRecordData(rec: VersionRecord): Promise<void> {
   if (measuredWarning && !rec.qualityWarning) {
     rec.qualityWarning = measuredWarning;
     recordChanged = true;
-    toast(`Collapsed into a plane. ${REFERENCE_GUIDANCE}`, "err");
+    toast(`${measuredWarning.message}. ${REFERENCE_GUIDANCE}`, "err");
   }
   if (!rec.thumb) {
     const thumb = await instance.thumbnail().catch(() => null);
@@ -1986,8 +2318,9 @@ function renderCandidates(): void {
   candidateUrls.forEach((url) => URL.revokeObjectURL(url));
   candidateUrls = [];
   candidateGallery.innerHTML = "";
-  candidateWrap.classList.toggle("hidden", candidates.length === 0);
-  if (!candidates.length) return;
+  const hasPendingOrFailedCandidate = candidates.some((slot) => slot.status !== "ready");
+  candidateWrap.classList.toggle("hidden", candidates.length === 0 || !hasPendingOrFailedCandidate);
+  if (!candidates.length || !hasPendingOrFailedCandidate) return;
 
   const complete = candidates.filter((slot) => slot.status === "ready" || slot.status === "failed").length;
   candidateSummary.textContent = `${complete}/${candidates.length} complete. Click a result to select its seed.`;
@@ -2024,7 +2357,7 @@ function renderCandidates(): void {
     seed.textContent = `Seed ${slot.seed}`;
     const status = document.createElement("span");
     status.textContent = slot.record?.qualityWarning
-      ? "Plane collapse"
+      ? slot.record?.qualityWarning?.message ?? "Quality issue"
       : slot.record?.id === activeId
       ? "Selected"
       : slot.status === "ready" ? "Select" : slot.status;
@@ -2050,13 +2383,29 @@ clearCandidatesBtn.addEventListener("click", () => {
   renderCandidates();
 });
 
+let selectedAssetId: string | null = null;
+
+function assetDisplayName(records: VersionRecord[]): string {
+  for (const record of records) {
+    const label = record.operationParams.assetLabel;
+    if (typeof label === "string" && label.trim()) return label.trim();
+  }
+  const representative = records[0];
+  return representative?.name.replace(/\.[^.]+$/, "") || representative?.label || "Untitled asset";
+}
+
 async function refreshGallery(): Promise<void> {
   galleryUrls.forEach((u) => URL.revokeObjectURL(u));
   galleryUrls = [];
   const recs = await all();
   galleryEl.innerHTML = "";
+  versionGalleryEl.innerHTML = "";
   if (!recs.length) {
     gallerySummary.textContent = "";
+    assetLevelCount.textContent = "";
+    versionLevelCount.textContent = "";
+    versionLevel.classList.add("hidden");
+    selectedAssetId = null;
     const empty = document.createElement("div");
     empty.className = "gallery-empty";
     empty.textContent = "No assets yet. Generate a model to start a version history.";
@@ -2069,27 +2418,179 @@ async function refreshGallery(): Promise<void> {
     records: (await listAssetVersions(assetId)).sort((a, b) => b.createdAt - a.createdAt),
   })));
   gallerySummary.textContent = `${assetGroups.length} assets, ${recs.length} versions`;
+  assetLevelCount.textContent = String(assetGroups.length);
+
+  const activeAsset = activeId
+    ? assetGroups.find((asset) => asset.records.some((record) => record.id === activeId))
+    : undefined;
+  if (activeAsset) selectedAssetId = activeAsset.assetId;
+  if (!selectedAssetId || !assetGroups.some((asset) => asset.assetId === selectedAssetId)) {
+    selectedAssetId = assetGroups[0]?.assetId ?? null;
+  }
 
   for (const asset of assetGroups) {
     const records = asset.records;
     if (!records.length) continue;
-    const assetGroup = document.createElement("section");
-    assetGroup.className = "asset-group";
+    const representative = records.find((record) => record.id === activeId) ?? records[0];
+    const item = document.createElement("article");
+    item.className = `asset-item${asset.assetId === selectedAssetId ? " active" : ""}`;
+    item.tabIndex = 0;
+    item.setAttribute("role", "button");
 
-    const versions = document.createElement("div");
-    versions.className = "asset-versions";
-    const renderedSweeps = new Set<string>();
-    for (const record of records) {
+    const itemHead = document.createElement("div");
+    itemHead.className = "asset-item-head";
+    const name = document.createElement("strong");
+    const assetName = assetDisplayName(records);
+    name.textContent = assetName;
+    const actions = document.createElement("div");
+    actions.className = "asset-actions";
+    const exportBtn = createButton({
+      label: `Export ${assetName} as GLB`,
+      variant: "icon",
+      size: "sm",
+      icon: "download-simple",
+      className: "g-action export-action",
+    });
+    exportBtn.addEventListener("click", async (event) => {
+      event.stopPropagation();
+      try {
+        const bytes = new Uint8Array(await representative.glb.arrayBuffer());
+        const ok = await saveBytes(`${safeStem(assetName)}.glb`, bytes);
+        if (ok) toast("GLB exported", "ok");
+      } catch (error) {
+        toast((error as Error).message || "GLB export failed", "err");
+      }
+    });
+    actions.appendChild(exportBtn);
+
+    const assetIsFavorite = records.every((record) => record.favorite);
+    const favoriteBtn = createButton({
+      label: assetIsFavorite ? "Remove asset from favorites" : "Add asset to favorites",
+      variant: "icon",
+      size: "sm",
+      icon: "star",
+      className: `g-action favorite-action${assetIsFavorite ? " active" : ""}`,
+    });
+    favoriteBtn.addEventListener("click", async (event) => {
+      event.stopPropagation();
+      try {
+        for (const record of records) await setVersionFavorite(record.versionId, !assetIsFavorite);
+        await refreshGallery();
+      } catch (error) {
+        toast((error as Error).message || "Could not update favorite", "err");
+      }
+    });
+    actions.appendChild(favoriteBtn);
+
+    const renameBtn = createButton({
+      label: "Rename asset",
+      variant: "icon",
+      size: "sm",
+      icon: "pencil-simple",
+      className: "g-action rename-action",
+    });
+    renameBtn.addEventListener("click", async (event) => {
+      event.stopPropagation();
+      const nextLabel = window.prompt("Asset name", assetName);
+      if (nextLabel === null || !nextLabel.trim()) return;
+      try {
+        for (const record of records) {
+          await put({
+            ...record,
+            operationParams: { ...record.operationParams, assetLabel: nextLabel.trim() },
+          });
+        }
+        await refreshGallery();
+      } catch (error) {
+        toast((error as Error).message || "Could not rename asset", "err");
+      }
+    });
+    actions.appendChild(renameBtn);
+
+    const removeBtn = createButton({
+      label: "Remove asset",
+      variant: "icon",
+      size: "sm",
+      icon: "trash",
+      className: "g-action remove-action danger",
+    });
+    removeBtn.addEventListener("click", async (event) => {
+      event.stopPropagation();
+      if (generating) {
+        toast("Wait for generation to finish before removing assets", "err");
+        return;
+      }
+      if (!confirm(`Remove this asset and its ${records.length} version${records.length === 1 ? "" : "s"}?`)) return;
+      try {
+        const recordsBeforeDelete = await all();
+        const targetIds = new Set(records.flatMap((record) => [record.id, record.versionId]));
+        const externalDependent = recordsBeforeDelete.find(
+          (record) => !targetIds.has(record.id) && record.parentVersionId && targetIds.has(record.parentVersionId),
+        );
+        if (externalDependent) {
+          toast("Remove dependent versions before removing this asset", "err");
+          return;
+        }
+        for (const record of records) await removeRecord(record.id);
+        if (records.some((record) => record.id === activeId)) {
+          clearCurrentModelState();
+          viewer?.clear();
+          if (viewer) renderMeshParts(viewer);
+        }
+        selectedAssetId = null;
+        await refreshGallery();
+      } catch (error) {
+        toast((error as Error).message || "Could not remove asset", "err");
+      }
+    });
+    actions.appendChild(removeBtn);
+    itemHead.append(name, actions);
+    item.appendChild(itemHead);
+
+    const img = document.createElement("img");
+    const url = URL.createObjectURL(representative.thumb ?? representative.input);
+    galleryUrls.push(url);
+    img.src = url;
+    img.alt = `${representative.name} asset preview`;
+    const text = document.createElement("div");
+    text.className = "asset-item-meta";
+    const count = document.createElement("span");
+    count.textContent = `${records.length} version${records.length === 1 ? "" : "s"}`;
+    const latest = document.createElement("span");
+    latest.textContent = `Latest: ${representative.label}`;
+    text.append(count, latest);
+    item.append(img, text);
+    const openAsset = async (): Promise<void> => {
+      selectedAssetId = asset.assetId;
+      await loadRecordData(representative);
+    };
+    item.addEventListener("click", () => void openAsset());
+    item.addEventListener("keydown", (event) => {
+      if (event.key === "Enter" || event.key === " ") {
+        event.preventDefault();
+        void openAsset();
+      }
+    });
+    galleryEl.appendChild(item);
+  }
+
+  const selectedAsset = assetGroups.find((asset) => asset.assetId === selectedAssetId);
+  const records = selectedAsset?.records ?? [];
+  versionLevel.classList.toggle("hidden", records.length <= 1);
+  versionLevelCount.textContent = String(records.length);
+  if (!records.length) {
+    const empty = document.createElement("div");
+    empty.className = "gallery-empty";
+    empty.textContent = "Choose an asset to see its versions.";
+    versionGalleryEl.appendChild(empty);
+    return;
+  }
+
+  for (const record of records) {
       const sweepId = record.sweepGroupId;
-      if (sweepId && renderedSweeps.has(sweepId)) continue;
-      const versionRecords = sweepId
-        ? records
-            .filter((candidate) => candidate.sweepGroupId === sweepId)
-            .sort((a, b) => (a.sweepIndex ?? a.params.seed) - (b.sweepIndex ?? b.params.seed))
-        : [record];
-      if (sweepId) renderedSweeps.add(sweepId);
-      const representative = versionRecords.find((candidate) => candidate.id === activeId) ?? versionRecords[0];
-      const isSweep = versionRecords.length > 1 || Boolean(sweepId);
+      const versionRecords = [record];
+      const representative = record;
+      const isSweep = Boolean(sweepId);
       const warnings = versionRecords
         .map((candidate) => candidate.qualityWarning ?? detectPlaneCollapse(candidate.metrics?.dimensions))
         .filter((warning) => warning !== null && warning !== undefined);
@@ -2104,15 +2605,7 @@ async function refreshGallery(): Promise<void> {
       itemIdentity.className = "version-item-identity";
       const itemTitle = document.createElement("strong");
       itemTitle.textContent = representative.label || representative.name;
-      const versionCount = document.createElement("span");
-      versionCount.className = "version-count";
-      versionCount.title = `${versionRecords.length} version${versionRecords.length === 1 ? "" : "s"}`;
-      versionCount.setAttribute("aria-label", versionCount.title);
-      const versionCountIcon = document.createElement("span");
-      versionCountIcon.className = "button-icon icon-stack";
-      versionCountIcon.setAttribute("aria-hidden", "true");
-      versionCount.append(versionCountIcon, String(versionRecords.length));
-      itemIdentity.append(itemTitle, versionCount);
+      itemIdentity.append(itemTitle);
       itemHead.appendChild(itemIdentity);
       item.appendChild(itemHead);
 
@@ -2131,12 +2624,15 @@ async function refreshGallery(): Promise<void> {
         ? records.find((candidate) => candidate.versionId === representative.parentVersionId)
         : undefined;
       const comparison = parentComparisonText(representative, parent);
+      const warningSummary = summarizeWarnings(
+        versionRecords.map((candidate) => candidate.qualityWarning?.message ?? "").filter(Boolean),
+      ) ?? `${warnings.length} quality issue${warnings.length === 1 ? "" : "s"}`;
       versionDetails.textContent = warnings.length
         ? isSweep
-          ? `Seed sweep, ${versionRecords.length} candidates | ${warnings.length} plane collapse${warnings.length === 1 ? "" : "s"}`
-          : "Collapsed into a plane | use a three-quarter reference"
+          ? `Seed ${representative.params.seed} | ${warningSummary}`
+          : `${representative.qualityWarning?.message ?? "Quality issue"} | use a three-quarter reference`
         : isSweep
-        ? `Seed sweep, ${versionRecords.length} candidates`
+        ? `Seed ${representative.params.seed} | ${actualFaces !== undefined ? compactNumber(actualFaces) + " triangles" : "metrics pending"}`
         : `${representative.operation} | ${actualFaces !== undefined ? compactNumber(actualFaces) + " triangles" : "metrics pending"}${comparison ? ` | ${comparison}` : ""}`;
       item.title = [
         representative.label || representative.name,
@@ -2149,23 +2645,25 @@ async function refreshGallery(): Promise<void> {
 
       const actions = document.createElement("div");
       actions.className = "version-actions";
-      const favoriteBtn = createButton({
-        label: representative.favorite ? "Remove from favorites" : "Add to favorites",
+      const exportBtn = createButton({
+        label: `Export ${representative.label || representative.name} as GLB`,
         variant: "icon",
         size: "sm",
-        icon: "star",
-        className: `g-action favorite-action${representative.favorite ? " active" : ""}`,
+        icon: "download-simple",
+        className: "g-action export-action",
       });
-      favoriteBtn.addEventListener("click", async (event) => {
+      exportBtn.addEventListener("click", async (event) => {
         event.stopPropagation();
         try {
-          await setVersionFavorite(representative.versionId, !representative.favorite);
-          await refreshGallery();
+          const bytes = new Uint8Array(await representative.glb.arrayBuffer());
+          const base = safeStem(representative.label || representative.name);
+          const ok = await saveBytes(`${base}.glb`, bytes);
+          if (ok) toast("GLB exported", "ok");
         } catch (error) {
-          toast((error as Error).message || "Could not update favorite", "err");
+          toast((error as Error).message || "GLB export failed", "err");
         }
       });
-      actions.appendChild(favoriteBtn);
+      actions.appendChild(exportBtn);
 
       const renameBtn = createButton({
         label: "Rename version",
@@ -2190,55 +2688,9 @@ async function refreshGallery(): Promise<void> {
         }
       });
       actions.appendChild(renameBtn);
-
-      const removeBtn = createButton({
-        label: "Remove version",
-        variant: "icon",
-        size: "sm",
-        icon: "trash",
-        className: "g-action remove-action danger",
-      });
-      removeBtn.addEventListener("click", async (event) => {
-        event.stopPropagation();
-        if (generating) {
-          toast("Wait for generation to finish before removing versions", "err");
-          return;
-        }
-        try {
-          // Preflight the whole sweep before deleting anything. A derived
-          // child makes the branch unsafe to remove with the non-cascading
-          // store API; checking all records first prevents partial sweeps.
-          const recordsBeforeDelete = await all();
-          const targetIds = new Set(versionRecords.flatMap((version) => [version.id, version.versionId]));
-          const dependent = recordsBeforeDelete.find(
-            (record) => record.parentVersionId && targetIds.has(record.parentVersionId),
-          );
-          if (dependent) {
-            toast("Remove derived versions before removing this sweep", "err");
-            return;
-          }
-          for (const version of versionRecords) await removeRecord(version.id);
-          if (versionRecords.some((version) => version.id === activeId)) {
-            clearCurrentModelState();
-            viewer?.clear();
-            if (viewer) renderMeshParts(viewer);
-          }
-          await refreshGallery();
-        } catch (error) {
-          toast((error as Error).message || "Could not remove version", "err");
-        }
-      });
-      actions.appendChild(removeBtn);
       itemHead.appendChild(actions);
 
       const openVersion = async (): Promise<void> => {
-        if (isSweep) {
-          candidates = versionRecords.map((candidate) => ({
-            seed: candidate.params.seed,
-            status: "ready",
-            record: candidate,
-          }));
-        }
         await loadRecordData(representative);
       };
       item.addEventListener("click", () => void openVersion());
@@ -2248,10 +2700,7 @@ async function refreshGallery(): Promise<void> {
           void openVersion();
         }
       });
-      versions.appendChild(item);
-    }
-    assetGroup.appendChild(versions);
-    galleryEl.appendChild(assetGroup);
+      versionGalleryEl.appendChild(item);
   }
 }
 
@@ -2283,7 +2732,7 @@ function syncAutomationResults(): Promise<number> {
       const [jobs, existing] = await Promise.all([loadAutomationJobs(api.url), all()]);
       const existingIds = new Set(existing.map((record) => record.id));
       let imported = 0;
-      let importedWarnings = 0;
+      const automationWarningMessages: string[] = [];
 
       for (const job of jobs) {
         if (job.status !== "succeeded") continue;
@@ -2313,7 +2762,7 @@ function syncAutomationResults(): Promise<number> {
             qualityWarning: job.qualityWarning ?? inspection.warning ?? undefined,
           };
           await put(record);
-          if (record.qualityWarning) importedWarnings += 1;
+          if (record.qualityWarning) automationWarningMessages.push(record.qualityWarning.message);
           existingIds.add(recordId);
           imported += 1;
         } catch (error) {
@@ -2323,11 +2772,12 @@ function syncAutomationResults(): Promise<number> {
       if (imported > 0) {
         await refreshGallery();
         revealAssetDock();
+        const warningSummary = summarizeWarnings(automationWarningMessages);
         toast(
-          importedWarnings
-            ? `${imported} automation model${imported === 1 ? "" : "s"} added to Assets; ${importedWarnings} collapsed into a plane. ${REFERENCE_GUIDANCE}`
+          warningSummary
+            ? `${imported} automation model${imported === 1 ? "" : "s"} added to Assets; ${warningSummary}. ${REFERENCE_GUIDANCE}`
             : `${imported} automation model${imported === 1 ? "" : "s"} added to Assets`,
-          importedWarnings ? "err" : "ok",
+          warningSummary ? "err" : "ok",
         );
       }
       return imported;
@@ -2471,6 +2921,781 @@ document.addEventListener("visibilitychange", () => {
   }
 });
 
+// ---- .polyloom.json import / standalone GLB / recovery ----
+const manifestModal = $("manifest-modal");
+const manifestTitle = $("manifest-title");
+const manifestBody = $("manifest-body");
+const recoveryBanner = $("recovery-banner");
+let previewUrlCleanup: (() => void) | null = null;
+let standaloneView: { glbPath: string | null; linkedPath: string | null } | null = null;
+let manifestOpener: HTMLElement | null = null;
+
+function manifestFocusables(): HTMLElement[] {
+  return Array.from(
+    manifestModal.querySelectorAll<HTMLElement>('button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])'),
+  ).filter(
+    (element) =>
+      !(element as HTMLButtonElement).disabled &&
+      element.getAttribute("aria-disabled") !== "true" &&
+      element.offsetParent !== null,
+  );
+}
+
+// Focus trap + Escape; initial focus and restore-on-close live in
+// openManifestPreview/closeManifestModal.
+manifestModal.addEventListener("keydown", (event) => {
+  if (event.key === "Escape") {
+    event.preventDefault();
+    closeManifestModal();
+    return;
+  }
+  if (event.key !== "Tab") return;
+  const items = manifestFocusables();
+  if (!items.length) return;
+  const first = items[0];
+  const last = items[items.length - 1];
+  const active = document.activeElement as HTMLElement | null;
+  if (event.shiftKey && (active === first || !manifestModal.contains(active))) {
+    event.preventDefault();
+    last.focus();
+  } else if (!event.shiftKey && active === last) {
+    event.preventDefault();
+    first.focus();
+  }
+});
+
+// 1x1 transparent PNG placeholder for assets imported without a source image.
+const PLACEHOLDER_PNG_B64 =
+  "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
+
+function placeholderImage(): Blob {
+  const bytes = Uint8Array.from(atob(PLACEHOLDER_PNG_B64), (c) => c.charCodeAt(0));
+  return new Blob([bytes], { type: "image/png" });
+}
+
+function closeManifestModal(): void {
+  // Every user close path (Escape, backdrop, header, footer) is blocked while
+  // an import/requeue is in flight. Success uses completeManifestSuccess().
+  if (!canCloseModal(manifestBusy)) return;
+  manifestModal.classList.add("hidden");
+  cleanupManifestModal();
+  const opener = manifestOpener;
+  manifestOpener = null;
+  if (opener && document.contains(opener)) opener.focus();
+}
+
+/** Success-only completion: un-busy first, then close and clean up. */
+function completeManifestSuccess(): void {
+  endManifestBusy();
+  manifestModal.classList.add("hidden");
+  cleanupManifestModal();
+  const opener = manifestOpener;
+  manifestOpener = null;
+  if (opener && document.contains(opener)) opener.focus();
+  else manifestBody.querySelector<HTMLButtonElement>("button")?.focus();
+}
+
+function cleanupManifestModal(): void {
+  if (previewUrlCleanup) {
+    previewUrlCleanup();
+    previewUrlCleanup = null;
+  }
+}
+
+$("manifest-close").addEventListener("click", closeManifestModal);
+manifestModal.addEventListener("click", (e) => {
+  if (e.target === manifestModal) closeManifestModal();
+});
+
+function renderManifestFacts(m: GenerationManifest): string {
+  const facts: string[] = [
+    `Status <b>${escapeHtml(m.status)}</b>`,
+    `Resolution <b>${escapeHtml(m.resolution)}</b> · seed <b>${escapeHtml(m.seed)}</b>`,
+    `Background <b>${escapeHtml(m.bgRemoval)}</b> · UV <b>${escapeHtml(m.uv)}</b> · texture <b>${m.texture ? "on" : "off"}</b>`,
+  ];
+  if (m.metrics?.dimensions) {
+    const d = m.metrics.dimensions;
+    facts.push(
+      `Dimensions <b>${[d.x, d.y, d.z].map((v) => v.toFixed(2)).join(" x ")}</b>` +
+        (m.metrics.triangles ? ` · ${compactNumber(m.metrics.triangles)} triangles` : ""),
+    );
+  }
+  if (m.submittedAtUtc) {
+    facts.push(`Submitted <b>${new Date(m.submittedAtUtc).toLocaleString()}</b>`);
+  }
+  if (m.durationSeconds) facts.push(`Duration <b>${fmtElapsed(m.durationSeconds * 1000)}</b>`);
+  if (m.qualityWarning) {
+    facts.push(
+      `<b class="field-error">${escapeHtml(m.qualityWarning.message)}</b> · ${REFERENCE_GUIDANCE}`,
+    );
+  }
+  if (m.error) facts.push(`Error: <b>${escapeHtml(m.error)}</b>`);
+  return facts.map((fact) => `<div class="manifest-facts">${fact}</div>`).join("");
+}
+
+async function openManifestPreview(path: string): Promise<void> {
+  let preview;
+  try {
+    preview = await readGenerationManifest(path);
+  } catch (error) {
+    toast((error as Error).message || "Could not read the generation manifest", "err");
+    return;
+  }
+  const m = preview.manifest;
+  manifestTitle.textContent = m.label || "Generation";
+
+  const imageHtml = await (async () => {
+    try {
+      const bytes = await readManifestAsset(path, "sourceImage");
+      const url = URL.createObjectURL(new Blob([new Uint8Array(bytes)], { type: "image/png" }));
+      if (previewUrlCleanup) previewUrlCleanup();
+      previewUrlCleanup = () => URL.revokeObjectURL(url);
+      return `<img src="${url}" alt="Reference image" />`;
+    } catch {
+      return `<img alt="" />`;
+    }
+  })();
+
+  const issuesHtml = preview.issues.length
+    ? `<div class="manifest-issues">${preview.issues
+        .filter((issue) => issue.role === "sourceImage" || issue.role === "glb")
+        .map(
+          (issue) =>
+            `<div class="manifest-issue"><span>${escapeHtml(manifestIssueText(issue))}</span>` +
+            `<button class="button button--secondary button--sm" data-relink="${issue.role}">Relink…</button></div>`,
+        )
+        .join("")}</div>`
+    : "";
+
+  const canImport = !hasBlockingCoreIssue(preview.issues);
+  const actions: string[] = [];
+  if (canImport && m.status === "completed") {
+    actions.push(`<button id="manifest-import" class="button button--primary" type="button">Import into Assets</button>`);
+  }
+  if (canImport && m.status === "interrupted") {
+    actions.push(
+      `<button id="manifest-requeue" class="button button--primary" type="button">Requeue generation</button>`,
+    );
+  }
+  manifestBody.innerHTML = `
+    <div class="manifest-preview">
+      ${imageHtml}
+      <div>
+        ${renderManifestFacts(m)}
+        ${issuesHtml}
+        <div class="modal-actions">
+          <button id="manifest-cancel" class="button button--secondary" type="button">Close</button>
+          ${actions.join("")}
+        </div>
+      </div>
+    </div>`;
+  manifestOpener = (document.activeElement as HTMLElement) ?? null;
+  manifestModal.classList.remove("hidden");
+  const initialFocus =
+    manifestBody.querySelector<HTMLElement>("#manifest-import, #manifest-requeue") ??
+    manifestFocusables()[0];
+  initialFocus?.focus();
+
+  manifestBody.querySelectorAll<HTMLButtonElement>("[data-relink]").forEach((button) => {
+    button.addEventListener("click", async () => {
+      const role = button.dataset.relink!;
+      try {
+        const { open } = await import("@tauri-apps/plugin-dialog");
+        const picked = await open({
+          multiple: false,
+          filters:
+            role === "glb"
+              ? [{ name: "GLB model", extensions: ["glb"] }]
+              : [{ name: "Image", extensions: ["png", "jpg", "jpeg", "webp", "bmp", "gif"] }],
+        });
+        if (typeof picked !== "string") return;
+        await relinkManifestFile(path, role, picked);
+        toast(`Relinked ${role}`, "ok");
+        void openManifestPreview(path);
+      } catch (error) {
+        toast((error as Error).message || "Could not relink file", "err");
+      }
+    });
+  });
+  manifestBody.querySelector("#manifest-cancel")?.addEventListener("click", closeManifestModal);
+  manifestBody.querySelector("#manifest-import")?.addEventListener("click", async () => {
+    if (!beginManifestBusy()) return;
+    const importButton = manifestBody.querySelector<HTMLButtonElement>("#manifest-import");
+    setActionBusy(importButton, "Importing model");
+    const timings = startStageTiming();
+    let persisted = false;
+    try {
+      const record = await importManifestFlow(path, timings, () => {
+        persisted = true;
+      });
+      timings.report("import");
+      completeManifestSuccess();
+      toast(`Imported "${record.label}"`, "ok");
+    } catch (error) {
+      const classification = classifyImportFailure(persisted);
+      if (classification === "post-persistence") {
+        // The asset exists; only preview/refresh failed afterwards. Never
+        // offer an import retry — that would duplicate the asset.
+        timings.report("import");
+        completeManifestSuccess();
+        toast(
+          "The asset was imported into Assets, but it could not be previewed in the viewer.",
+          "err",
+        );
+      } else {
+        // Pre-persistence failure: the modal stays fully retryable.
+        toast((error as Error).message || "Import failed", "err");
+        endManifestBusy();
+        importButton?.focus();
+      }
+    }
+  });
+  manifestBody.querySelector("#manifest-requeue")?.addEventListener("click", async () => {
+    if (!beginManifestBusy()) return;
+    const button = manifestBody.querySelector<HTMLButtonElement>("#manifest-requeue");
+    setActionBusy(button, "Queueing…");
+    try {
+      await requeueFromManifest(path, m);
+      completeManifestSuccess();
+    } catch (error) {
+      toast((error as Error).message || "Could not requeue generation", "err");
+      endManifestBusy();
+      button?.focus();
+    }
+  });
+}
+
+// ---- modal busy state ----
+let manifestBusy = false;
+
+function beginManifestBusy(): boolean {
+  // Refuse re-entrant imports while one is in flight (second layer after the
+  // close-blocking below).
+  if (manifestBusy) return false;
+  manifestBusy = true;
+  // Capture the exact state of every interactive control so failure restores
+  // precisely what was there before — not "everything enabled".
+  const elements = manifestFocusables().map((element) => element as HTMLButtonElement);
+  const states = captureControls(elements);
+  manifestModal.dataset.busyControls = JSON.stringify(states);
+  (manifestModal as unknown as { busyControlEls?: HTMLButtonElement[] }).busyControlEls =
+    elements;
+  manifestModal.setAttribute("aria-busy", "true");
+  // Everything is disabled while busy — including the action button hosting
+  // the spinner (a disabled button still renders its content).
+  for (const element of elements) element.disabled = true;
+  return true;
+}
+
+function setActionBusy(button: HTMLButtonElement | null, label: string): void {
+  if (!button) return;
+  // Assign the generated busy content back onto the live element.
+  const { html, minWidth } = busyContentFor(button.getBoundingClientRect().width);
+  button.innerHTML = html;
+  button.style.minWidth = minWidth;
+  button.querySelector<HTMLElement>(".spinner-label")!.textContent = label;
+}
+
+function endManifestBusy(): void {
+  const stored = manifestModal.dataset.busyControls;
+  const elements = (manifestModal as unknown as { busyControlEls?: HTMLButtonElement[] })
+    .busyControlEls ?? [];
+  if (stored && elements.length) {
+    try {
+      restoreControls(elements, JSON.parse(stored) as BusyControlState[]);
+    } catch {
+      /* leave controls as-is on malformed snapshots */
+    }
+  }
+  delete manifestModal.dataset.busyControls;
+  delete (manifestModal as unknown as { busyControlEls?: HTMLButtonElement[] }).busyControlEls;
+  manifestModal.removeAttribute("aria-busy");
+  manifestBusy = false;
+}
+
+interface StageTiming {
+  mark: (stage: string) => void;
+  report: (label: string) => void;
+}
+
+function startStageTiming(): StageTiming {
+  const started = performance.now();
+  let lastBoundary = started;
+  const durations: Record<string, number> = {};
+  return {
+    mark(stage: string) {
+      const now = performance.now();
+      durations[stage] = Math.round(now - lastBoundary);
+      lastBoundary = now;
+    },
+    report(label: string) {
+      const total = Math.round(performance.now() - started);
+      console.info(`[${label}] stage timings (ms)`, { ...durations, total });
+    },
+  };
+}
+
+/** Narrows a manifest's warning to the known public codes; unknown codes from
+ * newer producers are surfaced as generic text rather than mislabeled. */
+function asGenerationWarning(
+  warning: ManifestQualityWarning | null | undefined,
+): GenerationQualityWarning | undefined {
+  if (!warning) return undefined;
+  if (warning.code !== "collapsed-plane" && warning.code !== "background-plane-attached") {
+    return undefined;
+  }
+  return { ...warning, code: warning.code };
+}
+
+/** Applies a freshly loaded record to the viewer and workspace state. */
+function activateLoadedRecord(
+  instance: Viewer,
+  stats: ViewerStats,
+  rec: VersionRecord,
+): void {
+  currentGlb = rec.glb;
+  activeId = rec.id;
+  activeParams = normalizeGenParams(rec.params);
+  activeLabel = rec.label;
+  inputImage = rec.input;
+  inputName = rec.name;
+  setInputPreviewBlob(rec.input);
+  inputPreview.classList.remove("hidden");
+  dropHint.classList.add("hidden");
+  showInputPreview("source");
+  clearMaskPreview();
+  applyParams(rec.params);
+  renderViewerStats(stats, activeParams);
+  renderMeshParts(instance);
+  setViewerTools(true);
+  updateViewerCaption();
+  setWorkspaceMode("view");
+  clearStandaloneView();
+}
+
+/**
+ * Staged manifest import:
+ *   read+validate → build record → render GLB → persist → refresh gallery.
+ *
+ * Rendering happens BEFORE persistence, so a GLB that cannot open never
+ * creates an asset and the action stays safely retryable. `onPersisted`
+ * fires the moment the gallery record exists — afterwards the import can no
+ * longer fail "cleanly", and the caller treats later errors as preview
+ * problems rather than offering an import retry.
+ */
+async function importManifestFlow(
+  path: string,
+  timings: StageTiming,
+  onPersisted: () => void,
+): Promise<VersionRecord> {
+  const imported = await importGenerationManifest(path);
+  timings.mark("invoke-import");
+  const m = imported.manifest;
+  const label = m.label || "Imported model";
+  const assetId = newId();
+  const versionId = newId();
+  const params = normalizeGenParams({
+    resolution: (m.resolution === 512 || m.resolution === 1536 ? m.resolution : 1024) as GenParams["resolution"],
+    seed: m.seed,
+    bgRemoval: m.bgRemoval as GenParams["bgRemoval"],
+    uv: m.uv as GenParams["uv"],
+    texture: m.texture,
+  });
+  const rec: VersionRecord = {
+    id: versionId,
+    ts: Date.now(),
+    name: `${label}.png`,
+    params,
+    input: new Blob([new Uint8Array(imported.imageBytes)], { type: "image/png" }),
+    glb: new Blob([new Uint8Array(imported.glbBytes)], { type: "model/gltf-binary" }),
+    thumb: null,
+    assetId,
+    versionId,
+    parentVersionId: undefined,
+    operation: "imported",
+    operationParams: {
+      manifestPath: path,
+      originalIds: {
+        jobId: m.jobId ?? null,
+        nativeRequestId: m.nativeRequestId ?? null,
+        assetId: m.assetId ?? null,
+        versionId: m.versionId ?? null,
+        parentVersionId: m.parentVersionId ?? null,
+      },
+    },
+    createdAt: Date.now(),
+    label,
+    favorite: false,
+    metrics: m.metrics
+      ? {
+          fileSize: m.metrics.fileSizeBytes ?? undefined,
+          triangles: m.metrics.triangles ?? undefined,
+          dimensions: m.metrics.dimensions ?? undefined,
+        }
+      : null,
+    qualityWarning: asGenerationWarning(m.qualityWarning),
+  };
+  timings.mark("to-blob");
+
+  const instance = await getViewer();
+  disposeEditorSession();
+  const stats = await instance.load(rec.glb);
+  timings.mark("viewer-render");
+  activateLoadedRecord(instance, stats, rec);
+
+  await put(rec);
+  onPersisted();
+  timings.mark("persist-record");
+  revealAssetDock();
+  await refreshGallery();
+  timings.mark("refresh-gallery");
+  return rec;
+}
+
+async function requeueFromManifest(path: string, m?: GenerationManifest): Promise<void> {
+  const manifest = m ?? (await readGenerationManifest(path)).manifest;
+  if (!manifest.assetId || !manifest.versionId) {
+    throw new Error("This manifest predates lineage tracking and cannot be resumed in place");
+  }
+  const bytes = await readManifestAsset(path, "sourceImage");
+  const blob = new Blob([new Uint8Array(bytes)], { type: "image/png" });
+  const name = `${safeStem(manifest.label || "resumed")}.png`;
+  queueJob({
+    image: blob,
+    name,
+    params: normalizeGenParams({
+      resolution: (manifest.resolution === 512 || manifest.resolution === 1536
+        ? manifest.resolution
+        : 1024) as GenParams["resolution"],
+      seed: manifest.seed,
+      bgRemoval: manifest.bgRemoval as GenParams["bgRemoval"],
+      uv: manifest.uv as GenParams["uv"],
+      texture: manifest.texture,
+    }),
+    label: `${manifest.label || "Resumed"} · seed ${manifest.seed}`,
+    autoOpen: false,
+    resumeManifest: {
+      path,
+      assetId: manifest.assetId,
+      versionId: manifest.versionId,
+    },
+  });
+  toast("Requeued with the original settings", "ok");
+}
+
+// ---- standalone GLB viewing ----
+function updateStandaloneActions(): void {
+  const show = Boolean(standaloneView);
+  $("standalone-actions").classList.toggle("hidden", !show);
+  if (!show) return;
+  const linked = $("import-linked-manifest");
+  linked.classList.add("hidden");
+  findLinkedManifest(standaloneView!.glbPath ?? "")
+    .then((path) => {
+      if (!standaloneView) return;
+      standaloneView.linkedPath = path;
+      linked.classList.toggle("hidden", !path);
+    })
+    .catch(() => {});
+}
+
+function clearStandaloneView(): void {
+  standaloneView = null;
+  updateStandaloneActions();
+}
+
+async function viewGlbFile(glbPath: string): Promise<void> {
+  try {
+    const { readFile } = await import("@tauri-apps/plugin-fs");
+    const bytes = await readFile(glbPath);
+    const blob = new Blob([bytes], { type: "model/gltf-binary" });
+    const instance = await getViewer();
+    disposeEditorSession();
+    const stats = await instance.load(blob);
+    setWorkspaceMode("view");
+    activeParams = null;
+    activeLabel = "";
+    currentGlb = blob;
+    activeId = null;
+    renderViewerStats(stats, null);
+    setViewerTools(true);
+    viewerCaption.textContent = `Unimported model · ${(blob.size / 1e6).toFixed(1)} MB`;
+    standaloneView = { glbPath, linkedPath: null };
+    updateStandaloneActions();
+  } catch (error) {
+    toast((error as Error).message || "Could not open the GLB", "err");
+  }
+}
+
+$("open-glb-btn").addEventListener("click", async () => {
+  try {
+    const { open } = await import("@tauri-apps/plugin-dialog");
+    const picked = await open({
+      multiple: false,
+      filters: [{ name: "GLB model", extensions: ["glb"] }],
+    });
+    if (typeof picked === "string") void viewGlbFile(picked);
+  } catch (error) {
+    toast((error as Error).message || "Could not open a GLB", "err");
+  }
+});
+$("add-viewed-to-assets").addEventListener("click", async () => {
+  if (!currentGlb || !viewer || !standaloneView) return;
+  try {
+    const stats = viewer.getStats();
+    const thumb = await viewer.thumbnail().catch(() => null);
+    const id = newId();
+    const rec: VersionRecord = {
+      id,
+      ts: Date.now(),
+      name: standaloneView.glbPath?.split(/[\\/]/).pop() || "viewed.glb",
+      params: DEFAULT_PARAMS,
+      input: placeholderImage(),
+      glb: currentGlb,
+      thumb,
+      assetId: id,
+      versionId: id,
+      operation: "imported",
+      operationParams: { importedFrom: standaloneView.glbPath },
+      createdAt: Date.now(),
+      label: standaloneView.glbPath?.split(/[\\/]/).pop()?.replace(/\.glb$/i, "") || "Viewed model",
+      favorite: false,
+      metrics: statsToMetrics(stats),
+      qualityWarning: detectPlaneCollapse(stats.dimensions) ?? undefined,
+    };
+    await put(rec);
+    activeId = rec.id;
+    activeLabel = rec.label;
+    clearStandaloneView();
+    updateViewerCaption();
+    revealAssetDock();
+    await refreshGallery();
+    toast("Added to Assets", "ok");
+  } catch (error) {
+    toast((error as Error).message || "Could not add to Assets", "err");
+  }
+});
+$("import-linked-manifest").addEventListener("click", () => {
+  const path = standaloneView?.linkedPath;
+  if (path) void openManifestPreview(path);
+});
+
+// ---- interrupted-generation recovery ----
+interface InterruptedEntry extends RecoveryCandidate {}
+let interruptedManifests: InterruptedEntry[] = [];
+
+function groupInterrupted(
+  entries: InterruptedEntry[],
+): { singles: InterruptedEntry[]; sweeps: Map<string, InterruptedEntry[]> } {
+  const singles: InterruptedEntry[] = [];
+  const sweeps = new Map<string, InterruptedEntry[]>();
+  for (const entry of entries) {
+    const groupId = entry.manifest.sweep?.groupId;
+    if (!groupId) singles.push(entry);
+    else {
+      const group = sweeps.get(groupId) ?? [];
+      group.push(entry);
+      sweeps.set(groupId, group);
+    }
+  }
+  return { singles, sweeps };
+}
+
+async function loadSweepCandidates(anyCandidatePath: string, groupId: string): Promise<RecoveryCandidate[]> {
+  const siblings = await listSiblingManifests(anyCandidatePath);
+  const loaded: Array<RecoveryCandidate | null> = await Promise.all(
+    siblings.map(async (path) => {
+      try {
+        const preview = await readGenerationManifest(path);
+        if (preview.manifest.sweep?.groupId !== groupId) return null;
+        return { path, manifest: preview.manifest, issues: preview.issues };
+      } catch {
+        return null;
+      }
+    }),
+  );
+  return loaded.filter((entry): entry is RecoveryCandidate => entry !== null);
+}
+
+function describeState(state: string | undefined): string {
+  switch (state) {
+    case "completed":
+      return "completed";
+    case "running":
+      return "was running";
+    case "failed":
+      return "failed";
+    case "cancelled":
+      return "cancelled";
+    default:
+      return "queued, never started";
+  }
+}
+
+async function checkInterruptedManifests(): Promise<void> {
+  if (!isTauri()) return;
+  try {
+    const found = await scanInterruptedManifests();
+    interruptedManifests = found.map(([path, manifest]) => ({ path, manifest }));
+    recoveryBanner.classList.toggle("hidden", interruptedManifests.length === 0);
+    if (interruptedManifests.length) {
+      const { singles, sweeps } = groupInterrupted(interruptedManifests);
+      const parts: string[] = [];
+      if (singles.length) parts.push(`${singles.length} generation${singles.length === 1 ? "" : "s"}`);
+      if (sweeps.size) parts.push(`${sweeps.size} seed sweep${sweeps.size === 1 ? "" : "s"}`);
+      (recoveryBanner.querySelector("span") as HTMLElement).textContent =
+        `Interrupted work can be resumed: ${parts.join(" and ")}.`;
+    }
+  } catch {
+    /* scanning is best-effort */
+  }
+}
+
+/** One recovery summary per sweep group instead of unrelated dialogs. */
+async function openSweepRecoveryView(groupId: string, anchorPath: string): Promise<void> {
+  let candidates: InterruptedEntry[];
+  try {
+    candidates = await loadSweepCandidates(anchorPath, groupId);
+  } catch (error) {
+    toast((error as Error).message || "Could not inspect the sweep records", "err");
+    return;
+  }
+  const ordered = sortBySweepIndex(candidates);
+  const total = ordered[0]?.manifest.sweep?.count ?? ordered.length;
+  const queueable = queueableCandidates(ordered);
+
+  manifestTitle.textContent = "Interrupted seed sweep";
+  const rows = ordered
+    .map((candidate, position) => {
+      const m = candidate.manifest;
+      const eligibility = recoveryEligibility(m, candidate.issues);
+      const stateText =
+        m.status === "interrupted" ? describeState(m.sweep?.state) : describeState(m.status);
+      const suffix = eligibility.eligible
+        ? ""
+        : ` · will not re-queue: ${escapeHtml(eligibility.reason ?? "unknown reason")}`;
+      return `<div class="manifest-facts"><b>Candidate ${position + 1}</b> · seed ${escapeHtml(m.seed)} · ${escapeHtml(stateText)}${suffix}</div>`;
+    })
+    .join("");
+  manifestBody.innerHTML = `
+    <div>
+      <div class="manifest-facts">
+        <b>${total - queueable.length}/${total}</b> candidates already finished or excluded ·
+        <b>${queueable.length}</b> will be re-queued.
+        Original order and seeds are preserved; finished candidates are not regenerated.
+        Failed candidates are retryable; cancelled ones are never restored.
+      </div>
+      ${rows}
+      <div class="modal-actions">
+        <button id="manifest-cancel" class="button button--secondary" type="button">Close</button>
+        ${
+          queueable.length
+            ? `<button id="sweep-requeue" class="button button--primary" type="button">Requeue sweep</button>`
+            : ""
+        }
+      </div>
+    </div>`;
+  manifestOpener = (document.activeElement as HTMLElement) ?? null;
+  manifestModal.classList.remove("hidden");
+  (
+    manifestBody.querySelector<HTMLElement>("#sweep-requeue") ??
+    manifestBody.querySelector<HTMLElement>("#manifest-cancel")
+  )?.focus();
+
+  manifestBody.querySelector("#manifest-cancel")?.addEventListener("click", closeManifestModal);
+  manifestBody.querySelector("#sweep-requeue")?.addEventListener("click", async () => {
+    const button = manifestBody.querySelector<HTMLButtonElement>("#sweep-requeue")!;
+    button.disabled = true;
+    button.textContent = "Queueing…";
+    try {
+      // Pure preflight: eligible candidates in original sweep.index order,
+      // each with its normalized source identity.
+      const planned = planRecoveryQueue(candidates);
+      if (!planned.length) {
+        toast("Nothing to restore: every candidate is already finished or excluded", "err");
+        closeManifestModal();
+        return;
+      }
+
+      // The production orchestration helper reads all distinct sources before
+      // this callback can enqueue the first job.
+      await executeRecoveryPlan(
+        planned,
+        async (candidate) => {
+          const bytes = await readManifestAsset(candidate.path, "sourceImage");
+          return new Blob([new Uint8Array(bytes)], { type: "image/png" });
+        },
+        (candidate, source) => {
+          const m = candidate.manifest;
+          queueJob({
+            image: source,
+            name: `${safeStem(m.label || "resumed")}.png`,
+            params: normalizeGenParams({
+              resolution: (m.resolution === 512 || m.resolution === 1536
+                ? m.resolution
+                : 1024) as GenParams["resolution"],
+              seed: m.seed,
+              bgRemoval: m.bgRemoval as GenParams["bgRemoval"],
+              uv: m.uv as GenParams["uv"],
+              texture: m.texture,
+            }),
+            label: m.label || `Candidate · seed ${m.seed}`,
+            autoOpen: false,
+            sweep: {
+              id: m.sweep!.groupId,
+              index: m.sweep!.index,
+              count: m.sweep!.count,
+            },
+            resumeManifest: {
+              path: candidate.path,
+              assetId: m.assetId!,
+              versionId: m.versionId!,
+            },
+          });
+        },
+      );
+      // Report the number actually queued, not the original list size.
+      toast(
+        `Restoring sweep: ${planned.length} candidate${planned.length === 1 ? "" : "s"} re-queued`,
+        "ok",
+      );
+      closeManifestModal();
+      void checkInterruptedManifests();
+    } catch (error) {
+      // Zero jobs were queued: keep the recovery modal open and actionable.
+      toast(`Sweep was not restored (nothing queued): ${(error as Error).message || error}`, "err");
+      button.disabled = false;
+      button.textContent = "Requeue sweep";
+    }
+  });
+}
+
+
+$("recovery-review").addEventListener("click", () => {
+  const { singles, sweeps } = groupInterrupted(interruptedManifests);
+  const firstSweep = [...sweeps.entries()][0];
+  if (firstSweep && !singles.length) {
+    void openSweepRecoveryView(firstSweep[0], firstSweep[1][0].path);
+    return;
+  }
+  const [firstPath] = singles[0] ? [singles[0].path] : [];
+  if (firstPath) void openManifestPreview(firstPath);
+});
+
+$("import-generation-btn").addEventListener("click", async () => {
+  try {
+    const { open } = await import("@tauri-apps/plugin-dialog");
+    const picked = await open({
+      multiple: false,
+      filters: [{ name: "Polyloom generation", extensions: ["json"] }],
+    });
+    if (typeof picked === "string") void openManifestPreview(picked);
+  } catch (error) {
+    toast((error as Error).message || "Could not pick a manifest", "err");
+  }
+});
+
+
 // ---- boot ----
 async function boot(): Promise<void> {
   setViewerTools(false);
@@ -2479,6 +3704,7 @@ async function boot(): Promise<void> {
   initDockPreference();
   await pollHealth();
   await syncAutomationResults();
+  await checkInterruptedManifests();
   await refreshGallery();
   window.setInterval(pollHealth, 4000);
   if (!isTauri()) {

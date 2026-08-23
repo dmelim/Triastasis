@@ -71,6 +71,14 @@ interface TopologyLines {
   full: THREE.LineSegments | null;
 }
 
+interface CameraViewState {
+  direction: THREE.Vector3;
+  normalizedTarget: THREE.Vector3;
+  distanceScale: number;
+  orthoHeightScale: number;
+  orthographicZoom: number;
+}
+
 function materialList(material: MaterialValue): THREE.Material[] {
   return Array.isArray(material) ? material : [material];
 }
@@ -235,6 +243,7 @@ export class Viewer {
   loadRoot(root: THREE.Object3D, fileSize = 0, animations = 0): ViewerStats {
     if (this.disposed) throw new Error("The viewer has been disposed");
     if (!(root instanceof THREE.Object3D)) throw new Error("Viewer root must be a Three.js Object3D");
+    const previousCamera = this.captureCameraView();
     this.clearModel();
     this.loadedRoot = root;
     this.scene.add(root);
@@ -244,6 +253,7 @@ export class Viewer {
     this.rebuildHelpers();
     this.setDisplayMode(this.displayMode);
     this.setCameraPreset("isometric");
+    if (previousCamera) this.restoreCameraView(previousCamera);
     return this.getStats();
   }
 
@@ -808,6 +818,47 @@ export class Viewer {
 
     this.controls.target.copy(center);
     this.controls.maxDistance = Math.max(radius * 8, 0.1);
+    this.controls.update();
+    this.updateTopologyVisibility();
+  }
+
+  /** Preserve the user's orbit direction and zoom when switching assets. */
+  private captureCameraView(): CameraViewState | null {
+    if (!this.loadedRoot || this.bounds.isEmpty()) return null;
+    const center = this.bounds.getCenter(new THREE.Vector3());
+    const size = this.bounds.getSize(new THREE.Vector3());
+    const extent = Math.max(size.x, size.y, size.z, 0.01);
+    const offset = this.activeCamera.position.clone().sub(this.controls.target);
+    const distance = Math.max(offset.length(), 0.001);
+    return {
+      direction: offset.normalize(),
+      normalizedTarget: this.controls.target.clone().sub(center).divideScalar(extent),
+      distanceScale: distance / extent,
+      orthoHeightScale: this.orthoHeight / extent,
+      orthographicZoom: this.orthographicCamera.zoom,
+    };
+  }
+
+  private restoreCameraView(state: CameraViewState): void {
+    if (!this.loadedRoot || this.bounds.isEmpty()) return;
+    const center = this.bounds.getCenter(new THREE.Vector3());
+    const size = this.bounds.getSize(new THREE.Vector3());
+    const extent = Math.max(size.x, size.y, size.z, 0.01);
+    const target = center.addScaledVector(state.normalizedTarget, extent);
+    const distance = Math.max(state.distanceScale * extent, extent * 0.05);
+    this.controls.target.copy(target);
+    this.activeCamera.position.copy(target).addScaledVector(state.direction, distance);
+    this.activeCamera.lookAt(target);
+    if (this.cameraType === "orthographic") {
+      this.orthoHeight = Math.max(state.orthoHeightScale * extent, 0.01);
+      this.orthographicCamera.zoom = state.orthographicZoom;
+      this.updateCameraProjection();
+    } else {
+      this.perspectiveCamera.near = Math.max(distance / 1000, 0.001);
+      this.perspectiveCamera.far = Math.max(distance * 20, 100);
+      this.perspectiveCamera.updateProjectionMatrix();
+    }
+    this.controls.maxDistance = Math.max(extent * 8, distance * 2, 0.1);
     this.controls.update();
     this.updateTopologyVisibility();
   }
