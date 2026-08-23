@@ -4,7 +4,12 @@
 
 import { invoke as tauriInvoke } from "@tauri-apps/api/core";
 import { listen as tauriListen, type UnlistenFn } from "@tauri-apps/api/event";
-import type { BgRemoval, GenerationQualityWarning } from "./types";
+import type {
+  BgRemoval,
+  GenerationManifest,
+  GenerationQualityWarning,
+  ManifestPreview,
+} from "./types";
 
 export type NativeFileDropEvent =
   | { type: "enter" | "over" | "leave" }
@@ -216,4 +221,78 @@ export async function automationJobFiles(
   if (!imageResponse.ok) throw new Error(`Automation source download failed (${imageResponse.status})`);
   const [glb, input] = await Promise.all([modelResponse.blob(), imageResponse.blob()]);
   return { glb, input };
+}
+
+// ---- .polyloom.json generation manifests ----
+
+export interface ImportedGeneration {
+  manifestPath: string;
+  manifest: GenerationManifest;
+  imageBytes: number[];
+  glbBytes: number[];
+}
+
+/** Validate a manifest and report issues with its referenced files. */
+export function readGenerationManifest(path: string): Promise<ManifestPreview> {
+  return invoke<ManifestPreview>("read_generation_manifest", { path });
+}
+
+/** Full validation + file bytes for import; errors instead of partial data. */
+export function importGenerationManifest(path: string): Promise<ImportedGeneration> {
+  return invoke<ImportedGeneration>("import_generation_manifest", { path });
+}
+
+/**
+ * Write a manifest atomically beside its generation. Blank hashes are filled
+ * from existing files by the shell; `fileName` pins the file name for resume
+ * flows. Returns the written manifest path.
+ */
+export async function writeGenerationManifest(
+  dir: string,
+  manifest: GenerationManifest,
+  fileName?: string,
+): Promise<string> {
+  return invoke<string>("write_generation_manifest", {
+    dir,
+    manifest,
+    fileName: fileName ?? null,
+  });
+}
+
+/** Read one hash-verified attachment (used for requeueing interrupted runs). */
+export function readManifestAsset(path: string, role: string): Promise<number[]> {
+  return invoke<number[]>("read_manifest_asset", { path, role });
+}
+
+/** Copy a picked replacement into the manifest dir and refresh its hash. */
+export function relinkManifestFile(
+  manifestPath: string,
+  role: string,
+  sourcePath: string,
+): Promise<GenerationManifest> {
+  return invoke<GenerationManifest>("relink_manifest_file", {
+    manifestPath,
+    role,
+    sourcePath,
+  });
+}
+
+/** Manifest linked to a standalone GLB, when one exists beside it. */
+export function findLinkedManifest(glbPath: string): Promise<string | null> {
+  return invoke<string | null>("find_linked_manifest", { glbPath });
+}
+
+/** Interrupted generations found in the output directory. */
+export function scanInterruptedManifests(): Promise<Array<[string, GenerationManifest]>> {
+  return invoke<Array<[string, GenerationManifest]>>("scan_interrupted_manifests");
+}
+
+/** Every `.polyloom.json` in the same directory as `path`. */
+export function listSiblingManifests(path: string): Promise<string[]> {
+  return invoke<string[]>("list_sibling_manifests", { path });
+}
+
+/** The packaged application version. */
+export function appVersion(): Promise<string> {
+  return invoke<string>("app_version");
 }

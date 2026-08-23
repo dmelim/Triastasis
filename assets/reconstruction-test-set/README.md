@@ -40,7 +40,15 @@ recorded as first-class results so one broken case never blocks the matrix.
 | `input.png` | Copy of the original input image |
 | `model.glb` | Generated model |
 | `result.json` | Parameters, seed, request id, duration, dimensions, thin ratio, status/error |
-| `native-log.txt`, `cutout.png` | CLI mode only: raw pipeline log and conditioned cutout |
+| `model.polyloom.json` | Standard generation manifest — importable into Polyloom's gallery |
+| `model_cutout.png`, `native-log.txt` | CLI mode only: conditioned cutout and raw native log (both referenced by the manifest) |
+
+Older runs predate the manifest, or predate CLI artifact attachments:
+`--backfill --run-dir <dir>` creates or refreshes every manifest from the
+existing results — recalculating hashes, attaching `model_cutout.png` /
+`native-log.txt` when present, and preserving compatible metadata (lineage,
+timestamps, warnings). Add `--missing-only` to skip cases that already have a
+manifest. The output distinguishes created / updated / unchanged / failed.
 
 The first server-backed seed-42 matrix completed 10/10 cases on 2026-08-21.
 Its compact metrics are recorded in `results/2026-08-21-server-seed42.json`;

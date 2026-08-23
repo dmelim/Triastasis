@@ -23,6 +23,7 @@ Usage:
 Only the Python standard library is required.
 """
 import argparse
+import hashlib
 import json
 import struct
 import sys
@@ -37,6 +38,22 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 TEST_SET_ROOT = REPO_ROOT / "assets" / "reconstruction-test-set"
 DEFAULT_MANIFEST = TEST_SET_ROOT / "manifest.json"
 DEFAULT_RUNS_DIR = TEST_SET_ROOT / "runs"
+
+# Plane-collapse threshold mirrored from app/src-tauri/src/automation.rs.
+PLANE_COLLAPSE_RATIO = 0.05
+
+# Artifact filenames the current trellis-cli produces inside the case dir,
+# checked explicitly so legacy layouts keep working too. All paths recorded
+# in result.json and .polyloom.json are relative to the case directory.
+CLI_CUTOUT_CANDIDATES = ["model_cutout.png", "cutout.png"]
+CLI_LOG_NAME = "native-log.txt"
+
+
+def find_cli_cutout(case_dir: Path) -> str | None:
+    for candidate in CLI_CUTOUT_CANDIDATES:
+        if (case_dir / candidate).is_file():
+            return candidate
+    return None
 
 
 def validate_manifest(manifest: dict) -> None:
@@ -80,6 +97,216 @@ def atomic_write_json(path: Path, payload) -> None:
     temp = path.with_suffix(path.suffix + ".tmp")
     temp.write_text(json.dumps(payload, indent=2), encoding="utf-8")
     temp.replace(path)
+
+
+def sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1 << 20), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def polyloom_manifest_for(record: dict, artifacts: dict | None = None) -> dict:
+    """Converts one harness result.json into the standard .polyloom.json
+    schema consumed by Polyloom's import flow (see app/src-tauri/src/manifest.rs).
+
+    `artifacts` maps optional roles to case-relative paths, e.g.
+    {"cutout": "model_cutout.png", "log": "native-log.txt"}."""
+    params = record["params"]
+    metrics = record.get("metrics")
+    thin_ratio = (metrics or {}).get("thinRatio")
+    dimensions = (metrics or {}).get("dimensions")
+    quality_warning = None
+    if thin_ratio is not None and dimensions and thin_ratio < PLANE_COLLAPSE_RATIO:
+        quality_warning = {
+            "code": "collapsed-plane",
+            "message": "Collapsed into a plane",
+            "thinRatio": thin_ratio,
+            "threshold": PLANE_COLLAPSE_RATIO,
+            "dimensions": dimensions,
+        }
+    case_id = record["caseId"]
+    request_id = record.get("requestId") or params.get("request_id") or case_id
+    succeeded = record["status"] == "succeeded"
+    files = [{"role": "sourceImage", "path": "input.png", "sha256": ""}]
+    if succeeded:
+        files.append({"role": "glb", "path": "model.glb", "sha256": ""})
+    manifest = {
+        "schemaVersion": 1,
+        "status": "completed" if succeeded else "failed",
+        "label": case_id,
+        "sourceImage": "input.png",
+        "model": "model.glb",
+        "cutout": None,
+        "thumbnail": None,
+        "log": None,
+        "resolution": params["resolution"],
+        "seed": params["seed"],
+        "bgRemoval": params["bg_removal"],
+        "uv": params["uv"],
+        "texture": params["texture"],
+        "jobId": f"recon-{case_id}",
+        "nativeRequestId": request_id,
+        "assetId": f"recon-{case_id}",
+        "versionId": request_id,
+        "parentVersionId": None,
+        "submittedAtUtc": record.get("startedAtUtc"),
+        "startedAtUtc": record.get("startedAtUtc"),
+        "finishedAtUtc": record.get("finishedAtUtc"),
+        "durationSeconds": record.get("durationSeconds"),
+        "polyloomVersion": None,
+        "serverVersion": None,
+        "metrics": {
+            "dimensions": dimensions,
+            "triangles": None,
+            "fileSizeBytes": (metrics or {}).get("fileSizeBytes"),
+            "thinRatio": thin_ratio,
+        } if metrics else None,
+        "qualityWarning": quality_warning,
+        "error": record.get("error"),
+        "files": files,
+    }
+    for role, key in (("cutout", "cutout"), ("log", "log")):
+        relative = (artifacts or {}).get(key)
+        if relative:
+            manifest[role] = relative
+            manifest["files"].append({"role": role, "path": relative, "sha256": ""})
+    return manifest
+
+
+def emit_polyloom_manifest(case_dir: Path, record: dict) -> None:
+    """Writes the .polyloom.json beside result.json, hashing every referenced
+    file that exists — including CLI cutout/log artifacts when present."""
+    artifacts = {}
+    cutout = find_cli_cutout(case_dir)
+    if cutout:
+        artifacts["cutout"] = cutout
+    if (case_dir / CLI_LOG_NAME).is_file():
+        artifacts["log"] = CLI_LOG_NAME
+    # Prefer artifact references already recorded in result.json (server runs
+    # store absolute paths there; fixtures may store relative ones).
+    recorded = record.get("artifacts") or {}
+    if isinstance(recorded, dict):
+        if not artifacts.get("cutout") and recorded.get("cutout"):
+            candidate = Path(recorded["cutout"]).name
+            if (case_dir / candidate).is_file():
+                artifacts["cutout"] = candidate
+        if not artifacts.get("log") and recorded.get("nativeLog"):
+            candidate = Path(recorded["nativeLog"]).name
+            if (case_dir / candidate).is_file():
+                artifacts["log"] = candidate
+
+    manifest = polyloom_manifest_for(record, artifacts)
+    for entry in manifest["files"]:
+        file_path = case_dir / entry["path"]
+        if file_path.exists():
+            entry["sha256"] = sha256_file(file_path)
+    atomic_write_json(case_dir / "model.polyloom.json", manifest)
+
+
+# Metadata keys preserved from an existing manifest during backfill when the
+# result file cannot provide them (lineage, versions, timestamps, warnings).
+PRESERVED_MANIFEST_KEYS = (
+    "label",
+    "assetId",
+    "versionId",
+    "jobId",
+    "nativeRequestId",
+    "parentVersionId",
+    "submittedAtUtc",
+    "startedAtUtc",
+    "finishedAtUtc",
+    "polyloomVersion",
+    "serverVersion",
+    "qualityWarning",
+    "error",
+)
+
+
+def refresh_case_manifest(case_dir: Path) -> str:
+    """Creates or refreshes model.polyloom.json from existing artifacts.
+
+    Returns one of: created | updated | unchanged | failed: <reason>.
+    Valid optional metadata from the previous manifest survives; all hashes
+    are recalculated from the files currently on disk."""
+    try:
+        result_path = case_dir / "result.json"
+        record = json.loads(result_path.read_text(encoding="utf-8"))
+        target = case_dir / "model.polyloom.json"
+        existing_text = target.read_text(encoding="utf-8") if target.is_file() else None
+        existing = None
+        old_canonical = None
+
+        # Detect artifacts (fresh detection wins over stale result entries).
+        artifacts = {}
+        cutout = find_cli_cutout(case_dir)
+        if cutout:
+            artifacts["cutout"] = cutout
+        if (case_dir / CLI_LOG_NAME).is_file():
+            artifacts["log"] = CLI_LOG_NAME
+        manifest = polyloom_manifest_for(record, artifacts)
+
+        if existing_text is not None:
+            try:
+                parsed_existing = json.loads(existing_text)
+            except json.JSONDecodeError:
+                parsed_existing = None
+            # A previously double-encoded or otherwise malformed manifest is
+            # treated as absent: rebuilt fresh rather than merged.
+            if isinstance(parsed_existing, dict):
+                existing = parsed_existing
+                old_canonical = json.dumps(existing, indent=2, ensure_ascii=False)
+            if existing:
+                for key in PRESERVED_MANIFEST_KEYS:
+                    # These fields carry identity or historical context that
+                    # cannot be reconstructed reliably from artifacts alone.
+                    if existing.get(key) is not None:
+                        manifest[key] = existing[key]
+
+        for entry in manifest["files"]:
+            file_path = case_dir / entry["path"]
+            entry["sha256"] = sha256_file(file_path) if file_path.is_file() else ""
+
+        new_text = json.dumps(manifest, indent=2, ensure_ascii=False)
+        if existing_text is not None:
+            if old_canonical == new_text:
+                return "unchanged"
+            atomic_write_json(target, manifest)
+            return "updated"
+        atomic_write_json(target, manifest)
+        return "created"
+    except Exception as error:  # a broken case must not stop the run
+        return f"failed: {type(error).__name__}: {error}"
+
+
+def backfill_manifests(run_dir: Path, missing_only: bool) -> dict:
+    """Creates or refreshes manifests for every case with a result.json.
+
+    With `missing_only`, cases that already have a manifest are skipped."""
+    counts = {"created": 0, "updated": 0, "unchanged": 0, "failed": 0}
+    failures: list[str] = []
+    for result_path in sorted(run_dir.glob("*/result.json")):
+        case_dir = result_path.parent
+        if missing_only and (case_dir / "model.polyloom.json").is_file():
+            continue
+        outcome = refresh_case_manifest(case_dir)
+        name = case_dir.name
+        if outcome.startswith("failed"):
+            counts["failed"] += 1
+            failures.append(f"{name}: {outcome}")
+            print(f"  ! {name}: {outcome}")
+        else:
+            counts[outcome] += 1
+            verb = {
+                "created": "+ created",
+                "updated": "~ updated",
+                "unchanged": "= unchanged",
+            }[outcome]
+            print(f"  {verb} {name}")
+    for failure in failures:
+        pass  # already printed inline
+    return counts
 
 
 def glb_dimensions(path: Path):
@@ -201,21 +428,24 @@ class CliBackend:
             self.cli_path,
             str(image_path),
             str(output),
-            str(self.gpu),
+            "--models",
             self.models_dir,
+            "--gpu",
+            str(self.gpu),
+            "--seed",
             str(params["seed"]),
             "--res",
             str(params.get("resolution", 512)),
         ]
-        if params.get("bg_removal", "auto") != "auto":
-            command += ["--bg", params["bg_removal"]]
+        if params.get("bg_removal", "auto") not in ("auto", ""):
+            command += ["--bg-removal", params["bg_removal"]]
         if params.get("uv", "xatlas") == "box":
             command.append("--box-uv")
         if not params.get("texture", True):
             command.append("--no-texture")
         if self.dump_bg:
             command.append("--dump-bg")
-        log_path = work_dir / "native-log.txt"
+        log_path = work_dir / CLI_LOG_NAME
         started = time.monotonic()
         import subprocess
 
@@ -224,13 +454,14 @@ class CliBackend:
         duration = time.monotonic() - started
         if process.returncode != 0 or not output.exists():
             raise RuntimeError(
-                f"trellis-cli exited with code {process.returncode}; see native-log.txt"
+                f"trellis-cli exited with code {process.returncode}; see {CLI_LOG_NAME}"
             )
-        cutout = work_dir / "cutout.png"
+        # Case-relative artifact paths so records stay portable.
+        cutout = find_cli_cutout(work_dir)
         return (
             output.read_bytes(),
             duration,
-            {"nativeLog": str(log_path), "cutout": str(cutout) if cutout.exists() else None},
+            {"nativeLog": CLI_LOG_NAME, "cutout": cutout},
         )
 
 
@@ -240,7 +471,11 @@ def run_case(case: dict, settings: dict, backend, run_dir: Path, force: bool) ->
     result_path = case_dir / "result.json"
     if result_path.exists() and not force:
         print(f"  = {case['id']}: already complete, skipping")
-        return json.loads(result_path.read_text(encoding="utf-8"))
+        record = json.loads(result_path.read_text(encoding="utf-8"))
+        # Keep manifests in sync when resuming an older run directory.
+        if not (case_dir / "model.polyloom.json").exists():
+            emit_polyloom_manifest(case_dir, record)
+        return record
 
     input_path = TEST_SET_ROOT / case["input"]
     preserved_input = case_dir / "input.png"
@@ -291,6 +526,7 @@ def run_case(case: dict, settings: dict, backend, run_dir: Path, force: bool) ->
         )
         print(f"     FAILED: {record['error']}")
     atomic_write_json(result_path, record)
+    emit_polyloom_manifest(case_dir, record)
     return record
 
 
@@ -301,7 +537,17 @@ def main() -> int:
     parser.add_argument("--only", default="", help="comma-separated case ids subset")
     parser.add_argument("--force", action="store_true", help="re-run completed cases")
     parser.add_argument("--seed", type=int, help="override the manifest seed for every case")
-    backend_group = parser.add_mutually_exclusive_group(required=True)
+    parser.add_argument(
+        "--backfill",
+        action="store_true",
+        help="create or refresh .polyloom.json manifests from existing results",
+    )
+    parser.add_argument(
+        "--missing-only",
+        action="store_true",
+        help="with --backfill: skip cases that already have a manifest",
+    )
+    backend_group = parser.add_mutually_exclusive_group()
     backend_group.add_argument("--server", help="trellis-server base URL")
     backend_group.add_argument("--cli", help="path to trellis-cli binary")
     parser.add_argument("--models", default="models", help="models dir (CLI mode)")
@@ -332,6 +578,18 @@ def main() -> int:
         run_dir = args.run_dir
     run_dir.mkdir(parents=True, exist_ok=True)
 
+    if args.backfill:
+        mode = "missing-only" if args.missing_only else "create-or-refresh"
+        print(f"Backfilling manifests under {run_dir} ({mode})")
+        counts = backfill_manifests(run_dir, missing_only=args.missing_only)
+        print(
+            f"created: {counts['created']} · updated: {counts['updated']} · "
+            f"unchanged: {counts['unchanged']} · failed: {counts['failed']}"
+        )
+        return 1 if counts["failed"] else 0
+
+    if not args.server and not args.cli:
+        parser.error("one of --server or --cli is required (unless --backfill)")
     if args.server:
         backend = ServerBackend(args.server)
     else:

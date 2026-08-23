@@ -166,6 +166,108 @@ export interface ModelDimensions {
   z: number;
 }
 
+// ---- .polyloom.json generation manifests ----
+
+/** Lifecycle state stored in a generation manifest. */
+export type ManifestStatus = "completed" | "interrupted" | "failed" | "cancelled";
+
+/** Candidate lifecycle inside a persisted seed sweep. */
+export type SweepCandidateState =
+  | "queued"
+  | "running"
+  | "completed"
+  | "failed"
+  | "cancelled";
+
+/** Optional sweep membership making candidate manifests groupable. */
+export interface ManifestSweep {
+  groupId: string;
+  index: number;
+  count: number;
+  seed: number;
+  state: SweepCandidateState;
+}
+
+/** One hashed file reference inside a manifest (paths are relative). */
+export interface ManifestFileRef {
+  role: "sourceImage" | "glb" | "cutout" | "thumbnail" | "log";
+  path: string;
+  /** Empty while the file does not exist yet (interrupted generations). */
+  sha256: string;
+}
+
+export interface ManifestDimensions {
+  x: number;
+  y: number;
+  z: number;
+}
+
+export interface ManifestMetrics {
+  dimensions?: ManifestDimensions | null;
+  triangles?: number | null;
+  fileSizeBytes?: number | null;
+  thinRatio?: number | null;
+}
+
+export interface ManifestQualityWarning {
+  code: string;
+  message: string;
+  thinRatio: number;
+  threshold: number;
+  dimensions: ManifestDimensions;
+}
+
+/**
+ * The `.polyloom.json` schema written beside every generated model and
+ * emitted by the reconstruction harness. Field names match the Rust
+ * `GenerationManifest` serde serialization exactly.
+ */
+export interface GenerationManifest {
+  schemaVersion: number;
+  status: ManifestStatus;
+  label: string;
+  sourceImage?: string | null;
+  model?: string | null;
+  cutout?: string | null;
+  thumbnail?: string | null;
+  log?: string | null;
+  resolution: number;
+  seed: number;
+  bgRemoval: string;
+  uv: string;
+  texture: boolean;
+  jobId?: string | null;
+  nativeRequestId?: string | null;
+  assetId?: string | null;
+  versionId?: string | null;
+  parentVersionId?: string | null;
+  submittedAtUtc?: string | null;
+  startedAtUtc?: string | null;
+  finishedAtUtc?: string | null;
+  durationSeconds?: number | null;
+  polyloomVersion?: string | null;
+  serverVersion?: string | null;
+  metrics?: ManifestMetrics | null;
+  qualityWarning?: ManifestQualityWarning | null;
+  error?: string | null;
+  files?: ManifestFileRef[];
+  sweep?: ManifestSweep | null;
+}
+
+/** A validation problem with one referenced file. */
+export interface ManifestIssue {
+  role: string;
+  path: string;
+  kind: "missing" | "hashMismatch" | "invalidFormat" | "unsafePath";
+  detail: string;
+}
+
+export interface ManifestPreview {
+  path: string;
+  manifest: GenerationManifest;
+  issues: ManifestIssue[];
+}
+
 /**
  * Metrics are deliberately independent of the viewer implementation.  A
  * record can therefore keep metrics after the viewer is replaced, and older
@@ -184,10 +286,12 @@ export interface ModelMetrics {
   dimensions?: ModelDimensions;
 }
 
-/** A generated model has effectively collapsed into a two-dimensional plane. */
+/** A detected geometry quality problem. */
 export interface GenerationQualityWarning {
-  code: "collapsed-plane";
+  code: "collapsed-plane" | "background-plane-attached";
   message: string;
+  /** For collapsed-plane: the bounding thin ratio. For background-sheet:
+      also the thin ratio (the threshold field carries the slab-share gate). */
   thinRatio: number;
   threshold: number;
   dimensions: ModelDimensions;

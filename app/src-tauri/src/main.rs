@@ -8,6 +8,7 @@
 
 mod automation;
 mod config;
+mod manifest;
 mod server;
 mod tray;
 
@@ -181,6 +182,72 @@ fn automation_info(state: tauri::State<AutomationState>) -> automation::Automati
     automation::info(state.inner())
 }
 
+#[tauri::command]
+fn app_version() -> String {
+    env!("CARGO_PKG_VERSION").to_string()
+}
+
+#[tauri::command]
+fn read_generation_manifest(path: String) -> Result<manifest::ManifestPreview, String> {
+    manifest::read_generation_manifest_impl(&path)
+}
+
+#[tauri::command]
+fn import_generation_manifest(path: String) -> Result<manifest::ImportedGeneration, String> {
+    manifest::import_generation_manifest_impl(&path)
+}
+
+/// Write a manifest beside its generation. The frontend sends the structured
+/// manifest with blank hashes; the writer fills them from existing files.
+/// `fileName` pins the manifest filename (resume flows reuse the same file).
+#[tauri::command]
+async fn write_generation_manifest(
+    dir: String,
+    manifest: manifest::GenerationManifest,
+    file_name: Option<String>,
+) -> Result<String, String> {
+    let dir = std::path::PathBuf::from(dir);
+    if !dir.is_absolute() {
+        return Err("manifest directory must be absolute".to_string());
+    }
+    tauri::async_runtime::spawn_blocking(move || {
+        let target =
+            manifest::write_generation_manifest_impl(&dir, manifest, file_name.as_deref())?;
+        Ok(target.to_string_lossy().into_owned())
+    })
+    .await
+    .map_err(|e| format!("manifest task failed: {e}"))?
+}
+
+#[tauri::command]
+fn read_manifest_asset(path: String, role: String) -> Result<Vec<u8>, String> {
+    manifest::read_manifest_asset_impl(&path, &role)
+}
+
+#[tauri::command]
+fn relink_manifest_file(
+    manifest_path: String,
+    role: String,
+    source_path: String,
+) -> Result<manifest::GenerationManifest, String> {
+    manifest::relink_manifest_file_impl(&manifest_path, &role, &source_path)
+}
+
+#[tauri::command]
+fn find_linked_manifest(glb_path: String) -> Option<String> {
+    manifest::find_linked_manifest_impl(&glb_path)
+}
+
+#[tauri::command]
+fn scan_interrupted_manifests() -> Vec<(String, manifest::GenerationManifest)> {
+    manifest::scan_interrupted_manifests_impl()
+}
+
+#[tauri::command]
+fn list_sibling_manifests(path: String) -> Result<Vec<String>, String> {
+    manifest::list_sibling_manifests_impl(&path)
+}
+
 fn main() {
     // WebKitGTK ≥2.42 + the NVIDIA proprietary driver (and some other GPU/driver
     // combos) render a blank white window through the DMA-BUF path, and can even
@@ -213,7 +280,16 @@ fn main() {
             restart_server,
             server_running,
             automation_info,
-            preview_alpha
+            preview_alpha,
+            app_version,
+            read_generation_manifest,
+            import_generation_manifest,
+            write_generation_manifest,
+            read_manifest_asset,
+            relink_manifest_file,
+            find_linked_manifest,
+            scan_interrupted_manifests,
+            list_sibling_manifests
         ])
         .setup(|app| {
             // Auto-launch the server if the installer already wrote a usable config.
