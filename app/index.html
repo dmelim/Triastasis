@@ -322,9 +322,14 @@
               </div>
             </section>
 
-            <section class="inspect-section selection-section">
-              <h2>Mesh parts</h2>
-              <p class="section-note">Choose an independent part of the loaded model. Frame, Isolate, and Hide only affect the viewer. Geometry changes begin under Edit copy.</p>
+            <section id="mesh-parts-section" class="inspect-section selection-section hidden">
+              <div class="inspect-section-heading">
+                <h2>Mesh parts</h2>
+                <details class="inline-tip">
+                  <summary aria-label="About mesh parts" aria-controls="mesh-parts-tip" title="About mesh parts"><span class="button-icon icon-info" aria-hidden="true"></span></summary>
+                  <p id="mesh-parts-tip" class="tip-popover" role="note">Choose an independent part of the loaded model. Frame, Isolate, and Hide only affect the viewer. Geometry changes begin under Edit copy.</p>
+                </details>
+              </div>
               <div class="ctl">
                 <label id="mesh-part-select-label" for="mesh-part-select">Loaded mesh part</label>
                 <select id="mesh-part-select">

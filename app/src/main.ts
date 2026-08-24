@@ -166,6 +166,7 @@ const viewerReferencePopover = $("viewer-reference-popover");
 const viewerReferenceImage = $<HTMLImageElement>("viewer-reference-image");
 const topologyDetailSelect = $<HTMLSelectElement>("view-topology-detail");
 const cameraTypeSelect = $<HTMLSelectElement>("view-camera-type");
+const meshPartsSection = $("mesh-parts-section");
 const meshPartSelect = $<HTMLSelectElement>("mesh-part-select");
 const selectionFrameBtn = $<HTMLButtonElement>("selection-frame");
 const selectionIsolateBtn = $<HTMLButtonElement>("selection-isolate");
@@ -525,6 +526,10 @@ function runViewer(action: (instance: Viewer) => void): void {
 
 function renderMeshParts(instance: Viewer): void {
   const parts = instance.getMeshParts();
+  meshPartsSection.classList.toggle("hidden", parts.length <= 1);
+  if (parts.length === 1 && !instance.getSelection()) {
+    instance.selectMesh(parts[0]);
+  }
   meshPartSelect.innerHTML = "";
   const placeholder = document.createElement("option");
   placeholder.value = "";

@@ -1129,6 +1129,14 @@ input:focus-visible,
 
 /* ---- inspector extensions ---- */
 .compact-control { margin-top: 10px; }
+.inspect-section-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+.inspect-section-heading h2 { margin: 0; }
 .section-note {
   margin: -4px 0 10px;
   color: var(--content-secondary);
