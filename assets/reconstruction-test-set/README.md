@@ -40,7 +40,7 @@ recorded as first-class results so one broken case never blocks the matrix.
 | `input.png` | Copy of the original input image |
 | `model.glb` | Generated model |
 | `result.json` | Parameters, seed, request id, duration, dimensions, thin ratio, status/error |
-| `model.polyloom.json` | Standard generation manifest — importable into Polyloom's gallery |
+| `model.triastasis.json` | Standard generation manifest, importable into the Triastasis gallery |
 | `model_cutout.png`, `native-log.txt` | CLI mode only: conditioned cutout and raw native log (both referenced by the manifest) |
 
 Older runs predate the manifest, or predate CLI artifact attachments:

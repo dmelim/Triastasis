@@ -1,5 +1,5 @@
 {
-  "$comment": "Polyloom reconstruction quality test set. One controlled factor varies per case against the 01-baseline reference; every case runs with identical settings unless overridden here.",
+  "$comment": "Triastasis reconstruction quality test set. One controlled factor varies per case against the 01-baseline reference; every case runs with identical settings unless overridden here.",
   "schemaVersion": 1,
   "settings": {
     "resolution": 512,

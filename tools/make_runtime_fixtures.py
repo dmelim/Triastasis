@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Builds the 18-case runtime validation fixture set for `.polyloom.json`
+"""Builds the 18-case runtime validation fixture set for `.triastasis.json`
 import/recovery testing. Output goes outside any real gallery (default:
-%TEMP%/polyloom-runtime-fixtures) so the packaged app can be pointed at it
+%TEMP%/triastasis-runtime-fixtures) so the packaged app can be pointed at it
 without touching production data.
 
 Uses real artifacts when available: the GPU-generated GLB from the runtime
@@ -57,7 +57,7 @@ def base_manifest() -> dict:
         "startedAtUtc": "2026-08-22T00:00:01Z",
         "finishedAtUtc": "2026-08-22T00:00:31Z",
         "durationSeconds": 30.0,
-        "polyloomVersion": None,
+        "triastasisVersion": None,
         "serverVersion": None,
         "metrics": {
             "dimensions": {"x": 0.61, "y": 0.92, "z": 1.0},
@@ -80,7 +80,7 @@ def finalize(case_dir: Path, manifest: dict) -> None:
         f = case_dir / entry["path"]
         if f.is_file():
             entry["sha256"] = sha256_file(f)
-    atomic_write(case_dir / "model.polyloom.json", json.dumps(manifest, indent=2, ensure_ascii=False))
+    atomic_write(case_dir / "model.triastasis.json", json.dumps(manifest, indent=2, ensure_ascii=False))
 
 
 def synthetic_large_glb(target: Path, mb: int) -> None:
@@ -103,9 +103,9 @@ def main() -> int:
     parser.add_argument(
         "--out",
         type=Path,
-        default=Path.home() / "AppData" / "Local" / "Temp" / "polyloom-runtime-fixtures"
+        default=Path.home() / "AppData" / "Local" / "Temp" / "triastasis-runtime-fixtures"
         if sys.platform == "win32"
-        else Path("/tmp/polyloom-runtime-fixtures"),
+        else Path("/tmp/triastasis-runtime-fixtures"),
     )
     args = parser.parse_args()
     out = args.out
@@ -180,12 +180,12 @@ def main() -> int:
     with_artifacts(d)
     m = base_manifest()
     m["schemaVersion"] = 99
-    atomic_write(d / "model.polyloom.json", json.dumps(m, indent=2))
+    atomic_write(d / "model.triastasis.json", json.dumps(m, indent=2))
 
     # 9. Invalid JSON.
     d = case("09-invalid-json")
     with_artifacts(d)
-    atomic_write(d / "model.polyloom.json", "{ this is not json at all ")
+    atomic_write(d / "model.triastasis.json", "{ this is not json at all ")
 
     # 10. Absolute artifact path.
     d = case("10-absolute-path")
@@ -227,13 +227,13 @@ def main() -> int:
     m["model"] = "sibling-model.glb"
     m["files"][1]["path"] = "sibling-model.glb"
     finalize(d, m)
-    (d / "model.polyloom.json").rename(d / "sibling-model.polyloom.json")
+    (d / "model.triastasis.json").rename(d / "sibling-model.triastasis.json")
 
     # 15. Standalone GLB with an INVALID sibling manifest.
     d = case("15-glb-with-invalid-sibling")
     if glb_source:
         shutil.copyfile(glb_source, d / "broken-sibling.glb")
-    atomic_write(d / "broken-sibling.polyloom.json", "{{{ not json")
+    atomic_write(d / "broken-sibling.triastasis.json", "{{{ not json")
 
     # 16. Duplicate lineage IDs: same asset/version IDs in two cases; importing
     # both must remap internal IDs without overwriting the first import.

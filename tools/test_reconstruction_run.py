@@ -52,7 +52,7 @@ class RefreshCaseManifestTests(unittest.TestCase):
             self.assertEqual(refresh_case_manifest(case_dir), "unchanged")
 
             manifest = json.loads(
-                (case_dir / "model.polyloom.json").read_text(encoding="utf-8")
+                (case_dir / "model.triastasis.json").read_text(encoding="utf-8")
             )
             hashes = {entry["role"]: entry["sha256"] for entry in manifest["files"]}
             self.assertEqual(hashes["sourceImage"], sha256_file(case_dir / "input.png"))
@@ -61,7 +61,7 @@ class RefreshCaseManifestTests(unittest.TestCase):
     def test_invalid_json_is_rebuilt_as_updated(self):
         with tempfile.TemporaryDirectory() as temp:
             case_dir = self.make_case(Path(temp))
-            target = case_dir / "model.polyloom.json"
+            target = case_dir / "model.triastasis.json"
             target.write_text('{"broken":', encoding="utf-8")
 
             self.assertEqual(refresh_case_manifest(case_dir), "updated")
@@ -73,7 +73,7 @@ class RefreshCaseManifestTests(unittest.TestCase):
     def test_wrong_json_shape_is_rebuilt(self):
         with tempfile.TemporaryDirectory() as temp:
             case_dir = self.make_case(Path(temp))
-            target = case_dir / "model.polyloom.json"
+            target = case_dir / "model.triastasis.json"
             target.write_text(json.dumps("double encoded"), encoding="utf-8")
 
             self.assertEqual(refresh_case_manifest(case_dir), "updated")
@@ -83,13 +83,13 @@ class RefreshCaseManifestTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             case_dir = self.make_case(Path(temp))
             self.assertEqual(refresh_case_manifest(case_dir), "created")
-            target = case_dir / "model.polyloom.json"
+            target = case_dir / "model.triastasis.json"
             manifest = json.loads(target.read_text(encoding="utf-8"))
             manifest.update(
                 {
                     "assetId": "preserved-asset",
                     "parentVersionId": "parent-version",
-                    "polyloomVersion": "0.5.4",
+                    "triastasisVersion": "0.5.4",
                     "qualityWarning": {
                         "code": "future-warning",
                         "message": "Preserve me",
@@ -105,8 +105,24 @@ class RefreshCaseManifestTests(unittest.TestCase):
             refreshed = json.loads(target.read_text(encoding="utf-8"))
             self.assertEqual(refreshed["assetId"], "preserved-asset")
             self.assertEqual(refreshed["parentVersionId"], "parent-version")
-            self.assertEqual(refreshed["polyloomVersion"], "0.5.4")
+            self.assertEqual(refreshed["triastasisVersion"], "0.5.4")
             self.assertEqual(refreshed["qualityWarning"]["message"], "Preserve me")
+
+    def test_refreshes_legacy_manifest_in_place(self):
+        with tempfile.TemporaryDirectory() as temp:
+            case_dir = self.make_case(Path(temp))
+            legacy = case_dir / "model.polyloom.json"
+            legacy.write_text(
+                json.dumps({"polyloomVersion": "0.0.1-alpha.1"}),
+                encoding="utf-8",
+            )
+
+            self.assertEqual(refresh_case_manifest(case_dir), "updated")
+            self.assertTrue(legacy.is_file())
+            self.assertFalse((case_dir / "model.triastasis.json").exists())
+            refreshed = json.loads(legacy.read_text(encoding="utf-8"))
+            self.assertEqual(refreshed["polyloomVersion"], "0.0.1-alpha.1")
+            self.assertIn("triastasisVersion", refreshed)
 
 
 if __name__ == "__main__":

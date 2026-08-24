@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Polyloom reconstruction-test harness.
+"""Triastasis reconstruction-test harness.
 
 Runs every case in assets/reconstruction-test-set/manifest.json against the
 native TRELLIS pipeline with fixed settings and seeds, preserving everything
@@ -44,7 +44,7 @@ PLANE_COLLAPSE_RATIO = 0.05
 
 # Artifact filenames the current trellis-cli produces inside the case dir,
 # checked explicitly so legacy layouts keep working too. All paths recorded
-# in result.json and .polyloom.json are relative to the case directory.
+# in result.json and .triastasis.json are relative to the case directory.
 CLI_CUTOUT_CANDIDATES = ["model_cutout.png", "cutout.png"]
 CLI_LOG_NAME = "native-log.txt"
 
@@ -107,9 +107,9 @@ def sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
-def polyloom_manifest_for(record: dict, artifacts: dict | None = None) -> dict:
-    """Converts one harness result.json into the standard .polyloom.json
-    schema consumed by Polyloom's import flow (see app/src-tauri/src/manifest.rs).
+def triastasis_manifest_for(record: dict, artifacts: dict | None = None) -> dict:
+    """Converts one harness result.json into the standard .triastasis.json
+    schema consumed by Triastasis's import flow (see app/src-tauri/src/manifest.rs).
 
     `artifacts` maps optional roles to case-relative paths, e.g.
     {"cutout": "model_cutout.png", "log": "native-log.txt"}."""
@@ -155,7 +155,7 @@ def polyloom_manifest_for(record: dict, artifacts: dict | None = None) -> dict:
         "startedAtUtc": record.get("startedAtUtc"),
         "finishedAtUtc": record.get("finishedAtUtc"),
         "durationSeconds": record.get("durationSeconds"),
-        "polyloomVersion": None,
+        "triastasisVersion": None,
         "serverVersion": None,
         "metrics": {
             "dimensions": dimensions,
@@ -175,8 +175,8 @@ def polyloom_manifest_for(record: dict, artifacts: dict | None = None) -> dict:
     return manifest
 
 
-def emit_polyloom_manifest(case_dir: Path, record: dict) -> None:
-    """Writes the .polyloom.json beside result.json, hashing every referenced
+def emit_triastasis_manifest(case_dir: Path, record: dict) -> None:
+    """Writes the .triastasis.json beside result.json, hashing every referenced
     file that exists — including CLI cutout/log artifacts when present."""
     artifacts = {}
     cutout = find_cli_cutout(case_dir)
@@ -197,12 +197,12 @@ def emit_polyloom_manifest(case_dir: Path, record: dict) -> None:
             if (case_dir / candidate).is_file():
                 artifacts["log"] = candidate
 
-    manifest = polyloom_manifest_for(record, artifacts)
+    manifest = triastasis_manifest_for(record, artifacts)
     for entry in manifest["files"]:
         file_path = case_dir / entry["path"]
         if file_path.exists():
             entry["sha256"] = sha256_file(file_path)
-    atomic_write_json(case_dir / "model.polyloom.json", manifest)
+    atomic_write_json(case_dir / "model.triastasis.json", manifest)
 
 
 # Metadata keys preserved from an existing manifest during backfill when the
@@ -217,6 +217,7 @@ PRESERVED_MANIFEST_KEYS = (
     "submittedAtUtc",
     "startedAtUtc",
     "finishedAtUtc",
+    "triastasisVersion",
     "polyloomVersion",
     "serverVersion",
     "qualityWarning",
@@ -225,7 +226,7 @@ PRESERVED_MANIFEST_KEYS = (
 
 
 def refresh_case_manifest(case_dir: Path) -> str:
-    """Creates or refreshes model.polyloom.json from existing artifacts.
+    """Creates or refreshes model.triastasis.json from existing artifacts.
 
     Returns one of: created | updated | unchanged | failed: <reason>.
     Valid optional metadata from the previous manifest survives; all hashes
@@ -233,7 +234,13 @@ def refresh_case_manifest(case_dir: Path) -> str:
     try:
         result_path = case_dir / "result.json"
         record = json.loads(result_path.read_text(encoding="utf-8"))
-        target = case_dir / "model.polyloom.json"
+        current_target = case_dir / "model.triastasis.json"
+        legacy_target = case_dir / "model.polyloom.json"
+        target = (
+            current_target
+            if current_target.is_file() or not legacy_target.is_file()
+            else legacy_target
+        )
         existing_text = target.read_text(encoding="utf-8") if target.is_file() else None
         existing = None
         old_canonical = None
@@ -245,7 +252,7 @@ def refresh_case_manifest(case_dir: Path) -> str:
             artifacts["cutout"] = cutout
         if (case_dir / CLI_LOG_NAME).is_file():
             artifacts["log"] = CLI_LOG_NAME
-        manifest = polyloom_manifest_for(record, artifacts)
+        manifest = triastasis_manifest_for(record, artifacts)
 
         if existing_text is not None:
             try:
@@ -288,7 +295,10 @@ def backfill_manifests(run_dir: Path, missing_only: bool) -> dict:
     failures: list[str] = []
     for result_path in sorted(run_dir.glob("*/result.json")):
         case_dir = result_path.parent
-        if missing_only and (case_dir / "model.polyloom.json").is_file():
+        if missing_only and (
+            (case_dir / "model.triastasis.json").is_file()
+            or (case_dir / "model.polyloom.json").is_file()
+        ):
             continue
         outcome = refresh_case_manifest(case_dir)
         name = case_dir.name
@@ -366,7 +376,7 @@ class ServerBackend:
         work_dir: Path | None = None,
     ):
         del work_dir  # Kept for a uniform backend interface.
-        boundary = f"polyloom-{request_id}"
+        boundary = f"triastasis-{request_id}"
         parts = []
 
         def field(name, value):
@@ -473,8 +483,11 @@ def run_case(case: dict, settings: dict, backend, run_dir: Path, force: bool) ->
         print(f"  = {case['id']}: already complete, skipping")
         record = json.loads(result_path.read_text(encoding="utf-8"))
         # Keep manifests in sync when resuming an older run directory.
-        if not (case_dir / "model.polyloom.json").exists():
-            emit_polyloom_manifest(case_dir, record)
+        if not (
+            (case_dir / "model.triastasis.json").exists()
+            or (case_dir / "model.polyloom.json").exists()
+        ):
+            emit_triastasis_manifest(case_dir, record)
         return record
 
     input_path = TEST_SET_ROOT / case["input"]
@@ -526,7 +539,7 @@ def run_case(case: dict, settings: dict, backend, run_dir: Path, force: bool) ->
         )
         print(f"     FAILED: {record['error']}")
     atomic_write_json(result_path, record)
-    emit_polyloom_manifest(case_dir, record)
+    emit_triastasis_manifest(case_dir, record)
     return record
 
 
@@ -540,7 +553,7 @@ def main() -> int:
     parser.add_argument(
         "--backfill",
         action="store_true",
-        help="create or refresh .polyloom.json manifests from existing results",
+        help="create or refresh .triastasis.json manifests from existing results",
     )
     parser.add_argument(
         "--missing-only",

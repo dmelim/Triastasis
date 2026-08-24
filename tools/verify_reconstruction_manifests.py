@@ -11,7 +11,9 @@ RUN = Path(__file__).resolve().parent.parent / "assets" / "reconstruction-test-s
 def main() -> int:
     ok = True
     for case_dir in sorted(p for p in RUN.iterdir() if p.is_dir()):
-        manifest_path = case_dir / "model.polyloom.json"
+        manifest_path = case_dir / "model.triastasis.json"
+        if not manifest_path.is_file():
+            manifest_path = case_dir / "model.polyloom.json"
         if not manifest_path.is_file():
             continue
         m = json.loads(manifest_path.read_text(encoding="utf-8"))
