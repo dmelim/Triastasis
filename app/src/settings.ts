@@ -3,6 +3,13 @@
 // (which restarts the server); in the browser we only expose host/port.
 
 import { loadConfig, saveConfig } from "./config";
+import {
+  allowsGenerationAboveRecommendation,
+  describeHardware,
+  detectGenerationHardware,
+  setAllowsGenerationAboveRecommendation,
+  type GenerationHardwareProfile,
+} from "./hardware-profile";
 import { invoke, isTauri, logsDir, openLogsDir, openOutputDir, pickDirectory } from "./tauri";
 
 export type ProgressDisplayMode = "notification" | "sidebar";
@@ -31,6 +38,31 @@ function bindProgressDisplay(body: HTMLElement): void {
   };
 }
 
+function hardwareRecommendationField(profile: GenerationHardwareProfile): string {
+  const allowed = allowsGenerationAboveRecommendation();
+  return `<div class="settings-hardware">
+    <div class="settings-hardware-copy">
+      <strong>Generation recommendation</strong>
+      <span>${describeHardware(profile)}</span>
+      <span>Recommended maximum: ${profile.recommendedMaxResolution}</span>
+    </div>
+    <label class="settings-hardware-override">
+      <input id="set-hardware-override" type="checkbox"${allowed ? " checked" : ""} />
+      <span>Allow settings above this recommendation</span>
+    </label>
+    <p>Experimental settings can be much slower and may run out of GPU memory.</p>
+  </div>`;
+}
+
+function bindHardwareRecommendation(body: HTMLElement): void {
+  const checkbox = body.querySelector<HTMLInputElement>("#set-hardware-override");
+  if (!checkbox) return;
+  checkbox.onchange = () => {
+    setAllowsGenerationAboveRecommendation(checkbox.checked);
+    window.dispatchEvent(new CustomEvent("polyloom-hardware-policy"));
+  };
+}
+
 function field(label: string, id: string, value: string, type = "text"): string {
   return `<label class="ctl"><span>${label}</span>
     <input id="${id}" type="${type}" value="${value.replace(/"/g, "&quot;")}" /></label>`;
@@ -54,7 +86,7 @@ export async function renderSettings(
   body: HTMLElement,
   onSaved: () => void,
 ): Promise<void> {
-  const cfg = await loadConfig(true);
+  const [cfg, hardware] = await Promise.all([loadConfig(true), detectGenerationHardware()]);
 
   if (isTauri()) {
     // get_config already fills the default output dir; fall back to it when unset
@@ -73,6 +105,7 @@ export async function renderSettings(
       ${ro("Backend", cfg.backend)}
       ${ro("Server binary", cfg.serverBin)}
       ${progressDisplayField()}
+      ${hardwareRecommendationField(hardware)}
       ${field("Models directory", "set-models", cfg.modelsDir)}
       ${dirField("Output folder (generated GLBs are saved here)", "set-output", outputDir)}
       ${field("GPU index (&lt;0 = CPU)", "set-gpu", String(cfg.gpu), "number")}
@@ -87,6 +120,7 @@ export async function renderSettings(
         <button id="set-save" class="button button--primary" type="button">Save &amp; restart</button>
       </div>`;
     bindProgressDisplay(body);
+    bindHardwareRecommendation(body);
 
     (body.querySelector("#set-logs-open") as HTMLButtonElement).onclick = async () => {
       try {
@@ -141,12 +175,14 @@ export async function renderSettings(
     body.innerHTML = `
       <div class="kv">Running in a browser. Connecting to a trellis-server you launched.</div>
       ${progressDisplayField()}
+      ${hardwareRecommendationField(hardware)}
       ${field("Host", "set-host", cfg.host)}
       ${field("Port", "set-port", String(cfg.port), "number")}
       <div class="modal-actions">
         <button id="set-save" class="button button--primary" type="button">Save</button>
       </div>`;
     bindProgressDisplay(body);
+    bindHardwareRecommendation(body);
     (body.querySelector("#set-save") as HTMLButtonElement).onclick = async () => {
       const host = (body.querySelector("#set-host") as HTMLInputElement).value.trim() || "127.0.0.1";
       const port = parseInt((body.querySelector("#set-port") as HTMLInputElement).value, 10);

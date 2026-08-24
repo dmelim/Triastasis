@@ -8,6 +8,7 @@
 
 mod automation;
 mod config;
+mod hardware;
 mod manifest;
 mod server;
 mod tray;
@@ -280,6 +281,7 @@ fn main() {
             restart_server,
             server_running,
             automation_info,
+            hardware::detect_hardware_info,
             preview_alpha,
             app_version,
             read_generation_manifest,

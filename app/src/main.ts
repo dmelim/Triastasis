@@ -48,6 +48,13 @@ import {
   matchingGenerationPreset,
   type GenerationPreset,
 } from "./generation-presets";
+import {
+  allowsGenerationAboveRecommendation,
+  describeHardware,
+  detectGenerationHardware,
+  resolutionAllowed,
+  type GenerationHardwareProfile,
+} from "./hardware-profile";
 import type { ComponentAnalysis, EditHistory } from "./editing";
 import { progressDisplayMode, renderSettings, type ProgressDisplayMode } from "./settings";
 import type {
@@ -206,6 +213,8 @@ const textureResolutionHelp = $("texture-resolution-help");
 const advancedSettings = $<HTMLDetailsElement>("advanced-settings");
 const advancedSettingsState = $("advanced-settings-state");
 const qualityPresetDescription = $("quality-preset-description");
+const hardwareQualityNote = $("hardware-quality-note");
+const hardwareResolutionNote = $("hardware-resolution-note");
 const qualityPresetInputs = Array.from(
   document.querySelectorAll<HTMLInputElement>('input[name="generation-quality"]'),
 );
@@ -294,6 +303,13 @@ let warnedEphemeral = false;
 let maskObjectUrl: string | null = null;
 let inputObjectUrl: string | null = null;
 let activeLabel = "";
+let generationHardware: GenerationHardwareProfile = {
+  backend: "unknown",
+  gpuIndex: 0,
+  gpuName: null,
+  vramMb: null,
+  recommendedMaxResolution: 1024,
+};
 
 function updateViewerCaption(): void {
   if (!activeLabel) {
@@ -1226,6 +1242,7 @@ function applyParams(p: GenParams): void {
   $<HTMLSelectElement>("ctl-texture-encoding").value = normalized.textureEncoding;
   updateCustomParamVisibility();
   syncQualityPreset();
+  applyHardwareGuardrails();
 }
 
 function syncQualityPreset(): void {
@@ -1258,6 +1275,70 @@ function applyQualityPreset(preset: GenerationPreset): void {
   clearParamErrors();
   if ($<HTMLSelectElement>("ctl-bg").value !== previousBackgroundRemoval) clearMaskPreview();
 }
+
+function applyHardwareGuardrails(normalizeSelection = true): void {
+  const override = allowsGenerationAboveRecommendation();
+  const maximum = generationHardware.recommendedMaxResolution;
+  let selectedPreset: GenerationPreset | null = null;
+  try {
+    selectedPreset = matchingGenerationPreset(normalizeGenParams(readParams()));
+  } catch {
+    /* Invalid custom values are reported by the normal form validation. */
+  }
+
+  for (const input of qualityPresetInputs) {
+    const preset = input.value as GenerationPreset;
+    input.disabled = !resolutionAllowed(
+      GENERATION_PRESETS[preset].settings.resolution,
+      generationHardware,
+      override,
+    );
+  }
+
+  for (const option of Array.from(resolutionSelect.options)) {
+    const resolution = Number(option.value) as 512 | 1024 | 1536;
+    option.disabled = !resolutionAllowed(resolution, generationHardware, override);
+  }
+
+  if (normalizeSelection && !override) {
+    if (selectedPreset && GENERATION_PRESETS[selectedPreset].settings.resolution > maximum) {
+      applyQualityPreset("low");
+    } else if (Number(resolutionSelect.value) > maximum) {
+      resolutionSelect.value = String(maximum);
+      updateCustomParamVisibility();
+      syncQualityPreset();
+    }
+  }
+  refreshSelect(resolutionSelect);
+
+  const hardwareLabel = describeHardware(generationHardware);
+  const presetsLocked = qualityPresetInputs.some((input) => input.disabled);
+  hardwareQualityNote.classList.toggle("hidden", !presetsLocked);
+  hardwareQualityNote.querySelector("span")!.textContent = presetsLocked
+    ? `${hardwareLabel}. Higher quality levels are limited to ${maximum}.`
+    : "";
+
+  const resolutionLocked = !override && maximum < 1536;
+  hardwareResolutionNote.classList.toggle("hidden", !resolutionLocked);
+  hardwareResolutionNote.querySelector("span")!.textContent = resolutionLocked
+    ? `1536 is above the ${maximum} recommendation for this hardware.`
+    : "";
+}
+
+async function refreshHardwareGuardrails(): Promise<void> {
+  generationHardware = await detectGenerationHardware();
+  applyHardwareGuardrails();
+}
+
+function hardwareRestriction(params: GenParams): string | null {
+  const normalized = normalizeGenParams(params);
+  if (resolutionAllowed(normalized.resolution, generationHardware)) return null;
+  return `${normalized.resolution} is above the ${generationHardware.recommendedMaxResolution} hardware recommendation. Enable the override in Settings to continue.`;
+}
+
+window.addEventListener("polyloom-hardware-policy", () => applyHardwareGuardrails());
+$<HTMLButtonElement>("hardware-quality-settings").addEventListener("click", () => void openSettings());
+$<HTMLButtonElement>("hardware-resolution-settings").addEventListener("click", () => void openSettings());
 
 for (const input of qualityPresetInputs) {
   input.addEventListener("change", () => {
@@ -1811,6 +1892,8 @@ function finishRun(): void {
 }
 
 function queueJob(job: GenerationJob): void {
+  const restriction = hardwareRestriction(job.params);
+  if (restriction) throw new Error(restriction);
   const waiting = Boolean(currentJob || generationQueue.length);
   generationQueue.push(job);
   updateQueueStatus();
@@ -2113,13 +2196,17 @@ function doGenerate(): void {
     return;
   }
   const noModelYet = !activeId && !currentGlb && !currentJob && generationQueue.length === 0;
-  queueJob({
-    image: inputImage,
-    name: inputName,
-    params,
-    label: `${inputName.replace(/\.[^.]+$/, "") || "Model"} · seed ${params.seed}`,
-    autoOpen: noModelYet,
-  });
+  try {
+    queueJob({
+      image: inputImage,
+      name: inputName,
+      params,
+      label: `${inputName.replace(/\.[^.]+$/, "") || "Model"} · seed ${params.seed}`,
+      autoOpen: noModelYet,
+    });
+  } catch (error) {
+    toast((error as Error).message, "err");
+  }
 }
 
 generateBtn.addEventListener("click", doGenerate);
@@ -2820,6 +2907,7 @@ const modal = $("settings-modal");
 async function openSettings(): Promise<void> {
   await renderSettings($("settings-body"), () => {
     pollHealth();
+    void refreshHardwareGuardrails();
     modal.classList.add("hidden");
     toast("Settings applied");
   });
@@ -3622,6 +3710,22 @@ async function openSweepRecoveryView(groupId: string, anchorPath: string): Promi
         return;
       }
 
+      // Hardware eligibility is part of preflight so a mixed sweep cannot be
+      // partially queued before a later candidate is rejected.
+      for (const candidate of planned) {
+        const m = candidate.candidate.manifest;
+        const restriction = hardwareRestriction(normalizeGenParams({
+          resolution: (m.resolution === 512 || m.resolution === 1536
+            ? m.resolution
+            : 1024) as GenParams["resolution"],
+          seed: m.seed,
+          bgRemoval: m.bgRemoval as GenParams["bgRemoval"],
+          uv: m.uv as GenParams["uv"],
+          texture: m.texture,
+        }));
+        if (restriction) throw new Error(`${m.label || `Seed ${m.seed}`}: ${restriction}`);
+      }
+
       // The production orchestration helper reads all distinct sources before
       // this callback can enqueue the first job.
       await executeRecoveryPlan(
@@ -3707,6 +3811,7 @@ async function boot(): Promise<void> {
   renderViewerStats(null);
   setWorkspaceMode("generate");
   initDockPreference();
+  await refreshHardwareGuardrails();
   await pollHealth();
   await syncAutomationResults();
   await checkInterruptedManifests();

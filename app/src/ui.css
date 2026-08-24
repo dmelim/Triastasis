@@ -455,6 +455,23 @@ output {
   outline: 2px solid var(--border-focus);
   outline-offset: 1px;
 }
+.quality-option:has(input:disabled) { cursor: not-allowed; }
+.quality-option input:disabled + .quality-option-body {
+  color: var(--content-secondary);
+  opacity: 0.58;
+}
+.quality-option:has(input:disabled):hover .quality-option-body { color: var(--content-secondary); }
+.hardware-limit-note {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  margin-top: 7px;
+  color: var(--content-secondary);
+  font-size: var(--font-size-micro);
+  line-height: 1.35;
+}
+.hardware-limit-note .link-btn { flex: 0 0 auto; font-size: inherit; }
 .advanced-settings { margin-inline: 0; }
 .advanced-settings summary {
   display: flex;
@@ -1102,6 +1119,24 @@ input:focus-visible,
 .modal-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 4px; }
 .kv { font-size: var(--font-size-12); color: var(--content-secondary); }
 .kv b { color: var(--content-primary); font-weight: var(--font-weight-medium); }
+.settings-hardware {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  font-size: var(--font-size-12);
+  color: var(--content-secondary);
+}
+.settings-hardware-copy { display: flex; flex-direction: column; gap: 2px; }
+.settings-hardware-copy strong { color: var(--content-primary); }
+.settings-hardware-override {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--content-primary);
+  cursor: pointer;
+}
+.settings-hardware-override input { width: auto; margin: 0; accent-color: var(--accent-primary); }
+.settings-hardware p { margin: 0; font-size: var(--font-size-micro); line-height: 1.35; }
 
 /* ---- toasts ---- */
 .toasts { position: fixed; bottom: 16px; right: 16px; display: flex; flex-direction: column; gap: 8px; z-index: 60; }
