@@ -55,12 +55,25 @@ enum JobStatus {
 }
 
 #[derive(Clone, Serialize, Deserialize, Debug)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", default)]
 struct JobParams {
     seed: u64,
     resolution: u16,
     bg_removal: String,
     uv: String,
+    /// `None` keeps the native server's launch default (texturing enabled).
+    texture: Option<bool>,
+    /// `None` keeps the backend's per-resolution QEM default.
+    target_faces: Option<u32>,
+    /// `None` keeps the backend's per-resolution atlas default.
+    atlas_size: Option<u32>,
+    /// `None` keeps the automatic texture decode resolution.
+    texture_resolution: Option<u16>,
+    /// `None` keeps the resolution-scaled remesh band.
+    remesh_band: Option<u8>,
+    /// `None` keeps the backend's WebP-if-available default. Stored values are
+    /// canonicalized to "auto", "webp", or "png".
+    texture_encoding: Option<String>,
 }
 
 impl Default for JobParams {
@@ -70,8 +83,57 @@ impl Default for JobParams {
             resolution: 512,
             bg_removal: "auto".to_string(),
             uv: "xatlas".to_string(),
+            texture: None,
+            target_faces: None,
+            atlas_size: None,
+            texture_resolution: None,
+            remesh_band: None,
+            texture_encoding: None,
         }
     }
+}
+
+/// Validation bounds mirroring trellis-server's `/generate` enforcement so a
+/// rejected request never enters the queue in the first place.
+fn validate_job_params(params: &JobParams) -> Result<(), String> {
+    if !matches!(params.resolution, 512 | 1024 | 1536) {
+        return Err("resolution must be 512, 1024, or 1536".to_string());
+    }
+    if !matches!(
+        params.bg_removal.as_str(),
+        "auto" | "birefnet" | "threshold"
+    ) {
+        return Err("bg_removal must be auto, threshold, or birefnet".to_string());
+    }
+    if !matches!(params.uv.as_str(), "xatlas" | "box") {
+        return Err("uv must be xatlas or box".to_string());
+    }
+    if let Some(value) = params.target_faces {
+        if !(10_000..=1_000_000).contains(&value) {
+            return Err("targetFaces must be between 10000 and 1000000".to_string());
+        }
+    }
+    if let Some(value) = params.atlas_size {
+        if !(128..=4096).contains(&value) {
+            return Err("atlasSize must be between 128 and 4096".to_string());
+        }
+    }
+    if let Some(value) = params.texture_resolution {
+        if value != 512 && value != 1024 {
+            return Err("textureResolution must be 512 or 1024".to_string());
+        }
+    }
+    if let Some(value) = params.remesh_band {
+        if value > 8 {
+            return Err("remeshBand must be between 0 and 8".to_string());
+        }
+    }
+    if let Some(value) = &params.texture_encoding {
+        if !matches!(value.as_str(), "auto" | "webp" | "png") {
+            return Err("textureEncoding must be auto, webp, or png".to_string());
+        }
+    }
+    Ok(())
 }
 
 #[derive(Clone, Serialize, Deserialize, Debug)]
@@ -295,6 +357,18 @@ fn reconcile_loaded_jobs(jobs: Vec<DurableJob>) -> Vec<DurableJob> {
     let mut ordered = jobs;
     ordered.sort_by_key(|job| job.submitted_at);
     for job in &mut ordered {
+        // A record whose stored parameters fail current validation can never
+        // be replayed faithfully; surface it as explicitly unrecoverable
+        // instead of silently regenerating with different settings.
+        if let Err(error) = validate_job_params(&job.params) {
+            job.status = JobStatus::Failed;
+            job.error = Some(format!(
+                "unrecoverable: stored generation parameters are invalid ({error})"
+            ));
+            job.interrupted = false;
+            job.finished_at = Some(now_ms());
+            continue;
+        }
         let terminal = matches!(
             job.status,
             JobStatus::Succeeded | JobStatus::Failed | JobStatus::Cancelled
@@ -390,16 +464,60 @@ fn load_store_file(path: &std::path::Path) -> Vec<DurableJob> {
     }
 }
 
-/// Persists the whole queue under an already-held data lock.
-fn persist_locked(data: &QueueData) {
-    let Ok(path) = jobs_store_path() else {
-        return;
-    };
+/// Persists the whole queue under an already-held data lock. Failures are
+/// returned, never swallowed: a caller that ignores them could report work as
+/// accepted while it would be lost on restart.
+fn persist_locked(data: &QueueData) -> Result<(), String> {
+    let path = jobs_store_path()
+        .map_err(|error| format!("could not resolve the durable job store: {error}"))?;
     let mut jobs: Vec<DurableJob> = data.jobs.values().map(|job| job.to_durable()).collect();
     jobs.sort_by_key(|job| job.submitted_at);
-    if let Err(error) = save_store_file(&path, &jobs) {
-        eprintln!("[automation] could not persist job state: {error}");
+    save_store_file(&path, &jobs)
+        .map_err(|error| format!("could not persist job store {}: {error}", path.display()))
+}
+
+impl JobQueue {
+    /// Latches a persistence failure: durability can no longer be guaranteed,
+    /// so new submissions pause until a successful retry clears the state.
+    fn record_persistence_failure(&self, context: &str, error: &str) {
+        let mut degraded = self.degraded.lock().unwrap();
+        let message = format!("{context}: {error}");
+        if degraded.is_none() {
+            eprintln!("[automation] persistence degraded — {message}");
+        }
+        *degraded = Some(message);
     }
+
+    /// A successful full-queue persistence clears degradation.
+    fn record_persistence_success(&self) {
+        let mut degraded = self.degraded.lock().unwrap();
+        if degraded.is_some() {
+            eprintln!("[automation] persistence recovered; resuming admission");
+            *degraded = None;
+        }
+    }
+
+    fn degradation(&self) -> Option<String> {
+        self.degraded.lock().unwrap().clone()
+    }
+}
+
+/// Why `POST /jobs` cannot currently accept work, if it cannot. The caller
+/// passes the admission flag it already holds under the admission lock —
+/// this function must not reacquire that non-reentrant mutex.
+fn admission_block_reason(queue: &JobQueue, accepting: bool) -> Option<String> {
+    if let Some(error) = queue.degradation() {
+        return Some(format!(
+            "automation is temporarily not accepting jobs because persistence is degraded ({error}); retry later"
+        ));
+    }
+    if !accepting {
+        return Some(
+            "automation API is temporarily paused while Triastasis is restarting or quitting"
+                .to_string(),
+        );
+    }
+    None
 }
 
 /// Loads persisted jobs into a fresh queue before it starts accepting work.
@@ -421,7 +539,9 @@ fn recover_persisted_jobs(queue: &JobQueue) {
             data.pending.push_back(id);
         }
     }
-    persist_locked(&data);
+    if let Err(error) = persist_locked(&data) {
+        queue.record_persistence_failure("startup recovery", &error);
+    }
 }
 
 #[derive(Serialize)]
@@ -602,6 +722,31 @@ struct MultipartInput {
     source_name: String,
     source_type: String,
     params: JobParams,
+    /// A client-supplied progress id, if any. Admission rejects it because
+    /// the queue owns the native `request_id`.
+    client_request_id: Option<String>,
+}
+
+/// Admission-level guard: the automation queue assigns every native
+/// `request_id`, so a client attempt to choose one is rejected outright.
+fn ensure_queue_owned_request_id(input: &MultipartInput) -> Result<(), String> {
+    if input.client_request_id.is_some() {
+        Err("request_id is assigned by the automation queue and cannot be supplied".to_string())
+    } else {
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+impl std::fmt::Debug for MultipartInput {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("MultipartInput")
+            .field("image_len", &self.image.len())
+            .field("source_name", &self.source_name)
+            .field("source_type", &self.source_type)
+            .field("params", &self.params)
+            .finish()
+    }
 }
 
 fn push_multipart_part(
@@ -680,6 +825,61 @@ fn build_generate_body(
         &params.bg_removal,
     );
     push_multipart_part(&mut body, &boundary, "uv", None, None, &params.uv);
+    // Optional advanced fields are forwarded only when supplied, exactly like
+    // an interactive request that leaves them at their backend defaults.
+    if let Some(texture) = params.texture {
+        push_multipart_part(
+            &mut body,
+            &boundary,
+            "texture",
+            None,
+            None,
+            if texture { "true" } else { "false" },
+        );
+    }
+    if let Some(value) = params.target_faces {
+        push_multipart_part(
+            &mut body,
+            &boundary,
+            "target_faces",
+            None,
+            None,
+            &value.to_string(),
+        );
+    }
+    if let Some(value) = params.atlas_size {
+        push_multipart_part(
+            &mut body,
+            &boundary,
+            "atlas_size",
+            None,
+            None,
+            &value.to_string(),
+        );
+    }
+    if let Some(value) = params.texture_resolution {
+        push_multipart_part(
+            &mut body,
+            &boundary,
+            "texture_resolution",
+            None,
+            None,
+            &value.to_string(),
+        );
+    }
+    if let Some(value) = params.remesh_band {
+        push_multipart_part(
+            &mut body,
+            &boundary,
+            "remesh_band",
+            None,
+            None,
+            &value.to_string(),
+        );
+    }
+    if let Some(value) = &params.texture_encoding {
+        push_multipart_part(&mut body, &boundary, "texture_encoding", None, None, value);
+    }
     push_multipart_part(&mut body, &boundary, "request_id", None, None, job_id);
     body.extend_from_slice(format!("--{boundary}--\r\n").as_bytes());
     (format!("multipart/form-data; boundary={boundary}"), body)
@@ -706,6 +906,10 @@ struct JobQueue {
     data: Mutex<QueueData>,
     changed: Condvar,
     admission: Mutex<AdmissionState>,
+    /// Last persistence failure. While latched, durability cannot be
+    /// guaranteed: new submissions return 503 until a successful full-queue
+    /// persistence clears the state.
+    degraded: Mutex<Option<String>>,
 }
 
 struct Control {
@@ -1014,6 +1218,105 @@ fn sanitize_source_name(filename: &str) -> String {
     }
 }
 
+/// Maps an accepted multipart field name (including every alias the native
+/// `/generate` endpoint recognizes) onto its canonical parameter name.
+fn canonical_field_name(name: &str) -> Option<&'static str> {
+    match name {
+        "seed" => Some("seed"),
+        "resolution" => Some("resolution"),
+        "bg_removal" | "bgRemoval" => Some("bg_removal"),
+        "uv" => Some("uv"),
+        "texture" | "texture_enabled" | "textureEnabled" => Some("texture"),
+        "target_faces" | "targetFaces" => Some("target_faces"),
+        "atlas" | "atlas_size" | "atlasSize" => Some("atlas_size"),
+        "tex_res" | "texRes" | "texture_resolution" | "textureResolution" => {
+            Some("texture_resolution")
+        }
+        "band" | "remesh_band" | "remeshBand" => Some("remesh_band"),
+        "webp" | "texture_encoding" | "textureEncoding" => Some("texture_encoding"),
+        _ => None,
+    }
+}
+
+/// Native toggle spelling shared with `/generate`'s parse_toggle_field.
+fn parse_toggle(value: &str, field: &str) -> Result<bool, String> {
+    match value {
+        "on" | "true" | "1" => Ok(true),
+        "off" | "false" | "0" => Ok(false),
+        _ => Err(format!(
+            "{field} must be one of on, off, true, false, 1, or 0"
+        )),
+    }
+}
+
+/// Native encoding spelling shared with `/generate`'s parse_texture_encoding,
+/// canonicalized to the stored "auto"/"webp"/"png" form.
+fn canonical_texture_encoding(value: &str, field: &str) -> Result<String, String> {
+    match value {
+        "auto" => Ok("auto".to_string()),
+        "webp" | "on" | "true" | "1" => Ok("webp".to_string()),
+        "png" | "off" | "false" | "0" => Ok("png".to_string()),
+        _ => Err(format!("{field} must be auto, webp, png, on, or off")),
+    }
+}
+
+/// Applies validated text fields onto a default `JobParams`. Every value is
+/// parsed and range-checked here; nothing falls back to a silent default.
+fn job_params_from_fields(fields: &HashMap<&'static str, String>) -> Result<JobParams, String> {
+    let mut params = JobParams::default();
+    if let Some(value) = fields.get("seed") {
+        params.seed = value
+            .parse()
+            .map_err(|_| "seed must be an integer between 0 and 4294967295".to_string())?;
+    }
+    if let Some(value) = fields.get("resolution") {
+        params.resolution = value
+            .parse()
+            .map_err(|_| "resolution must be 512, 1024, or 1536".to_string())?;
+    }
+    if let Some(value) = fields.get("bg_removal") {
+        params.bg_removal = value.clone();
+    }
+    if let Some(value) = fields.get("uv") {
+        params.uv = value.clone();
+    }
+    if let Some(value) = fields.get("texture") {
+        params.texture = Some(parse_toggle(value, "texture")?);
+    }
+    if let Some(value) = fields.get("target_faces") {
+        params.target_faces =
+            Some(value.parse().map_err(|_| {
+                "targetFaces must be an integer between 10000 and 1000000".to_string()
+            })?);
+    }
+    if let Some(value) = fields.get("atlas_size") {
+        params.atlas_size = Some(
+            value
+                .parse()
+                .map_err(|_| "atlasSize must be an integer between 128 and 4096".to_string())?,
+        );
+    }
+    if let Some(value) = fields.get("texture_resolution") {
+        params.texture_resolution = Some(
+            value
+                .parse()
+                .map_err(|_| "textureResolution must be 512 or 1024".to_string())?,
+        );
+    }
+    if let Some(value) = fields.get("remesh_band") {
+        params.remesh_band = Some(
+            value
+                .parse()
+                .map_err(|_| "remeshBand must be an integer between 0 and 8".to_string())?,
+        );
+    }
+    if let Some(value) = fields.get("texture_encoding") {
+        params.texture_encoding = Some(canonical_texture_encoding(value, "textureEncoding")?);
+    }
+    validate_job_params(&params)?;
+    Ok(params)
+}
+
 fn parse_multipart(content_type: &str, body: &[u8]) -> Result<MultipartInput, String> {
     let boundary = content_type
         .split(';')
@@ -1028,7 +1331,10 @@ fn parse_multipart(content_type: &str, body: &[u8]) -> Result<MultipartInput, St
     let mut image = None;
     let mut source_name = "automation-source.png".to_string();
     let mut source_type = "image/png".to_string();
-    let mut params = JobParams::default();
+    let mut client_request_id: Option<String> = None;
+    // Canonical field name -> trimmed text value. Aliases collapse here, and
+    // conflicting alias values are rejected instead of resolved by order.
+    let mut fields: HashMap<&'static str, String> = HashMap::new();
 
     while let Some(relative) = find_bytes(&body[cursor..], &marker) {
         let mut part_start = cursor + relative + marker.len();
@@ -1064,14 +1370,23 @@ fn parse_multipart(content_type: &str, body: &[u8]) -> Result<MultipartInput, St
                 source_type = content_type.to_string();
             }
         } else if let Ok(text) = std::str::from_utf8(value) {
-            match name.as_str() {
-                "seed" => params.seed = text.trim().parse().unwrap_or(params.seed),
-                "resolution" => {
-                    params.resolution = text.trim().parse().unwrap_or(params.resolution)
+            let text = text.trim();
+            if name == "request_id" || name == "requestId" {
+                // Captured here so our own rebuilt bodies still parse;
+                // admission rejects client-supplied values explicitly.
+                client_request_id = Some(text.to_string());
+            } else if let Some(canonical) = canonical_field_name(&name) {
+                if let Some(previous) = fields.get(canonical) {
+                    if previous != text {
+                        return Err(format!(
+                            "conflicting values supplied for {canonical} through \"{name}\""
+                        ));
+                    }
+                } else {
+                    fields.insert(canonical, text.to_string());
                 }
-                "bg_removal" => params.bg_removal = text.trim().to_string(),
-                "uv" => params.uv = text.trim().to_string(),
-                _ => {}
+            } else {
+                return Err(format!("unsupported field \"{name}\""));
             }
         }
         cursor = data_start + data_len + 2;
@@ -1080,11 +1395,13 @@ fn parse_multipart(content_type: &str, body: &[u8]) -> Result<MultipartInput, St
     let image = image
         .filter(|bytes| !bytes.is_empty())
         .ok_or("image field is missing")?;
+    let params = job_params_from_fields(&fields)?;
     Ok(MultipartInput {
         image,
         source_name,
         source_type,
         params,
+        client_request_id,
     })
 }
 
@@ -1169,13 +1486,16 @@ fn submit_job(mut request: Request, queue: &Arc<JobQueue>, base_url: &str) {
             return;
         }
     };
+    if let Err(error) = ensure_queue_owned_request_id(&multipart) {
+        let _ = request.respond(error_response(400, &error));
+        return;
+    }
 
-    let admission = queue.admission.lock().unwrap();
-    if !admission.accepting {
-        let _ = request.respond(error_response(
-            503,
-            "automation API is temporarily paused while Trellis Studio is restarting or quitting",
-        ));
+    // Held across the whole submission so an atomic restart cannot flip the
+    // admission state between validation and publication.
+    let _admission = queue.admission.lock().unwrap();
+    if let Some(reason) = admission_block_reason(queue, _admission.accepting) {
+        let _ = request.respond(error_response(503, &reason));
         return;
     }
 
@@ -1218,6 +1538,7 @@ fn submit_job(mut request: Request, queue: &Arc<JobQueue>, base_url: &str) {
             return;
         }
     };
+    let staged_source_path = source_disk_path.clone();
     let job = Job {
         id: id.clone(),
         status: JobStatus::Queued,
@@ -1236,25 +1557,60 @@ fn submit_job(mut request: Request, queue: &Arc<JobQueue>, base_url: &str) {
         quality_warning: None,
         progress: JobProgressView::default(),
     };
-    let (queue_position, jobs_ahead, queued, running) = {
+    // Transaction: the proposed durable snapshot (existing jobs plus this
+    // one) is written and the job published to memory under ONE held data
+    // lock, so no other writer can persist an intervening snapshot that
+    // excludes this job between the save and the publication. If the process
+    // stops right after the save, startup recovery finds the job; if the
+    // save fails, nothing was accepted and the staged image is cleaned up.
+    let submission = {
         let mut data = queue.data.lock().unwrap();
-        data.pending.push_back(id.clone());
-        data.jobs.insert(id.clone(), job);
-        persist_locked(&data);
-        let (queue_position, jobs_ahead) = job_queue_position(&data, &id);
-        let queued = data
-            .jobs
-            .values()
-            .filter(|candidate| candidate.status == JobStatus::Queued)
-            .count();
-        let running = data
-            .jobs
-            .values()
-            .filter(|candidate| candidate.status == JobStatus::Running)
-            .count();
-        (queue_position, jobs_ahead, queued, running)
+        let mut staged: Vec<DurableJob> = data.jobs.values().map(|job| job.to_durable()).collect();
+        staged.push(job.to_durable());
+        staged.sort_by_key(|job| job.submitted_at);
+        let saved = match jobs_store_path() {
+            Ok(path) => save_store_file(&path, &staged).map_err(|error| {
+                format!("could not persist job store {}: {error}", path.display())
+            }),
+            Err(error) => Err(format!("could not resolve durable job storage: {error}")),
+        };
+        match saved {
+            Ok(()) => {
+                data.pending.push_back(id.clone());
+                data.jobs.insert(id.clone(), job);
+                let (queue_position, jobs_ahead) = job_queue_position(&data, &id);
+                let queued = data
+                    .jobs
+                    .values()
+                    .filter(|candidate| candidate.status == JobStatus::Queued)
+                    .count();
+                let running = data
+                    .jobs
+                    .values()
+                    .filter(|candidate| candidate.status == JobStatus::Running)
+                    .count();
+                Ok((queue_position, jobs_ahead, queued, running))
+            }
+            Err(error) => Err(error),
+        }
     };
-    drop(admission);
+    let (queue_position, jobs_ahead, queued, running) = match submission {
+        Ok(values) => values,
+        Err(error) => {
+            queue.record_persistence_failure("admission", &error);
+            // Best-effort cleanup of the staged source image; nothing was
+            // accepted, so no orphaned input should linger.
+            if let Some(path) = &staged_source_path {
+                let _ = std::fs::remove_file(path);
+            }
+            let _ = request.respond(error_response(
+                500,
+                "the job was not accepted because it could not be made durable; no work was queued",
+            ));
+            return;
+        }
+    };
+    drop(_admission);
     queue.changed.notify_one();
     let message = if jobs_ahead == 0 {
         "Job accepted and next to run".to_string()
@@ -1404,7 +1760,22 @@ fn cancel_job(request: Request, queue: &JobQueue, id: &str, base_url: &str) {
             job.finished_at = Some(now_ms());
             job.source_image.clear();
         }
-        persist_locked(&data);
+        // A cancellation that cannot be made durable is rolled back: leaving
+        // it applied only in memory would resurrect the job after a restart
+        // and spend GPU time the user explicitly withdrew.
+        if let Err(error) = persist_locked(&data) {
+            queue.record_persistence_failure("cancel", &error);
+            if let Some(job) = data.jobs.get_mut(id) {
+                job.status = JobStatus::Queued;
+                job.finished_at = None;
+            }
+            data.pending.push_back(id.to_string());
+            let _ = request.respond(error_response(
+                500,
+                "the cancellation could not be persisted; the job remains queued",
+            ));
+            return;
+        }
         let (position, ahead) = job_queue_position(&data, id);
         let Some(job) = data.jobs.get(id) else {
             let _ = request.respond(error_response(404, "job not found"));
@@ -1459,11 +1830,14 @@ fn handle_request(request: Request, queue: &Arc<JobQueue>, info: &AutomationInfo
     }
     if method == Method::Get && (path == "/" || path == "/capabilities") {
         let (queued, running, total) = queue_counts(queue);
+        let degradation = queue.degradation();
         let body = serde_json::json!({
-            "service": "Trellis Studio Automation",
+            "service": "Triastasis Automation",
             "apiVersion": 1,
             "capabilities": info,
             "queue": { "queued": queued, "running": running, "total": total },
+            "persistenceHealthy": degradation.is_none(),
+            "persistenceError": degradation,
             "endpoints": ["POST /jobs", "GET /jobs", "GET /jobs/{id}", "GET /jobs/{id}/model", "GET /jobs/{id}/image", "DELETE /jobs/{id}"]
         });
         let _ = request.respond(json_response(200, body.to_string()));
@@ -1557,7 +1931,12 @@ fn spawn_progress_watcher(queue: Arc<JobQueue>, client: Client, job_id: String) 
                             let stage_changed = job.progress.stage_id != view.stage_id;
                             job.progress = view;
                             if stage_changed {
-                                persist_locked(&data);
+                                if let Err(error) = persist_locked(&data) {
+                                    queue.record_persistence_failure(
+                                        &format!("progress of job {job_id}"),
+                                        &error,
+                                    );
+                                }
                             }
                         }
                     }
@@ -1576,6 +1955,22 @@ fn worker_loop(queue: Arc<JobQueue>, stop: Arc<AtomicBool>) {
         Err(_) => return,
     };
     while !stop.load(Ordering::Relaxed) {
+        // While persistence is degraded, no further job may start: retry a
+        // full-queue save first and only resume once durability is proven
+        // again.
+        if queue.degradation().is_some() {
+            let recovered = {
+                let data = queue.data.lock().unwrap();
+                persist_locked(&data)
+            };
+            match recovered {
+                Ok(()) => queue.record_persistence_success(),
+                Err(_) => {
+                    std::thread::sleep(Duration::from_millis(2_000));
+                    continue;
+                }
+            }
+        }
         let work = {
             let mut data = queue.data.lock().unwrap();
             while data.pending.is_empty() && !stop.load(Ordering::Relaxed) {
@@ -1604,7 +1999,20 @@ fn worker_loop(queue: Arc<JobQueue>, stop: Arc<AtomicBool>) {
                     job.interrupted,
                 )
             };
-            persist_locked(&data);
+            // The Queued -> Running transition MUST be durable before any GPU
+            // work starts: otherwise a restart would find the record still
+            // Queued, skip orphan confirmation, and resubmit while the first
+            // native request may still be running. On failure, roll the
+            // transition back, requeue at the front, and withhold execution.
+            if let Err(error) = persist_locked(&data) {
+                queue.record_persistence_failure(&format!("start of job {id}"), &error);
+                if let Some(job) = data.jobs.get_mut(&id) {
+                    job.status = JobStatus::Queued;
+                    job.started_at = None;
+                }
+                data.pending.push_front(id);
+                continue;
+            }
             Some(payload)
         };
 
@@ -1616,11 +2024,40 @@ fn worker_loop(queue: Arc<JobQueue>, stop: Arc<AtomicBool>) {
         // keeps processing after the old client vanished). Wait for it to
         // finish before re-submitting so the GPU never runs duplicates.
         if interrupted {
-            wait_for_orphan(&client, &id);
-            let mut data = queue.data.lock().unwrap();
-            if let Some(job) = data.jobs.get_mut(&id) {
-                job.interrupted = false;
-                persist_locked(&data);
+            match wait_for_orphan(&client, &id) {
+                Ok(()) => {
+                    let mut data = queue.data.lock().unwrap();
+                    if let Some(job) = data.jobs.get_mut(&id) {
+                        job.interrupted = false;
+                        if let Err(error) = persist_locked(&data) {
+                            queue.record_persistence_failure(
+                                &format!("orphan clearance of job {id}"),
+                                &error,
+                            );
+                        }
+                    }
+                }
+                Err(reason) => {
+                    // Uncertainty is never permission to resubmit: withhold
+                    // the automatic rerun visibly instead of risking
+                    // concurrent GPU work under the same request id.
+                    let mut data = queue.data.lock().unwrap();
+                    if let Some(job) = data.jobs.get_mut(&id) {
+                        job.status = JobStatus::Failed;
+                        job.finished_at = Some(now_ms());
+                        job.error = Some(format!(
+                            "recovery withheld: the previous native request could not be \
+                             proven inactive, so the job was not rerun ({reason})"
+                        ));
+                        if let Err(error) = persist_locked(&data) {
+                            queue.record_persistence_failure(
+                                &format!("recovery withholding of job {id}"),
+                                &error,
+                            );
+                        }
+                    }
+                    continue;
+                }
             }
         }
         // The job id doubles as the native request_id, so /progress/{job_id}
@@ -1643,7 +2080,12 @@ fn worker_loop(queue: Arc<JobQueue>, stop: Arc<AtomicBool>) {
                         job.error =
                             Some("unrecoverable: the saved source image could not be read".into());
                         job.finished_at = Some(now_ms());
-                        persist_locked(&data);
+                        if let Err(error) = persist_locked(&data) {
+                            queue.record_persistence_failure(
+                                &format!("terminal failure of job {id}"),
+                                &error,
+                            );
+                        }
                     }
                     continue;
                 }
@@ -1717,43 +2159,137 @@ fn worker_loop(queue: Arc<JobQueue>, stop: Arc<AtomicBool>) {
                     job.progress.updated_at = Some(now_secs());
                 }
             }
-            persist_locked(&data);
+            if let Err(terminal_error) = persist_locked(&data) {
+                queue.record_persistence_failure(
+                    &format!("terminal transition of job {id}"),
+                    &terminal_error,
+                );
+            } else {
+                // A successful save proves durability again; the worker's
+                // degraded retry loop also clears the latch, but do it here so
+                // capabilities reflect recovery immediately.
+                queue.record_persistence_success();
+            }
+        }
+    }
+}
+
+/// One observed outcome of a `/progress/{id}` poll.
+#[derive(Clone, Debug, PartialEq)]
+enum OrphanPoll {
+    /// The native request is still executing.
+    Running,
+    /// A responsive server proved the request absent or terminal.
+    Cleared,
+    /// No conclusion is possible (transport failure, bad body, server error).
+    Unknown(String),
+}
+
+/// Classifies one progress response. Only evidence produced by a responsive
+/// native server may clear an orphan; connection failures are never treated
+/// as absence, because they also occur while the server is still booting.
+fn classify_progress_response(status: u16, body: Option<&str>) -> OrphanPoll {
+    match status {
+        // The server answered and knows no such request: confirmed absence.
+        404 => OrphanPoll::Cleared,
+        200 => {
+            let Some(text) = body else {
+                return OrphanPoll::Unknown("empty progress body".to_string());
+            };
+            let parsed: serde_json::Value = match serde_json::from_str(text) {
+                Ok(value) => value,
+                Err(error) => {
+                    return OrphanPoll::Unknown(format!("malformed progress JSON: {error}"))
+                }
+            };
+            match parsed.get("status").and_then(|value| value.as_str()) {
+                Some("running") => OrphanPoll::Running,
+                Some("succeeded") | Some("failed") => OrphanPoll::Cleared,
+                other => OrphanPoll::Unknown(format!(
+                    "unrecognized progress status {}",
+                    other.unwrap_or("<missing>")
+                )),
+            }
+        }
+        other => OrphanPoll::Unknown(format!("progress endpoint returned HTTP {other}")),
+    }
+}
+
+/// Outcome of the orphan-wait algorithm.
+enum OrphanWait {
+    /// The prior request was confirmed inactive.
+    Confirmed,
+    /// Never confirmed before the safety deadline expired.
+    Unresolved(String),
+}
+
+/// Drives orphan confirmation by polling until a definitive answer, keeping
+/// the sleeping injectable so the policy is unit-testable without real time.
+fn wait_for_orphan_polling(
+    mut poll: impl FnMut() -> OrphanPoll,
+    deadline: std::time::Instant,
+    mut sleep: impl FnMut(Duration),
+    poll_interval: Duration,
+    max_backoff: Duration,
+) -> OrphanWait {
+    let mut backoff = poll_interval;
+    loop {
+        if std::time::Instant::now() >= deadline {
+            return OrphanWait::Unresolved(
+                "the safety deadline expired without confirming the state of the previous \
+                 native request"
+                    .to_string(),
+            );
+        }
+        match poll() {
+            OrphanPoll::Cleared => return OrphanWait::Confirmed,
+            OrphanPoll::Running => {
+                backoff = poll_interval;
+                sleep(poll_interval);
+            }
+            OrphanPoll::Unknown(_) => {
+                // Uncertainty must never become permission to resubmit: keep
+                // retrying (with capped backoff) rather than proceeding.
+                sleep(backoff);
+                backoff = std::cmp::min(backoff * 2, max_backoff);
+            }
         }
     }
 }
 
 /// After a crash, the native server may still be finishing the orphaned
 /// generation for `id` (its handler outlives the dead HTTP client). Poll its
-/// progress endpoint until that request is no longer running — or until a
-/// generous timeout — before this queue re-runs the job, so the same request
-/// id never executes twice concurrently.
-fn wait_for_orphan(client: &Client, id: &str) {
+/// progress endpoint until that request is CONFIRMED inactive before this
+/// queue re-runs the job, so the same request id never executes twice
+/// concurrently. Returns an error when confirmation was impossible; callers
+/// must not submit in that case.
+fn wait_for_orphan(client: &Client, id: &str) -> Result<(), String> {
     let Some(cfg) = config::load() else {
-        return;
+        return Err("the Trellis server configuration is unavailable".to_string());
     };
     let url = format!("http://{}:{}/progress/{}", cfg.host, cfg.port, id);
     // Bounded by the native generation client timeout (60 min) plus margin.
     let deadline = std::time::Instant::now() + Duration::from_secs(65 * 60);
-    while std::time::Instant::now() < deadline {
-        let running = client
-            .get(&url)
-            .send()
-            .ok()
-            .filter(|response| response.status().is_success())
-            .and_then(|response| response.text().ok())
-            .and_then(|text| serde_json::from_str::<serde_json::Value>(&text).ok())
-            .and_then(|value| {
-                value
-                    .get("status")
-                    .and_then(|status| status.as_str())
-                    .map(str::to_string)
-            })
-            .map(|status| status == "running")
-            .unwrap_or(false);
-        if !running {
-            return;
-        }
-        std::thread::sleep(Duration::from_millis(2_000));
+    let outcome = wait_for_orphan_polling(
+        || {
+            let response = client.get(&url).send();
+            match response {
+                Ok(response) => {
+                    let status = response.status().as_u16();
+                    let body = response.text().ok();
+                    classify_progress_response(status, body.as_deref())
+                }
+                Err(error) => OrphanPoll::Unknown(error.to_string()),
+            }
+        },
+        deadline,
+        std::thread::sleep,
+        Duration::from_millis(2_000),
+        Duration::from_millis(15_000),
+    );
+    match outcome {
+        OrphanWait::Confirmed => Ok(()),
+        OrphanWait::Unresolved(reason) => Err(reason),
     }
 }
 
@@ -1955,6 +2491,202 @@ mod tests {
         assert_eq!(parsed.params.uv, "xatlas");
     }
 
+    fn multipart_request(fields: &[(&str, &str)]) -> (String, Vec<u8>) {
+        let boundary = "test-boundary";
+        let mut body = Vec::new();
+        push_multipart_part(
+            &mut body,
+            boundary,
+            "image",
+            Some("in.png"),
+            Some("image/png"),
+            "x",
+        );
+        for (name, value) in fields {
+            push_multipart_part(&mut body, boundary, name, None, None, value);
+        }
+        body.extend_from_slice(format!("--{boundary}--\r\n").as_bytes());
+        (format!("multipart/form-data; boundary={boundary}"), body)
+    }
+
+    #[test]
+    fn multipart_accepts_every_native_alias_and_canonicalizes() {
+        // One request through snake-case names, one through camelCase ones.
+        for fields in [
+            vec![
+                ("seed", "9"),
+                ("resolution", "1024"),
+                ("bg_removal", "birefnet"),
+                ("uv", "box"),
+                ("texture", "off"),
+                ("target_faces", "250000"),
+                ("atlas_size", "2048"),
+                ("tex_res", "512"),
+                ("remesh_band", "2"),
+                ("texture_encoding", "png"),
+            ],
+            vec![
+                ("seed", "9"),
+                ("resolution", "1024"),
+                ("bgRemoval", "threshold"),
+                ("uv", "xatlas"),
+                ("textureEnabled", "true"),
+                ("targetFaces", "250000"),
+                ("atlasSize", "2048"),
+                ("textureResolution", "512"),
+                ("remeshBand", "2"),
+                ("webp", "on"),
+            ],
+        ] {
+            let (content_type, body) = multipart_request(&fields);
+            let parsed = parse_multipart(&content_type, &body).unwrap();
+            assert_eq!(parsed.params.seed, 9);
+            assert_eq!(parsed.params.resolution, 1024);
+            assert_eq!(parsed.params.target_faces, Some(250_000));
+            assert_eq!(parsed.params.atlas_size, Some(2_048));
+            assert_eq!(parsed.params.texture_resolution, Some(512));
+            assert_eq!(parsed.params.remesh_band, Some(2));
+            if fields[3].1 == "box" {
+                assert_eq!(parsed.params.uv, "box");
+                assert_eq!(parsed.params.bg_removal, "birefnet");
+                assert_eq!(parsed.params.texture, Some(false));
+                assert_eq!(parsed.params.texture_encoding.as_deref(), Some("png"));
+            } else {
+                assert_eq!(parsed.params.uv, "xatlas");
+                assert_eq!(parsed.params.bg_removal, "threshold");
+                // Native toggle spellings canonicalize to the stored choices.
+                assert_eq!(parsed.params.texture, Some(true));
+                assert_eq!(parsed.params.texture_encoding.as_deref(), Some("webp"));
+            }
+        }
+    }
+
+    #[test]
+    fn multipart_rejects_conflicting_alias_values_regardless_of_order() {
+        for fields in [
+            vec![("atlasSize", "512"), ("atlas_size", "1024")],
+            vec![("atlas_size", "512"), ("atlasSize", "1024")],
+            vec![("atlas_size", "512"), ("atlasSize", "512")],
+        ] {
+            let (content_type, body) = multipart_request(&fields);
+            match parse_multipart(&content_type, &body) {
+                Ok(parsed) => {
+                    // Equal values through different aliases are acceptable.
+                    assert_eq!(parsed.params.atlas_size, Some(512));
+                }
+                Err(error) => {
+                    assert!(error.contains("conflicting values supplied for atlas_size"));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn multipart_rejects_unknown_fields_and_client_request_ids() {
+        let unknown = multipart_request(&[("seed", "5"), ("fancy_knob", "1")]);
+        let error = parse_multipart(&unknown.0, &unknown.1).unwrap_err();
+        assert!(error.contains("unsupported field \"fancy_knob\""));
+
+        for name in ["request_id", "requestId"] {
+            let claimed = multipart_request(&[(name, "attacker-chosen-id")]);
+            let parsed = parse_multipart(&claimed.0, &claimed.1).unwrap();
+            assert_eq!(
+                parsed.client_request_id.as_deref(),
+                Some("attacker-chosen-id")
+            );
+            // The admission guard refuses the captured id.
+            assert!(ensure_queue_owned_request_id(&parsed)
+                .err()
+                .unwrap()
+                .contains("request_id is assigned by the automation queue"));
+        }
+    }
+
+    #[test]
+    fn multipart_rejects_invalid_values_instead_of_defaulting() {
+        let cases: Vec<Vec<(&str, &str)>> = vec![
+            vec![("seed", "not-a-number")],
+            vec![("resolution", "700")],
+            vec![("bg_removal", "magic")],
+            vec![("uv", "spherical")],
+            vec![("texture", "maybe")],
+            vec![("targetFaces", "9999")],
+            vec![("targetFaces", "1000001")],
+            vec![("atlasSize", "127")],
+            vec![("textureResolution", "256")],
+            vec![("remeshBand", "9")],
+            vec![("textureEncoding", "jpeg")],
+        ];
+        for fields in cases {
+            let request = multipart_request(&fields);
+            assert!(
+                parse_multipart(&request.0, &request.1).is_err(),
+                "expected rejection for {fields:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn generate_body_forwards_all_supplied_advanced_params() {
+        let params = JobParams {
+            seed: 11,
+            resolution: 1536,
+            bg_removal: "threshold".to_string(),
+            uv: "box".to_string(),
+            texture: Some(true),
+            target_faces: Some(500_000),
+            atlas_size: Some(4_096),
+            texture_resolution: Some(1_024),
+            remesh_band: Some(8),
+            texture_encoding: Some("webp".to_string()),
+        };
+        let (content_type, body) =
+            build_generate_body("job-full", &[7], "m.png", "image/png", &params);
+        let text = String::from_utf8(body.clone()).unwrap();
+        for expected in [
+            "name=\"seed\"\r\n\r\n11\r\n",
+            "name=\"resolution\"\r\n\r\n1536\r\n",
+            "name=\"bg_removal\"\r\n\r\nthreshold\r\n",
+            "name=\"uv\"\r\n\r\nbox\r\n",
+            "name=\"texture\"\r\n\r\ntrue\r\n",
+            "name=\"target_faces\"\r\n\r\n500000\r\n",
+            "name=\"atlas_size\"\r\n\r\n4096\r\n",
+            "name=\"texture_resolution\"\r\n\r\n1024\r\n",
+            "name=\"remesh_band\"\r\n\r\n8\r\n",
+            "name=\"texture_encoding\"\r\n\r\nwebp\r\n",
+            "name=\"request_id\"\r\n\r\njob-full\r\n",
+        ] {
+            assert!(text.contains(expected), "missing part {expected}");
+        }
+        // The rebuilt request parses back into identical parameters.
+        let parsed = parse_multipart(&content_type, &body).unwrap();
+        assert_eq!(parsed.params.seed, 11);
+        assert_eq!(parsed.params.target_faces, Some(500_000));
+        assert_eq!(parsed.params.remesh_band, Some(8));
+    }
+
+    #[test]
+    fn generate_body_omits_unsupplied_advanced_params() {
+        let (_, body) = build_generate_body(
+            "job-basic",
+            &[7],
+            "m.png",
+            "image/png",
+            &JobParams::default(),
+        );
+        let text = String::from_utf8(body).unwrap();
+        for absent in [
+            "name=\"texture\"",
+            "name=\"target_faces\"",
+            "name=\"atlas_size\"",
+            "name=\"texture_resolution\"",
+            "name=\"remesh_band\"",
+            "name=\"texture_encoding\"",
+        ] {
+            assert!(!text.contains(absent), "unexpected part {absent}");
+        }
+    }
+
     #[test]
     fn cancelled_job_is_removed_from_later_queue_positions() {
         let mut data = QueueData::default();
@@ -1978,6 +2710,7 @@ mod tests {
             resolution: 1024,
             bg_removal: "birefnet".to_string(),
             uv: "box".to_string(),
+            ..JobParams::default()
         };
         // Binary bytes including multipart-hostile sequences (\r\n, dashes, NUL).
         let image: Vec<u8> = vec![0, 13, 10, 45, 45, 255, 0, 1, 2, 3];
@@ -2119,6 +2852,245 @@ mod tests {
         assert_eq!(loaded[0].status, JobStatus::Queued);
         assert_eq!(loaded[1].status, JobStatus::Succeeded);
         assert_eq!(loaded[2].status, JobStatus::Running);
+    }
+
+    #[test]
+    fn old_store_records_without_advanced_fields_deserialize_with_defaults() {
+        // Written by a version of the app whose JobParams only carried the
+        // four basic fields.
+        let legacy = serde_json::json!({
+            "schemaVersion": 1,
+            "id": "legacy-1",
+            "status": "queued",
+            "sourceImagePath": "img.png",
+            "sourceName": "in.png",
+            "sourceType": "image/png",
+            "params": {
+                "seed": 3,
+                "resolution": 512,
+                "bgRemoval": "auto",
+                "uv": "xatlas"
+            },
+            "submittedAt": 5,
+            "interrupted": false
+        });
+        let record: DurableJob = serde_json::from_value(legacy).unwrap();
+        assert_eq!(record.params.seed, 3);
+        assert_eq!(record.params.texture, None);
+        assert_eq!(record.params.target_faces, None);
+        assert_eq!(record.params.atlas_size, None);
+        assert_eq!(record.params.texture_resolution, None);
+        assert_eq!(record.params.remesh_band, None);
+        assert_eq!(record.params.texture_encoding, None);
+        // Defaults are valid and replayable.
+        assert!(validate_job_params(&record.params).is_ok());
+    }
+
+    #[test]
+    fn complete_params_survive_a_store_round_trip() {
+        let mut record = durable("full", JobStatus::Queued, 10);
+        record.params = JobParams {
+            seed: 77,
+            resolution: 1536,
+            bg_removal: "threshold".to_string(),
+            uv: "box".to_string(),
+            texture: Some(false),
+            target_faces: Some(120_000),
+            atlas_size: Some(256),
+            texture_resolution: Some(512),
+            remesh_band: Some(4),
+            texture_encoding: Some("png".to_string()),
+        };
+        let text = serialize_store(&[record]);
+        let loaded = parse_store(&text).unwrap();
+        assert_eq!(loaded.len(), 1);
+        assert_eq!(loaded[0].params.texture, Some(false));
+        assert_eq!(loaded[0].params.target_faces, Some(120_000));
+        assert_eq!(loaded[0].params.atlas_size, Some(256));
+        assert_eq!(loaded[0].params.texture_resolution, Some(512));
+        assert_eq!(loaded[0].params.remesh_band, Some(4));
+        assert_eq!(loaded[0].params.texture_encoding.as_deref(), Some("png"));
+    }
+
+    #[test]
+    fn recovery_marks_invalid_stored_parameters_unrecoverable() {
+        let mut bad = durable("bad", JobStatus::Queued, 10);
+        bad.source_image_path = "whatever.png".to_string();
+        bad.params.resolution = 700;
+        let reconciled = reconcile_loaded_jobs(vec![bad]);
+        assert_eq!(reconciled[0].status, JobStatus::Failed);
+        assert!(reconciled[0]
+            .error
+            .as_deref()
+            .unwrap_or_default()
+            .contains("unrecoverable: stored generation parameters are invalid"));
+        assert!(!reconciled[0].interrupted);
+
+        // Valid records keep their normal recovery path.
+        let dir = std::env::temp_dir().join(format!("trellis-jobs-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut good = durable("good", JobStatus::Queued, 20);
+        good.source_image_path = dir.join("img.png").to_string_lossy().into_owned();
+        if !dir.join("img.png").is_file() {
+            std::fs::write(dir.join("img.png"), b"png").unwrap();
+        }
+        assert_eq!(
+            reconcile_loaded_jobs(vec![good])[0].status,
+            JobStatus::Queued
+        );
+    }
+
+    #[test]
+    fn save_store_file_fails_loudly_when_the_target_cannot_be_written() {
+        // A plain file occupying the store's parent directory makes
+        // create_dir_all fail, simulating a disk or permission fault without
+        // platform-specific ACL manipulation.
+        let root = std::env::temp_dir().join(format!("trellis-store-fault-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let blocker = root.join("blocked");
+        std::fs::write(&blocker, b"not a directory").unwrap();
+        let store = blocker.join("nested").join("automation-jobs.json");
+        let result = save_store_file(&store, &[durable("x", JobStatus::Queued, 1)]);
+        assert!(result.is_err(), "write under a file parent must fail");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn degradation_latches_and_only_a_successful_retry_clears_it() {
+        let queue = JobQueue::default();
+        assert_eq!(queue.degradation(), None);
+        assert_eq!(admission_block_reason(&queue, true), None);
+
+        queue.record_persistence_failure("cancel of job j-1", "disk on fire");
+        let reason = admission_block_reason(&queue, true).expect("degraded must block submissions");
+        assert!(reason.contains("persistence is degraded"), "{reason}");
+        assert!(reason.contains("cancel of job j-1"), "{reason}");
+        // Degradation blocks even when the admission flag is open.
+        assert!(admission_block_reason(&queue, true).is_some());
+
+        // A failed retry does not clear the latch.
+        queue.record_persistence_failure("retry", "still broken");
+        assert!(queue.degradation().is_some());
+
+        queue.record_persistence_success();
+        assert_eq!(queue.degradation(), None);
+        assert_eq!(admission_block_reason(&queue, true), None);
+
+        // The maintenance pause remains independently observable.
+        queue.admission.lock().unwrap().accepting = false;
+        let reason = admission_block_reason(&queue, false).expect("paused must block submissions");
+        assert!(reason.contains("temporarily paused"), "{reason}");
+    }
+
+    fn poll_status(status: u16, body: &str) -> OrphanPoll {
+        classify_progress_response(status, Some(body))
+    }
+
+    #[test]
+    fn orphan_poll_classification_follows_native_semantics() {
+        // Native /progress returns 200 with running|succeeded|failed and 404
+        // for an id it does not know.
+        assert_eq!(
+            poll_status(200, r#"{"status":"running"}"#),
+            OrphanPoll::Running
+        );
+        assert_eq!(
+            poll_status(200, r#"{"status":"succeeded"}"#),
+            OrphanPoll::Cleared
+        );
+        assert_eq!(
+            poll_status(200, r#"{"status":"failed","error":"boom"}"#),
+            OrphanPoll::Cleared
+        );
+        assert_eq!(classify_progress_response(404, None), OrphanPoll::Cleared);
+
+        // Anything that is not evidence from a responsive server is Unknown.
+        assert!(matches!(
+            classify_progress_response(503, None),
+            OrphanPoll::Unknown(_)
+        ));
+        assert!(matches!(
+            poll_status(200, "not json at all"),
+            OrphanPoll::Unknown(_)
+        ));
+        assert!(matches!(
+            poll_status(200, r#"{"stageId":"x"}"#),
+            OrphanPoll::Unknown(_)
+        ));
+        assert!(matches!(
+            classify_progress_response(200, None),
+            OrphanPoll::Unknown(_)
+        ));
+    }
+
+    fn no_sleep(_: Duration) {}
+
+    fn instant_deadline() -> std::time::Instant {
+        std::time::Instant::now()
+    }
+
+    #[test]
+    fn orphan_wait_requires_confirmation_before_submitting() {
+        let script = [
+            OrphanPoll::Unknown("connection refused".to_string()), // server booting
+            OrphanPoll::Unknown("timeout".to_string()),
+            OrphanPoll::Running,
+            OrphanPoll::Running,
+            OrphanPoll::Cleared, // terminal status finally observed
+        ];
+        let mut polls = script.iter();
+        let outcome = wait_for_orphan_polling(
+            || polls.next().cloned().unwrap_or(OrphanPoll::Cleared),
+            std::time::Instant::now() + Duration::from_secs(60),
+            no_sleep,
+            Duration::from_millis(1),
+            Duration::from_millis(4),
+        );
+        assert!(matches!(outcome, OrphanWait::Confirmed));
+    }
+
+    #[test]
+    fn orphan_wait_never_confirms_through_persistent_uncertainty() {
+        let mut polls: u32 = 0;
+        let outcome = wait_for_orphan_polling(
+            || {
+                polls += 1;
+                OrphanPoll::Unknown("connection refused".to_string())
+            },
+            instant_deadline(), // expires immediately
+            no_sleep,
+            Duration::from_millis(1),
+            Duration::from_millis(2),
+        );
+        match outcome {
+            OrphanWait::Unresolved(reason) => {
+                assert!(reason.contains("safety deadline"));
+            }
+            OrphanWait::Confirmed => panic!("uncertainty must never confirm"),
+        }
+        assert_eq!(polls, 0, "an expired deadline must not poll-and-submit");
+    }
+
+    #[test]
+    fn orphan_wait_keeps_retrying_while_the_orphan_runs() {
+        let mut running_polls: u32 = 0;
+        let deadline = std::time::Instant::now() + Duration::from_millis(50);
+        let outcome = wait_for_orphan_polling(
+            || {
+                if std::time::Instant::now() < deadline && running_polls < 3 {
+                    running_polls += 1;
+                    return OrphanPoll::Running;
+                }
+                OrphanPoll::Cleared
+            },
+            std::time::Instant::now() + Duration::from_secs(30),
+            no_sleep,
+            Duration::from_millis(1),
+            Duration::from_millis(2),
+        );
+        assert!(matches!(outcome, OrphanWait::Confirmed));
+        assert!(running_polls >= 3, "running orphans are waited out");
     }
 
     #[test]
