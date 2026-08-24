@@ -116,7 +116,7 @@ fn start_status_updater(app: &AppHandle, status: MenuItem<tauri::Wry>) {
 
 fn request_quit(app: &AppHandle) {
     if let Err(error) = automation::quiesce_if_idle(app.state::<AutomationState>().inner()) {
-        let message = maintenance_message("quit Trellis Studio", error);
+        let message = maintenance_message("quit Triastasis", error);
         show_main_window(app);
         let _ = app.emit("tray-action-blocked", message);
         return;
@@ -126,7 +126,7 @@ fn request_quit(app: &AppHandle) {
 }
 
 pub fn setup(app: &tauri::App) -> tauri::Result<()> {
-    let open = MenuItem::with_id(app, OPEN_ID, "Open Trellis Studio", true, None::<&str>)?;
+    let open = MenuItem::with_id(app, OPEN_ID, "Open Triastasis", true, None::<&str>)?;
     let status = MenuItem::with_id(
         app,
         STATUS_ID,
@@ -136,13 +136,13 @@ pub fn setup(app: &tauri::App) -> tauri::Result<()> {
     )?;
     let output = MenuItem::with_id(app, OUTPUT_ID, "Open output folder", true, None::<&str>)?;
     let restart = MenuItem::with_id(app, RESTART_ID, "Restart server", true, None::<&str>)?;
-    let quit = MenuItem::with_id(app, QUIT_ID, "Quit Trellis Studio", true, None::<&str>)?;
+    let quit = MenuItem::with_id(app, QUIT_ID, "Quit Triastasis", true, None::<&str>)?;
     let menu = Menu::with_items(app, &[&open, &status, &output, &restart, &quit])?;
 
-    let mut builder = TrayIconBuilder::with_id("trellis-studio-tray")
+    let mut builder = TrayIconBuilder::with_id("triastasis-tray")
         .menu(&menu)
         .show_menu_on_left_click(false)
-        .tooltip("Trellis Studio · automation ready")
+        .tooltip("Triastasis: automation ready")
         .on_menu_event(|app, event| match event.id().as_ref() {
             OPEN_ID => show_main_window(app),
             OUTPUT_ID => match config::resolve_output_dir() {

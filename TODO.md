@@ -1,4 +1,4 @@
-# Polyloom TODO
+# Triastasis TODO
 
 ## Import experience
 
@@ -19,6 +19,7 @@
 
 ## Future plans
 
+- [ ] Add project-based asset organization. Let users create, rename, and delete projects; assign or move existing assets between them; browse `All assets`, `Unassigned`, and individual project views; and persist project membership across restarts without breaking asset versions, generation manifests, recovery, or lineage. Deleting a project must be non-destructive by default, returning its assets to `Unassigned` unless the user explicitly chooses to delete the assets too.
 - [ ] Make imported model animations testable in Inspect. Detect available animation clips and provide compact controls to select a clip, play or pause it, loop it, adjust playback speed, and restart it without modifying the source GLB.
 
 ## Test note

@@ -1,4 +1,4 @@
-Trellis Studio - portable (no-install) build
+Triastasis - portable (no-install) build
 ============================================
 
 This is a self-contained build: everything stays inside this folder and nothing
@@ -20,7 +20,7 @@ First-time setup
        trellis-vulkan-<os>-x64    (AMD / Intel / universal fallback)
   2. Put the 10 GGUF files from huggingface.co/ilintar/trellis2-gguf into a
      "models" folder next to this app.
-  3. Launch the app (trellis-studio / trellis-studio.exe) and generate.
+  3. Launch the app (triastasis / triastasis.exe) and generate.
 
 Or just launch the app and point it at an existing server binary + models
 directory in Settings.

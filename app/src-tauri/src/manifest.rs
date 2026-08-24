@@ -1,4 +1,4 @@
-// `.polyloom.json` generation manifests: a versioned, self-describing record
+// `.triastasis.json` generation manifests: a versioned, self-describing record
 // written beside every generated model so any generation can later be
 // re-imported, re-linked, or requeued with its reference image, settings, and
 // lineage intact.
@@ -12,8 +12,118 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::path::{Component, Path, PathBuf};
 
-pub const MANIFEST_SCHEMA_VERSION: u32 = 1;
-pub const MANIFEST_EXTENSION: &str = "polyloom.json";
+/// Version emitted by every new write. Schema 2 adds the advanced generation
+/// parameters (`targetFaces`, `atlasSize`, `textureResolution`, `remeshBand`,
+/// `textureEncoding`) that schema 1 could not record.
+pub const MANIFEST_SCHEMA_VERSION: u32 = 2;
+/// Oldest schema still accepted for reading; v1 manifests predate the
+/// advanced parameter fields and recover with documented defaults for them.
+pub const MIN_SUPPORTED_MANIFEST_SCHEMA_VERSION: u32 = 1;
+
+pub const MANIFEST_EXTENSION: &str = "triastasis.json";
+pub const LEGACY_MANIFEST_EXTENSION: &str = "polyloom.json";
+
+/// The validation bounds shared with trellis-server, enforced when parsing.
+const TARGET_FACES_RANGE: (u32, u32) = (10_000, 1_000_000);
+const ATLAS_SIZE_RANGE: (u32, u32) = (128, 4_096);
+const REMESH_BAND_RANGE: (u32, u32) = (0, 8);
+
+/// `"auto"` or a non-negative integer — serializes exactly like the
+/// TypeScript `TargetFaces` / `AtlasSize` / `RemeshBand` union members so the
+/// JSON representation stays identical across the app and the shell.
+#[derive(Clone, Debug, PartialEq)]
+pub enum AutoU32 {
+    Auto,
+    Value(u32),
+}
+
+impl Default for AutoU32 {
+    fn default() -> Self {
+        AutoU32::Auto
+    }
+}
+
+impl Serialize for AutoU32 {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        match self {
+            AutoU32::Auto => serializer.serialize_str("auto"),
+            AutoU32::Value(value) => serializer.serialize_u32(*value),
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for AutoU32 {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct AutoU32Visitor;
+        impl serde::de::Visitor<'_> for AutoU32Visitor {
+            type Value = AutoU32;
+            fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+                formatter.write_str("\"auto\" or a non-negative integer")
+            }
+            fn visit_str<E: serde::de::Error>(self, value: &str) -> Result<AutoU32, E> {
+                if value.eq_ignore_ascii_case("auto") {
+                    Ok(AutoU32::Auto)
+                } else {
+                    Err(E::invalid_value(
+                        serde::de::Unexpected::Str(value),
+                        &"\"auto\" or a non-negative integer",
+                    ))
+                }
+            }
+            fn visit_u64<E: serde::de::Error>(self, value: u64) -> Result<AutoU32, E> {
+                u32::try_from(value).map(AutoU32::Value).map_err(|_| {
+                    E::invalid_value(
+                        serde::de::Unexpected::Unsigned(value),
+                        &"a non-negative integer within the u32 range",
+                    )
+                })
+            }
+            fn visit_i64<E: serde::de::Error>(self, value: i64) -> Result<AutoU32, E> {
+                u32::try_from(value).map(AutoU32::Value).map_err(|_| {
+                    E::invalid_value(
+                        serde::de::Unexpected::Signed(value),
+                        &"a non-negative integer within the u32 range",
+                    )
+                })
+            }
+        }
+        deserializer.deserialize_any(AutoU32Visitor)
+    }
+}
+
+impl AutoU32 {
+    fn value_in_range(&self, name: &str, range: (u32, u32)) -> Result<(), String> {
+        match self {
+            AutoU32::Auto => Ok(()),
+            AutoU32::Value(value) => {
+                if *value >= range.0 && *value <= range.1 {
+                    Ok(())
+                } else {
+                    Err(format!(
+                        "{name} must be \"auto\" or between {} and {}",
+                        range.0, range.1
+                    ))
+                }
+            }
+        }
+    }
+}
+
+/// Texture encoding choice serialized exactly like the TypeScript values.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Default)]
+pub enum TextureEncodingChoice {
+    #[serde(rename = "auto")]
+    #[default]
+    Auto,
+    #[serde(rename = "webp")]
+    Webp,
+    #[serde(rename = "png")]
+    Png,
+}
+
+fn is_manifest_name(name: &str) -> bool {
+    name.ends_with(MANIFEST_EXTENSION) || name.ends_with(LEGACY_MANIFEST_EXTENSION)
+}
 
 /// Refusal thresholds. A manifest is small structured data; artifacts are
 /// bounded well above any realistic reconstruction output.
@@ -105,6 +215,13 @@ pub struct GenerationManifest {
     pub bg_removal: String,
     pub uv: String,
     pub texture: bool,
+    /// Advanced generation settings; schema 1 manifests predate them and
+    /// deserialize with `"auto"` defaults via the container-level `default`.
+    pub target_faces: AutoU32,
+    pub atlas_size: AutoU32,
+    pub texture_resolution: AutoU32,
+    pub remesh_band: AutoU32,
+    pub texture_encoding: TextureEncodingChoice,
     pub job_id: Option<String>,
     pub native_request_id: Option<String>,
     pub asset_id: Option<String>,
@@ -114,6 +231,9 @@ pub struct GenerationManifest {
     pub started_at_utc: Option<String>,
     pub finished_at_utc: Option<String>,
     pub duration_seconds: Option<f64>,
+    pub triastasis_version: Option<String>,
+    /// Retained so manifests created before the rename remain importable.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub polyloom_version: Option<String>,
     pub server_version: Option<String>,
     pub metrics: Option<ManifestMetrics>,
@@ -139,6 +259,11 @@ impl Default for GenerationManifest {
             bg_removal: "auto".to_string(),
             uv: "xatlas".to_string(),
             texture: true,
+            target_faces: AutoU32::Auto,
+            atlas_size: AutoU32::Auto,
+            texture_resolution: AutoU32::Auto,
+            remesh_band: AutoU32::Auto,
+            texture_encoding: TextureEncodingChoice::Auto,
             job_id: None,
             native_request_id: None,
             asset_id: None,
@@ -148,7 +273,8 @@ impl Default for GenerationManifest {
             started_at_utc: None,
             finished_at_utc: None,
             duration_seconds: None,
-            polyloom_version: Some(env!("CARGO_PKG_VERSION").to_string()),
+            triastasis_version: Some(env!("CARGO_PKG_VERSION").to_string()),
+            polyloom_version: None,
             server_version: None,
             metrics: None,
             quality_warning: None,
@@ -444,12 +570,30 @@ fn parse_manifest_text(text: &str) -> Result<GenerationManifest, String> {
     let stripped = text.strip_prefix('\u{feff}').unwrap_or(text);
     let manifest: GenerationManifest = serde_json::from_str(stripped)
         .map_err(|e| format!("manifest is not valid JSON for this schema: {e}"))?;
-    if manifest.schema_version != MANIFEST_SCHEMA_VERSION {
+    if manifest.schema_version < MIN_SUPPORTED_MANIFEST_SCHEMA_VERSION
+        || manifest.schema_version > MANIFEST_SCHEMA_VERSION
+    {
         return Err(format!(
-            "unsupported manifest schema version {} (supported: {MANIFEST_SCHEMA_VERSION})",
-            manifest.schema_version
+            "unsupported manifest schema version {} (supported: {}..={MANIFEST_SCHEMA_VERSION})",
+            manifest.schema_version, MIN_SUPPORTED_MANIFEST_SCHEMA_VERSION
         ));
     }
+    // Advanced settings recorded by schema 2 must satisfy the same bounds the
+    // native server enforces, so recovery never replays an out-of-range value.
+    manifest
+        .target_faces
+        .value_in_range("targetFaces", TARGET_FACES_RANGE)?;
+    manifest
+        .atlas_size
+        .value_in_range("atlasSize", ATLAS_SIZE_RANGE)?;
+    if let AutoU32::Value(resolution) = manifest.texture_resolution {
+        if resolution != 512 && resolution != 1024 {
+            return Err("textureResolution must be \"auto\", 512, or 1024".to_string());
+        }
+    }
+    manifest
+        .remesh_band
+        .value_in_range("remeshBand", REMESH_BAND_RANGE)?;
     Ok(manifest)
 }
 
@@ -462,10 +606,10 @@ fn manifest_dir(path: &str) -> Result<PathBuf, String> {
         || !path
             .file_name()
             .and_then(|name| name.to_str())
-            .map(|name| name.ends_with(MANIFEST_EXTENSION))
+            .map(is_manifest_name)
             .unwrap_or(false)
     {
-        return Err("not a .polyloom.json manifest".to_string());
+        return Err("not a .triastasis.json or legacy .polyloom.json manifest".to_string());
     }
     path.parent()
         .map(|parent| parent.to_path_buf())
@@ -477,23 +621,23 @@ fn manifest_dir(path: &str) -> Result<PathBuf, String> {
 /// never need to implement hashing themselves. `force_file_name` pins the
 /// manifest filename — used when resuming an existing interrupted manifest so
 /// the replacement updates the same file; otherwise the canonical
-/// `<model-or-job-stem>.polyloom.json` name applies.
+/// `<model-or-job-stem>.triastasis.json` name applies.
 pub fn write_generation_manifest_impl(
     dir: &Path,
     mut manifest: GenerationManifest,
     force_file_name: Option<&str>,
 ) -> Result<PathBuf, String> {
-    if manifest.schema_version != MANIFEST_SCHEMA_VERSION {
-        return Err(format!(
-            "unsupported manifest schema version {}",
-            manifest.schema_version
-        ));
-    }
+    // Every write emits the current schema; a v1 manifest updated in place
+    // (for example during recovery) is upgraded transparently.
+    manifest.schema_version = MANIFEST_SCHEMA_VERSION;
     if !matches!(
         manifest.status.as_str(),
         "completed" | "interrupted" | "failed" | "cancelled"
     ) {
         return Err(format!("invalid manifest status {}", manifest.status));
+    }
+    if manifest.triastasis_version.is_none() {
+        manifest.triastasis_version = Some(env!("CARGO_PKG_VERSION").to_string());
     }
     for (role, raw) in manifest.references() {
         resolve_in_dir(dir, &raw).map_err(|e| format!("{role}: {e}"))?;
@@ -542,8 +686,11 @@ pub fn write_generation_manifest_impl(
         Some(name) => {
             let validated = safe_relative_path(name)?;
             let as_str = validated.to_string_lossy().into_owned();
-            if !as_str.ends_with(MANIFEST_EXTENSION) {
-                return Err("forced manifest name must end with .polyloom.json".to_string());
+            if !is_manifest_name(&as_str) {
+                return Err(
+                    "forced manifest name must end with .triastasis.json or .polyloom.json"
+                        .to_string(),
+                );
             }
             as_str
         }
@@ -560,7 +707,7 @@ pub fn write_generation_manifest_impl(
     Ok(target)
 }
 
-/// Canonical manifest filename: `<model-stem>.polyloom.json`, falling back to
+/// Canonical manifest filename: `<model-stem>.triastasis.json`, falling back to
 /// the job id when no model has been produced yet.
 fn manifest_filename(manifest: &GenerationManifest) -> String {
     let stem = manifest
@@ -685,7 +832,7 @@ pub fn read_manifest_asset_impl(path: &str, role: &str) -> Result<Vec<u8>, Strin
 ///
 /// The writer is forced onto the EXACT manifest file the user opened — never
 /// a freshly derived canonical name — so a noncanonical
-/// `custom-name.polyloom.json` is repaired in place with no second file.
+/// Legacy and Triastasis manifest names are repaired in place with no second file.
 pub fn relink_manifest_file_impl(
     manifest_path: &str,
     role: &str,
@@ -752,15 +899,17 @@ pub fn find_linked_manifest_impl(glb_path: &str) -> Option<String> {
     let glb = PathBuf::from(glb_path);
     let dir = glb.parent()?;
     let stem = glb.file_stem()?.to_string_lossy().into_owned();
-    let conventional = dir.join(format!("{stem}.{MANIFEST_EXTENSION}"));
-    if conventional.is_file() {
-        return Some(conventional.to_string_lossy().into_owned());
+    for extension in [MANIFEST_EXTENSION, LEGACY_MANIFEST_EXTENSION] {
+        let conventional = dir.join(format!("{stem}.{extension}"));
+        if conventional.is_file() {
+            return Some(conventional.to_string_lossy().into_owned());
+        }
     }
     let entries = std::fs::read_dir(dir).ok()?;
     for entry in entries.flatten() {
         let path = entry.path();
         let named = path.file_name()?.to_str()?;
-        if !named.ends_with(MANIFEST_EXTENSION) {
+        if !is_manifest_name(named) {
             continue;
         }
         if let Ok(preview) = read_generation_manifest_impl(&path.to_string_lossy()) {
@@ -783,7 +932,7 @@ pub fn find_linked_manifest_impl(glb_path: &str) -> Option<String> {
     None
 }
 
-/// Lists every `.polyloom.json` in the same directory as `path` (used to
+/// Lists every Triastasis or legacy Polyloom manifest beside `path` (used to
 /// reconstruct a full sweep from one of its candidate manifests).
 pub fn list_sibling_manifests_impl(path: &str) -> Result<Vec<String>, String> {
     let dir = manifest_dir(path)?;
@@ -794,7 +943,7 @@ pub fn list_sibling_manifests_impl(path: &str) -> Result<Vec<String>, String> {
         let is_manifest = candidate
             .file_name()
             .and_then(|name| name.to_str())
-            .map(|name| name.ends_with(MANIFEST_EXTENSION))
+            .map(is_manifest_name)
             .unwrap_or(false);
         if is_manifest {
             found.push(candidate.to_string_lossy().into_owned());
@@ -820,7 +969,7 @@ pub fn scan_interrupted_manifests_impl() -> Vec<(String, GenerationManifest)> {
         let is_manifest = path
             .file_name()
             .and_then(|name| name.to_str())
-            .map(|name| name.ends_with(MANIFEST_EXTENSION))
+            .map(is_manifest_name)
             .unwrap_or(false);
         if !is_manifest {
             continue;
@@ -849,7 +998,7 @@ mod tests {
     impl TempDir {
         fn new(name: &str) -> Self {
             let dir = std::env::temp_dir()
-                .join(format!("polyloom-manifest-{}-{name}", std::process::id()));
+                .join(format!("triastasis-manifest-{}-{name}", std::process::id()));
             let _ = std::fs::remove_dir_all(&dir);
             std::fs::create_dir_all(&dir).unwrap();
             Self(dir)
@@ -897,19 +1046,25 @@ mod tests {
         }
     }
 
+    fn existing_manifest_in(dir: &Path) -> PathBuf {
+        let current = dir.join("model.triastasis.json");
+        if current.is_file() {
+            current
+        } else {
+            dir.join("model.polyloom.json")
+        }
+    }
+
     #[test]
     fn round_trip_preserves_binary_files_and_hashes() {
         let temp = TempDir::new("roundtrip");
         let png = temp.write("source.png", FAKE_PNG);
         let glb = temp.write("model.glb", FAKE_GLB);
+        let mut manifest = sample_manifest("source.png", "model.glb");
+        manifest.triastasis_version = None;
 
-        let target = write_generation_manifest_impl(
-            &temp.0,
-            sample_manifest("source.png", "model.glb"),
-            None,
-        )
-        .unwrap();
-        assert!(target.file_name().unwrap() == "model.polyloom.json");
+        let target = write_generation_manifest_impl(&temp.0, manifest, None).unwrap();
+        assert!(target.file_name().unwrap() == "model.triastasis.json");
 
         // Binary files are untouched by writing the manifest.
         assert_eq!(std::fs::read(&png).unwrap(), FAKE_PNG);
@@ -920,6 +1075,10 @@ mod tests {
         assert_eq!(imported.glb_bytes, FAKE_GLB);
         assert_eq!(imported.manifest.seed, 42);
         assert_eq!(imported.manifest.job_id.as_deref(), Some("job-1"));
+        assert_eq!(
+            imported.manifest.triastasis_version.as_deref(),
+            Some(env!("CARGO_PKG_VERSION"))
+        );
     }
 
     #[test]
@@ -987,6 +1146,112 @@ mod tests {
         });
         let error = parse_manifest_text(&json.to_string()).unwrap_err();
         assert!(error.contains("unsupported manifest schema version 99"));
+    }
+
+    #[test]
+    fn version_one_manifests_parse_with_advanced_defaults() {
+        // Schema 1 never stored the advanced generation parameters.
+        let json = serde_json::json!({
+            "schemaVersion": 1,
+            "status": "interrupted",
+            "label": "legacy",
+            "resolution": 512,
+            "seed": 7,
+            "bgRemoval": "auto",
+            "uv": "xatlas",
+            "texture": true,
+            "files": []
+        });
+        let manifest = parse_manifest_text(&json.to_string()).unwrap();
+        assert_eq!(manifest.schema_version, 1);
+        assert_eq!(manifest.target_faces, AutoU32::Auto);
+        assert_eq!(manifest.atlas_size, AutoU32::Auto);
+        assert_eq!(manifest.texture_resolution, AutoU32::Auto);
+        assert_eq!(manifest.remesh_band, AutoU32::Auto);
+        assert_eq!(manifest.texture_encoding, TextureEncodingChoice::Auto);
+    }
+
+    #[test]
+    fn version_two_manifests_round_trip_advanced_settings() {
+        let json = serde_json::json!({
+            "schemaVersion": 2,
+            "status": "completed",
+            "label": "advanced",
+            "resolution": 1024,
+            "seed": 9,
+            "bgRemoval": "birefnet",
+            "uv": "box",
+            "texture": true,
+            "targetFaces": 250_000,
+            "atlasSize": "auto",
+            "textureResolution": 512,
+            "remeshBand": 3,
+            "textureEncoding": "webp",
+            "files": []
+        });
+        let manifest = parse_manifest_text(&json.to_string()).unwrap();
+        assert_eq!(manifest.target_faces, AutoU32::Value(250_000));
+        assert_eq!(manifest.atlas_size, AutoU32::Auto);
+        assert_eq!(manifest.texture_resolution, AutoU32::Value(512));
+        assert_eq!(manifest.remesh_band, AutoU32::Value(3));
+        assert_eq!(manifest.texture_encoding, TextureEncodingChoice::Webp);
+
+        // Serialization matches the TypeScript spelling exactly: bare numbers
+        // for values, the lowercase string for choices.
+        let encoded: serde_json::Value = serde_json::to_value(&manifest).unwrap();
+        assert_eq!(encoded["targetFaces"], serde_json::json!(250_000));
+        assert_eq!(encoded["atlasSize"], serde_json::json!("auto"));
+        assert_eq!(encoded["textureResolution"], serde_json::json!(512));
+        assert_eq!(encoded["remeshBand"], serde_json::json!(3));
+        assert_eq!(encoded["textureEncoding"], serde_json::json!("webp"));
+
+        // The encoded document parses back to an identical manifest.
+        let reparsed = parse_manifest_text(&encoded.to_string()).unwrap();
+        assert_eq!(reparsed, manifest);
+    }
+
+    #[test]
+    fn out_of_range_advanced_values_are_rejected() {
+        let base = serde_json::json!({
+            "schemaVersion": 2,
+            "status": "interrupted",
+            "files": []
+        });
+        let invalid = [
+            serde_json::json!({ "targetFaces": 9_999 }),
+            serde_json::json!({ "targetFaces": 1_000_001 }),
+            serde_json::json!({ "atlasSize": 127 }),
+            serde_json::json!({ "atlasSize": 4097 }),
+            serde_json::json!({ "textureResolution": 256 }),
+            serde_json::json!({ "remeshBand": 9 }),
+            serde_json::json!({ "textureEncoding": "jpeg" }),
+        ];
+        for patch in invalid {
+            let mut candidate = base.clone();
+            for (key, value) in patch.as_object().unwrap() {
+                candidate[key] = value.clone();
+            }
+            let error = parse_manifest_text(&candidate.to_string())
+                .expect_err("expected out-of-range rejection");
+            assert!(
+                !error.contains("unsupported manifest schema"),
+                "unexpected rejection reason: {error}"
+            );
+        }
+    }
+
+    #[test]
+    fn every_write_emits_the_current_schema_version() {
+        let temp = TempDir::new("upgrade-on-write");
+        temp.write("source.png", FAKE_PNG);
+        temp.write("model.glb", FAKE_GLB);
+        // Simulate an updated legacy manifest: still on schema 1 when handed
+        // to the writer.
+        let mut manifest = sample_manifest("source.png", "model.glb");
+        manifest.schema_version = 1;
+        let target = write_generation_manifest_impl(&temp.0, manifest, None).unwrap();
+        let reloaded = read_generation_manifest_impl(&target.to_string_lossy()).unwrap();
+        assert_eq!(reloaded.manifest.schema_version, MANIFEST_SCHEMA_VERSION);
     }
 
     #[test]
@@ -1064,7 +1329,7 @@ mod tests {
         };
         // No model yet: the writer must tolerate its absence.
         let target = write_generation_manifest_impl(&temp.0, manifest.clone(), None).unwrap();
-        assert!(target.to_string_lossy().ends_with("job-9.polyloom.json"));
+        assert!(target.to_string_lossy().ends_with("job-9.triastasis.json"));
 
         manifest.job_id = None;
         let bytes = read_manifest_asset_impl(&target.to_string_lossy(), "sourceImage").unwrap();
@@ -1117,7 +1382,7 @@ mod tests {
         temp.write("model.glb", FAKE_GLB);
         let completed = sample_manifest("source.png", "model.glb");
         let target = write_generation_manifest_impl(&temp.0, completed, None).unwrap();
-        assert!(target.to_string_lossy().ends_with("model.polyloom.json"));
+        assert!(target.to_string_lossy().ends_with("model.triastasis.json"));
 
         // A reused job id must not overwrite a completed generation with an
         // interrupted placeholder under ordinary writes.
@@ -1131,7 +1396,7 @@ mod tests {
         assert!(write_generation_manifest_impl(
             &temp.0,
             stale.clone(),
-            Some("model.polyloom.json")
+            Some("model.triastasis.json")
         )
         .is_err());
         // The original file survives untouched.
@@ -1206,16 +1471,17 @@ mod tests {
     #[test]
     fn sibling_listing_finds_only_manifest_files() {
         let temp = TempDir::new("siblings");
-        temp.write("a.polyloom.json", b"{}");
+        temp.write("a.triastasis.json", b"{}");
         temp.write("b.polyloom.json", b"{}");
         temp.write("model.glb", FAKE_GLB);
         temp.write("notes.txt", b"hello");
 
         let mut siblings =
-            list_sibling_manifests_impl(&temp.0.join("a.polyloom.json").to_string_lossy()).unwrap();
+            list_sibling_manifests_impl(&temp.0.join("a.triastasis.json").to_string_lossy())
+                .unwrap();
         siblings.sort();
         assert_eq!(siblings.len(), 2);
-        assert!(siblings[0].ends_with("a.polyloom.json"));
+        assert!(siblings[0].ends_with("a.triastasis.json"));
         assert!(siblings[1].ends_with("b.polyloom.json"));
     }
 
@@ -1246,7 +1512,7 @@ mod tests {
 
         // The EXACT original file was updated; no canonical duplicate exists.
         assert!(target.is_file());
-        assert!(!temp.0.join("model.polyloom.json").exists());
+        assert!(!temp.0.join("model.triastasis.json").exists());
         let preview = read_generation_manifest_impl(&target.to_string_lossy()).unwrap();
         assert!(!preview.issues.iter().any(|issue| issue.role == "glb"));
         let entry = preview
@@ -1327,9 +1593,9 @@ mod tests {
     fn oversized_manifests_are_rejected() {
         let temp = TempDir::new("oversize");
         let oversized = vec![b' '; (MAX_MANIFEST_BYTES + 1) as usize];
-        temp.write("huge.polyloom.json", &oversized);
+        temp.write("huge.triastasis.json", &oversized);
         assert!(read_generation_manifest_impl(
-            &temp.0.join("huge.polyloom.json").to_string_lossy()
+            &temp.0.join("huge.triastasis.json").to_string_lossy()
         )
         .is_err());
     }
@@ -1339,17 +1605,24 @@ mod tests {
     /// have not been generated on this machine.
     #[test]
     fn runtime_fixture_matrix() {
-        let dir = std::env::var("POLYLOOM_FIXTURE_DIR")
+        let dir = std::env::var("TRIASTASIS_FIXTURE_DIR")
+            .or_else(|_| std::env::var("POLYLOOM_FIXTURE_DIR"))
             .map(PathBuf::from)
-            .unwrap_or_else(|_| std::env::temp_dir().join("polyloom-runtime-fixtures"));
+            .unwrap_or_else(|_| {
+                let current = std::env::temp_dir().join("triastasis-runtime-fixtures");
+                if current.is_dir() {
+                    current
+                } else {
+                    std::env::temp_dir().join("polyloom-runtime-fixtures")
+                }
+            });
         if !dir.is_dir() {
             eprintln!("fixtures not generated; skipping matrix");
             return;
         }
         let case = |name: &str| dir.join(name);
         let manifest_path = |name: &str| {
-            case(name)
-                .join("model.polyloom.json")
+            existing_manifest_in(&case(name))
                 .to_string_lossy()
                 .into_owned()
         };
@@ -1436,7 +1709,11 @@ mod tests {
                 .join("sibling-model.glb")
                 .to_string_lossy(),
         );
-        assert!(linked.unwrap().ends_with("sibling-model.polyloom.json"));
+        let linked = linked.unwrap();
+        assert!(
+            linked.ends_with("sibling-model.triastasis.json")
+                || linked.ends_with("sibling-model.polyloom.json")
+        );
         // A conventional-but-broken sibling is still discovered so the UI can
         // report it; opening the GLB itself remains unaffected.
         let broken = find_linked_manifest_impl(
@@ -1445,7 +1722,10 @@ mod tests {
                 .to_string_lossy(),
         )
         .expect("invalid conventional sibling must still be discovered");
-        assert!(broken.ends_with("broken-sibling.polyloom.json"));
+        assert!(
+            broken.ends_with("broken-sibling.triastasis.json")
+                || broken.ends_with("broken-sibling.polyloom.json")
+        );
         assert!(read_generation_manifest_impl(&broken).is_err());
 
         // 16: colliding lineage imports independently at the command layer.
@@ -1475,7 +1755,8 @@ mod tests {
     /// with its recorded hashes matching the files on disk.
     #[test]
     fn reconstruction_set_imports_end_to_end() {
-        let run_dir = std::env::var("POLYLOOM_RECON_RUN")
+        let run_dir = std::env::var("TRIASTASIS_RECON_RUN")
+            .or_else(|_| std::env::var("POLYLOOM_RECON_RUN"))
             .map(PathBuf::from)
             .unwrap_or_else(|_| {
                 PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -1492,7 +1773,7 @@ mod tests {
         }
         let mut imported_count = 0;
         for entry in std::fs::read_dir(&run_dir).unwrap().flatten() {
-            let manifest = entry.path().join("model.polyloom.json");
+            let manifest = existing_manifest_in(&entry.path());
             if !manifest.is_file() {
                 continue;
             }
@@ -1525,7 +1806,7 @@ mod tests {
             return;
         }
         for entry in std::fs::read_dir(&cli_dir).unwrap().flatten() {
-            let manifest = entry.path().join("model.polyloom.json");
+            let manifest = existing_manifest_in(&entry.path());
             if !manifest.is_file() {
                 continue;
             }

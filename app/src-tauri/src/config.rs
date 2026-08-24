@@ -1,6 +1,6 @@
 // config.json is the contract between the installer (writer) and the app
-// (reader). In an installed build it lives at <config_dir>/trellis-studio/ —
-// ~/.config/trellis-studio/ on Linux, %APPDATA%\trellis-studio\ on Windows.
+// (reader). In an installed build it lives at <config_dir>/triastasis/.
+// The former trellis-studio path remains a read-only fallback for upgrades.
 //
 // PORTABLE MODE: if a `portable.dat` marker sits next to the executable (as in
 // the portable .zip / .tar.gz), everything lives next to the exe instead —
@@ -57,7 +57,7 @@ fn server_bin_name() -> &'static str {
 }
 
 /// Default location for generated GLBs: <exe>/data/output in portable mode, else
-/// <local-data>/trellis-studio/output (%LOCALAPPDATA%\... / ~/.local/share/...).
+/// <local-data>/triastasis/output (%LOCALAPPDATA%\... / ~/.local/share/...).
 pub fn default_output_dir() -> String {
     if let Some(root) = portable_root() {
         return root
@@ -67,7 +67,7 @@ pub fn default_output_dir() -> String {
             .into_owned();
     }
     dirs::data_local_dir()
-        .map(|d| d.join("trellis-studio").join("output"))
+        .map(|d| d.join("triastasis").join("output"))
         .map(|p| p.to_string_lossy().into_owned())
         .unwrap_or_default()
 }
@@ -87,7 +87,7 @@ pub fn resolve_output_dir() -> Result<PathBuf, String> {
 }
 
 /// Where server launch logs are written: <exe>/data/logs in portable mode, else
-/// <local-data>/trellis-studio/logs. Mirrors `default_output_dir()`.
+/// <local-data>/triastasis/logs. Mirrors `default_output_dir()`.
 pub fn logs_dir() -> String {
     if let Some(root) = portable_root() {
         return root
@@ -97,7 +97,7 @@ pub fn logs_dir() -> String {
             .into_owned();
     }
     dirs::data_local_dir()
-        .map(|d| d.join("trellis-studio").join("logs"))
+        .map(|d| d.join("triastasis").join("logs"))
         .map(|p| p.to_string_lossy().into_owned())
         .unwrap_or_default()
 }
@@ -117,11 +117,17 @@ pub fn config_path() -> Option<PathBuf> {
     if let Some(root) = portable_root() {
         return Some(root.join("data").join("config.json"));
     }
-    dirs::config_dir().map(|d| d.join("trellis-studio").join("config.json"))
+    dirs::config_dir().map(|d| d.join("triastasis").join("config.json"))
 }
 
-fn load_from_file() -> Option<Config> {
-    let p = config_path()?;
+fn legacy_config_path() -> Option<PathBuf> {
+    portable_root()
+        .is_none()
+        .then(|| dirs::config_dir().map(|d| d.join("trellis-studio").join("config.json")))
+        .flatten()
+}
+
+fn load_from_path(p: PathBuf) -> Option<Config> {
     let s = std::fs::read_to_string(p).ok()?;
     // Tolerate a UTF-8 BOM: some Windows editors / PowerShell's `Set-Content
     // -Encoding UTF8` prepend one, and serde_json won't parse past it.
@@ -130,7 +136,10 @@ fn load_from_file() -> Option<Config> {
 }
 
 pub fn load() -> Option<Config> {
-    if let Some(cfg) = load_from_file() {
+    if let Some(cfg) = config_path().and_then(load_from_path) {
+        return Some(cfg);
+    }
+    if let Some(cfg) = legacy_config_path().and_then(load_from_path) {
         return Some(cfg);
     }
     // Portable fallback: no config.json yet, but if the portable folder already

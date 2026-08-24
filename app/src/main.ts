@@ -19,6 +19,8 @@ import {
   finishGenerationManifest,
   finishResumedManifest,
   hasDurableGeneratedArtifact,
+  manifestRecordedParams,
+  manifestStoresAdvancedSettings,
   metricsFromModelMetrics,
   prepareSweepManifests,
   safeStem,
@@ -48,6 +50,7 @@ import {
   matchingGenerationPreset,
   type GenerationPreset,
 } from "./generation-presets";
+import { filterLibraryEntries, type LibraryFilter, type LibrarySort } from "./library-filter";
 import {
   allowsGenerationAboveRecommendation,
   describeHardware,
@@ -103,8 +106,10 @@ import {
   normalizeGenParams,
   type GenParams,
   type ModelMetrics,
+  type NormalizedGenParams,
   type VersionRecord,
 } from "./types";
+import { SWEEP_MAX_CANDIDATES, SWEEP_MIN_CANDIDATES, createSweepSeeds } from "./sweep-seeds";
 
 const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T;
 
@@ -142,10 +147,21 @@ const cancelBtn = $<HTMLButtonElement>("cancel-btn");
 const clearQueueBtn = $<HTMLButtonElement>("clear-queue-btn");
 const viewerCaption = $("viewer-caption");
 const viewerEmpty = $("viewer-empty");
+const workspace = $("workspace");
+const panelLeft = document.querySelector<HTMLElement>(".panel-left")!;
+const viewerPanel = document.querySelector<HTMLElement>(".viewer-panel")!;
 const generateModeBtn = $<HTMLButtonElement>("mode-generate");
 const viewModeBtn = $<HTMLButtonElement>("mode-view");
+const libraryModeBtn = $<HTMLButtonElement>("mode-library");
 const generateModePanel = $("generate-mode-panel");
 const viewModePanel = $("view-mode-panel");
+const libraryModePanel = $("library-mode-panel");
+const libraryModeSummary = $("library-mode-summary");
+const librarySearch = $<HTMLInputElement>("library-search");
+const libraryFilter = $<HTMLSelectElement>("library-filter");
+const librarySort = $<HTMLSelectElement>("library-sort");
+const libraryResultsSummary = $("library-results-summary");
+const libraryGrid = $("library-grid");
 const inspectEmpty = $("inspect-empty");
 const inspectContent = $("inspect-content");
 const gallerySummary = $("dock-counts");
@@ -157,6 +173,7 @@ const assetLevelCount = $("asset-level-count");
 const versionLevelCount = $("version-level-count");
 const galleryEl = $("gallery");
 const versionGalleryEl = $("version-gallery");
+const dockFavoritesToggle = $<HTMLButtonElement>("dock-favorites-toggle");
 const clearGalleryBtn = $<HTMLButtonElement>("clear-gallery");
 const backendBadge = $("backend-badge");
 const automationBadge = $("automation-badge");
@@ -195,6 +212,14 @@ const editRedoBtn = $<HTMLButtonElement>("edit-redo");
 const editExportBtn = $<HTMLButtonElement>("edit-export-glb");
 const editSaveDerivedBtn = $<HTMLButtonElement>("edit-save-derived");
 const editLimitations = $("edit-limitations");
+const renameModal = $("rename-modal");
+const renameTitle = $("rename-title");
+const renameLabel = $("rename-label");
+const renameForm = $<HTMLFormElement>("rename-form");
+const renameInput = $<HTMLInputElement>("rename-input");
+const renameError = $("rename-error");
+const renameCloseBtn = $<HTMLButtonElement>("rename-close");
+const renameCancelBtn = $<HTMLButtonElement>("rename-cancel");
 
 const targetFacesMode = $<HTMLSelectElement>("ctl-target-faces-mode");
 const targetFacesInput = $<HTMLInputElement>("ctl-target-faces");
@@ -241,6 +266,87 @@ document.addEventListener("pointerdown", (event) => {
 });
 document.addEventListener("keydown", (event) => {
   if (event.key === "Escape") for (const tip of inlineTips) tip.open = false;
+});
+
+type RenameKind = "asset" | "version";
+let resolveRename: ((value: string | null) => void) | null = null;
+let renameOpener: HTMLElement | null = null;
+let initialRenameValue = "";
+
+function closeRenameModal(value: string | null): void {
+  if (!resolveRename) return;
+  const resolve = resolveRename;
+  resolveRename = null;
+  renameModal.classList.add("hidden");
+  renameInput.removeAttribute("aria-invalid");
+  renameError.textContent = "";
+  const opener = renameOpener;
+  renameOpener = null;
+  resolve(value);
+  if (opener && document.contains(opener)) opener.focus();
+}
+
+function requestRename(kind: RenameKind, currentValue: string): Promise<string | null> {
+  if (resolveRename) closeRenameModal(null);
+  renameOpener = document.activeElement as HTMLElement | null;
+  initialRenameValue = currentValue.trim();
+  const noun = kind === "asset" ? "asset" : "version";
+  renameTitle.textContent = `Rename ${noun}`;
+  renameLabel.textContent = `${noun[0].toUpperCase()}${noun.slice(1)} name`;
+  renameInput.value = currentValue;
+  renameInput.removeAttribute("aria-invalid");
+  renameError.textContent = "";
+  renameModal.classList.remove("hidden");
+  requestAnimationFrame(() => {
+    renameInput.focus();
+    renameInput.select();
+  });
+  return new Promise((resolve) => {
+    resolveRename = resolve;
+  });
+}
+
+renameForm.addEventListener("submit", (event) => {
+  event.preventDefault();
+  const nextValue = renameInput.value.trim();
+  if (!nextValue) {
+    renameInput.setAttribute("aria-invalid", "true");
+    renameError.textContent = "Enter a name.";
+    renameInput.focus();
+    return;
+  }
+  closeRenameModal(nextValue === initialRenameValue ? null : nextValue);
+});
+renameInput.addEventListener("input", () => {
+  if (!renameError.textContent) return;
+  renameInput.removeAttribute("aria-invalid");
+  renameError.textContent = "";
+});
+renameCloseBtn.addEventListener("click", () => closeRenameModal(null));
+renameCancelBtn.addEventListener("click", () => closeRenameModal(null));
+renameModal.addEventListener("click", (event) => {
+  if (event.target === renameModal) closeRenameModal(null);
+});
+renameModal.addEventListener("keydown", (event) => {
+  if (event.key === "Escape") {
+    event.preventDefault();
+    closeRenameModal(null);
+    return;
+  }
+  if (event.key !== "Tab") return;
+  const focusable = Array.from(
+    renameModal.querySelectorAll<HTMLElement>('button, input, [tabindex]:not([tabindex="-1"])'),
+  ).filter((element) => !(element as HTMLButtonElement).disabled && element.offsetParent !== null);
+  if (!focusable.length) return;
+  const first = focusable[0];
+  const last = focusable[focusable.length - 1];
+  if (event.shiftKey && document.activeElement === first) {
+    event.preventDefault();
+    last.focus();
+  } else if (!event.shiftKey && document.activeElement === last) {
+    event.preventDefault();
+    first.focus();
+  }
 });
 
 // ---- state ----
@@ -298,6 +404,7 @@ let generating = false;
 let abort: AbortController | null = null;
 let elapsedTimer: number | null = null;
 let galleryUrls: string[] = [];
+let libraryUrls: string[] = [];
 let candidateUrls: string[] = [];
 let warnedEphemeral = false;
 let maskObjectUrl: string | null = null;
@@ -325,7 +432,7 @@ function updateViewerCaption(): void {
   viewerCaption.textContent = parts.join(" | ");
 }
 
-type WorkspaceMode = "generate" | "view";
+type WorkspaceMode = "generate" | "view" | "library";
 
 type CandidateStatus = "queued" | "generating" | "ready" | "failed" | "cancelled";
 interface CandidateSlot {
@@ -396,12 +503,20 @@ function syncViewerReference(): void {
 function setWorkspaceMode(mode: WorkspaceMode): void {
   workspaceMode = mode;
   const generatingMode = mode === "generate";
+  const viewingMode = mode === "view";
+  const libraryMode = mode === "library";
   generateModeBtn.classList.toggle("active", generatingMode);
-  viewModeBtn.classList.toggle("active", !generatingMode);
+  viewModeBtn.classList.toggle("active", viewingMode);
+  libraryModeBtn.classList.toggle("active", libraryMode);
   generateModeBtn.setAttribute("aria-selected", String(generatingMode));
-  viewModeBtn.setAttribute("aria-selected", String(!generatingMode));
+  viewModeBtn.setAttribute("aria-selected", String(viewingMode));
+  libraryModeBtn.setAttribute("aria-selected", String(libraryMode));
   generateModePanel.classList.toggle("hidden", !generatingMode);
-  viewModePanel.classList.toggle("hidden", generatingMode);
+  viewModePanel.classList.toggle("hidden", !viewingMode);
+  panelLeft.classList.toggle("hidden", libraryMode);
+  viewerPanel.classList.toggle("hidden", libraryMode);
+  libraryModePanel.classList.toggle("hidden", !libraryMode);
+  workspace.classList.toggle("is-library-mode", libraryMode);
   syncViewerReference();
 }
 
@@ -1097,6 +1212,7 @@ async function saveEditedDerivedVersion(): Promise<void> {
 
 generateModeBtn.addEventListener("click", () => setWorkspaceMode("generate"));
 viewModeBtn.addEventListener("click", () => setWorkspaceMode("view"));
+libraryModeBtn.addEventListener("click", () => setWorkspaceMode("library"));
 
 document.querySelectorAll<HTMLButtonElement>("[data-display-mode]").forEach((button) => {
   button.addEventListener("click", () => {
@@ -1521,7 +1637,7 @@ void listenForNativeFileDrops(async (event) => {
     const droppedPath = event.paths[0];
     const lowered = droppedPath.toLowerCase();
     // Manifests and models get dedicated flows before the image path.
-    if (lowered.endsWith(".polyloom.json")) {
+    if (lowered.endsWith(".triastasis.json") || lowered.endsWith(".polyloom.json")) {
       void openManifestPreview(droppedPath);
       return;
     }
@@ -2229,18 +2345,42 @@ clearQueueBtn.addEventListener("click", () => {
 
 async function doSweep(): Promise<void> {
   if (!inputImage) return;
-  let baseParams: GenParams;
+  let baseParams: NormalizedGenParams;
   try {
-    baseParams = readParams();
+    baseParams = normalizeGenParams(readParams());
     clearParamErrors();
   } catch (error) {
     showParamError(error);
     return;
   }
-  const count = Math.max(2, Math.min(8, parseInt($<HTMLSelectElement>("ctl-sweep-count").value, 10) || 4));
-  const firstSeed = Math.max(1, baseParams.seed || 1);
+  const count = Math.max(
+    SWEEP_MIN_CANDIDATES,
+    Math.min(SWEEP_MAX_CANDIDATES, parseInt($<HTMLSelectElement>("ctl-sweep-count").value, 10) || 4),
+  );
+  // Every seed is validated BEFORE anything durable or visible is created:
+  // seed 0 stays 0, and a sweep that would run past the maximum seed is
+  // refused instead of partially enqueuing.
+  let sweepSeeds: number[];
+  try {
+    sweepSeeds = createSweepSeeds(baseParams.seed, count);
+  } catch (error) {
+    toast((error as Error).message, "err");
+    return;
+  }
+  // Sweeps always render at 512; a forced 1024 px texture decode would
+  // mismatch the geometry, so it collapses to auto here — before manifests
+  // are written, so records describe what will actually run.
+  const sweepParams = normalizeGenParams({
+    ...baseParams,
+    resolution: 512,
+    textureResolution: baseParams.textureResolution === 1024 ? "auto" : baseParams.textureResolution,
+  });
+  const restriction = hardwareRestriction(sweepParams);
+  if (restriction) {
+    toast(restriction, "err");
+    return;
+  }
   const sweepGroupId = newId();
-  const sweepSeeds = Array.from({ length: count }, (_, index) => firstSeed + index);
 
   // Persist every candidate manifest (plus one shared source image) BEFORE
   // the first generation runs. If persistence fails, refuse to queue a
@@ -2248,16 +2388,12 @@ async function doSweep(): Promise<void> {
   let preparedContexts: Array<ManifestContext | null> | null = null;
   if (isTauri()) {
     try {
+      const { seed: _seed, ...manifestParams } = sweepParams;
       preparedContexts = await prepareSweepManifests({
         base: safeStem(inputName),
         groupId: sweepGroupId,
         labelBase: inputName.replace(/\.[^.]+$/, "") || "Model",
-        params: {
-          resolution: 512,
-          bgRemoval: baseParams.bgRemoval,
-          uv: baseParams.uv,
-          texture: baseParams.texture ?? true,
-        },
+        params: manifestParams,
         seeds: sweepSeeds,
         sourceBlob: inputImage,
       });
@@ -2289,10 +2425,8 @@ async function doSweep(): Promise<void> {
       image: sweepImage,
       name: sweepName,
       params: {
-        ...baseParams,
-        resolution: 512,
+        ...sweepParams,
         seed: slot.seed,
-        textureResolution: baseParams.textureResolution === 1024 ? "auto" : baseParams.textureResolution,
       },
       label: `Candidate ${index + 1}/${count} · seed ${slot.seed}`,
       autoOpen: canOpenFirst && index === 0,
@@ -2477,6 +2611,14 @@ clearCandidatesBtn.addEventListener("click", () => {
 
 let selectedAssetId: string | null = null;
 
+interface AssetGroup {
+  assetId: string;
+  records: VersionRecord[];
+}
+
+let currentAssetGroups: AssetGroup[] = [];
+let dockFavoritesOnly = false;
+
 function assetDisplayName(records: VersionRecord[]): string {
   for (const record of records) {
     const label = record.operationParams.assetLabel;
@@ -2486,6 +2628,204 @@ function assetDisplayName(records: VersionRecord[]): string {
   return representative?.name.replace(/\.[^.]+$/, "") || representative?.label || "Untitled asset";
 }
 
+function assetIsFavorite(records: VersionRecord[]): boolean {
+  return records.length > 0 && records.every((record) => record.favorite);
+}
+
+function renderLibraryAsset(asset: AssetGroup): HTMLElement {
+  const records = asset.records;
+  const representative = records.find((record) => record.id === activeId) ?? records[0];
+  const assetName = assetDisplayName(records);
+  const item = document.createElement("article");
+  item.className = `asset-item library-asset-item${asset.assetId === selectedAssetId ? " active" : ""}`;
+  item.tabIndex = 0;
+  item.setAttribute("role", "button");
+
+  const itemHead = document.createElement("div");
+  itemHead.className = "asset-item-head";
+  const name = document.createElement("strong");
+  name.textContent = assetName;
+  const actions = document.createElement("div");
+  actions.className = "asset-actions";
+
+  const exportBtn = createButton({
+    label: `Export ${assetName} as GLB`,
+    variant: "icon",
+    size: "sm",
+    icon: "download-simple",
+    className: "g-action export-action",
+  });
+  exportBtn.addEventListener("click", async (event) => {
+    event.stopPropagation();
+    try {
+      const bytes = new Uint8Array(await representative.glb.arrayBuffer());
+      const ok = await saveBytes(`${safeStem(assetName)}.glb`, bytes);
+      if (ok) toast("GLB exported", "ok");
+    } catch (error) {
+      toast((error as Error).message || "GLB export failed", "err");
+    }
+  });
+  actions.appendChild(exportBtn);
+
+  const favorite = assetIsFavorite(records);
+  const favoriteBtn = createButton({
+    label: favorite ? "Remove asset from favourites" : "Add asset to favourites",
+    variant: "icon",
+    size: "sm",
+    icon: "star",
+    className: `g-action favorite-action${favorite ? " active" : ""}`,
+  });
+  favoriteBtn.addEventListener("click", async (event) => {
+    event.stopPropagation();
+    try {
+      for (const record of records) await setVersionFavorite(record.versionId, !favorite);
+      await refreshGallery();
+    } catch (error) {
+      toast((error as Error).message || "Could not update favourite", "err");
+    }
+  });
+  actions.appendChild(favoriteBtn);
+
+  const renameBtn = createButton({
+    label: "Rename asset",
+    variant: "icon",
+    size: "sm",
+    icon: "pencil-simple",
+    className: "g-action rename-action",
+  });
+  renameBtn.addEventListener("click", async (event) => {
+    event.stopPropagation();
+    const nextLabel = await requestRename("asset", assetName);
+    if (nextLabel === null) return;
+    try {
+      for (const record of records) {
+        await put({
+          ...record,
+          operationParams: { ...record.operationParams, assetLabel: nextLabel },
+        });
+      }
+      await refreshGallery();
+    } catch (error) {
+      toast((error as Error).message || "Could not rename asset", "err");
+    }
+  });
+  actions.appendChild(renameBtn);
+
+  const removeBtn = createButton({
+    label: "Remove asset",
+    variant: "icon",
+    size: "sm",
+    icon: "trash",
+    className: "g-action remove-action danger",
+  });
+  removeBtn.addEventListener("click", async (event) => {
+    event.stopPropagation();
+    if (generating) {
+      toast("Wait for generation to finish before removing assets", "err");
+      return;
+    }
+    if (!confirm(`Remove this asset and its ${records.length} version${records.length === 1 ? "" : "s"}?`)) return;
+    try {
+      const recordsBeforeDelete = await all();
+      const targetIds = new Set(records.flatMap((record) => [record.id, record.versionId]));
+      const externalDependent = recordsBeforeDelete.find(
+        (record) => !targetIds.has(record.id) && record.parentVersionId && targetIds.has(record.parentVersionId),
+      );
+      if (externalDependent) {
+        toast("Remove dependent versions before removing this asset", "err");
+        return;
+      }
+      for (const record of records) await removeRecord(record.id);
+      if (records.some((record) => record.id === activeId)) {
+        clearCurrentModelState();
+        viewer?.clear();
+        if (viewer) renderMeshParts(viewer);
+      }
+      selectedAssetId = null;
+      await refreshGallery();
+    } catch (error) {
+      toast((error as Error).message || "Could not remove asset", "err");
+    }
+  });
+  actions.appendChild(removeBtn);
+  itemHead.append(name, actions);
+  item.appendChild(itemHead);
+
+  const img = document.createElement("img");
+  const url = URL.createObjectURL(representative.thumb ?? representative.input);
+  libraryUrls.push(url);
+  img.src = url;
+  img.alt = `${representative.name} asset preview`;
+  const text = document.createElement("div");
+  text.className = "asset-item-meta";
+  const count = document.createElement("span");
+  count.textContent = `${records.length} version${records.length === 1 ? "" : "s"}`;
+  const latest = document.createElement("span");
+  latest.textContent = `Latest: ${representative.label}`;
+  text.append(count, latest);
+  item.append(img, text);
+
+  const openAsset = async (): Promise<void> => {
+    selectedAssetId = asset.assetId;
+    await loadRecordData(representative);
+  };
+  item.addEventListener("click", () => void openAsset());
+  item.addEventListener("keydown", (event) => {
+    if (event.key === "Enter" || event.key === " ") {
+      event.preventDefault();
+      void openAsset();
+    }
+  });
+  return item;
+}
+
+function renderLibraryView(): void {
+  libraryUrls.forEach((url) => URL.revokeObjectURL(url));
+  libraryUrls = [];
+  libraryGrid.innerHTML = "";
+  const filtered = filterLibraryEntries(
+    currentAssetGroups.map((asset) => ({
+      ...asset,
+      name: assetDisplayName(asset.records),
+      searchText: [
+        assetDisplayName(asset.records),
+        ...asset.records.flatMap((record) => [record.label, record.name, record.operation]),
+      ].join(" "),
+      favorite: assetIsFavorite(asset.records),
+      versionCount: asset.records.length,
+      createdAt: asset.records[0]?.createdAt ?? 0,
+    })),
+    {
+      query: librarySearch.value,
+      filter: libraryFilter.value as LibraryFilter,
+      sort: librarySort.value as LibrarySort,
+    },
+  );
+
+  const totalVersions = currentAssetGroups.reduce((sum, asset) => sum + asset.records.length, 0);
+  libraryModeSummary.textContent = `${currentAssetGroups.length} asset${currentAssetGroups.length === 1 ? "" : "s"}, ${totalVersions} version${totalVersions === 1 ? "" : "s"}`;
+  libraryResultsSummary.textContent = `${filtered.length} result${filtered.length === 1 ? "" : "s"}`;
+  if (!filtered.length) {
+    const empty = document.createElement("div");
+    empty.className = "library-grid-empty";
+    empty.textContent = currentAssetGroups.length
+      ? "No assets match the current search and filters."
+      : "No assets yet. Generate a model to start your library.";
+    libraryGrid.appendChild(empty);
+    return;
+  }
+  for (const asset of filtered) libraryGrid.appendChild(renderLibraryAsset(asset));
+}
+
+librarySearch.addEventListener("input", renderLibraryView);
+libraryFilter.addEventListener("change", renderLibraryView);
+librarySort.addEventListener("change", renderLibraryView);
+dockFavoritesToggle.addEventListener("click", () => {
+  dockFavoritesOnly = !dockFavoritesOnly;
+  dockFavoritesToggle.setAttribute("aria-pressed", String(dockFavoritesOnly));
+  void refreshGallery();
+});
+
 async function refreshGallery(): Promise<void> {
   galleryUrls.forEach((u) => URL.revokeObjectURL(u));
   galleryUrls = [];
@@ -2493,6 +2833,8 @@ async function refreshGallery(): Promise<void> {
   galleryEl.innerHTML = "";
   versionGalleryEl.innerHTML = "";
   if (!recs.length) {
+    currentAssetGroups = [];
+    renderLibraryView();
     gallerySummary.textContent = "";
     assetLevelCount.textContent = "";
     versionLevelCount.textContent = "";
@@ -2505,22 +2847,29 @@ async function refreshGallery(): Promise<void> {
     return;
   }
   const assetIds = [...new Set(recs.map((record) => record.assetId))];
-  const assetGroups = await Promise.all(assetIds.map(async (assetId) => ({
+  const assetGroups: AssetGroup[] = await Promise.all(assetIds.map(async (assetId) => ({
     assetId,
     records: (await listAssetVersions(assetId)).sort((a, b) => b.createdAt - a.createdAt),
   })));
+  currentAssetGroups = assetGroups;
+  const dockAssetGroups = dockFavoritesOnly
+    ? assetGroups.filter((asset) => assetIsFavorite(asset.records))
+    : assetGroups;
   gallerySummary.textContent = `${assetGroups.length} assets, ${recs.length} versions`;
-  assetLevelCount.textContent = String(assetGroups.length);
+  assetLevelCount.textContent = dockFavoritesOnly
+    ? `${dockAssetGroups.length} of ${assetGroups.length}`
+    : String(assetGroups.length);
 
   const activeAsset = activeId
     ? assetGroups.find((asset) => asset.records.some((record) => record.id === activeId))
     : undefined;
   if (activeAsset) selectedAssetId = activeAsset.assetId;
-  if (!selectedAssetId || !assetGroups.some((asset) => asset.assetId === selectedAssetId)) {
-    selectedAssetId = assetGroups[0]?.assetId ?? null;
+  if (!selectedAssetId || !dockAssetGroups.some((asset) => asset.assetId === selectedAssetId)) {
+    selectedAssetId = dockAssetGroups[0]?.assetId ?? null;
   }
+  renderLibraryView();
 
-  for (const asset of assetGroups) {
+  for (const asset of dockAssetGroups) {
     const records = asset.records;
     if (!records.length) continue;
     const representative = records.find((record) => record.id === activeId) ?? records[0];
@@ -2583,13 +2932,13 @@ async function refreshGallery(): Promise<void> {
     });
     renameBtn.addEventListener("click", async (event) => {
       event.stopPropagation();
-      const nextLabel = window.prompt("Asset name", assetName);
-      if (nextLabel === null || !nextLabel.trim()) return;
+      const nextLabel = await requestRename("asset", assetName);
+      if (nextLabel === null) return;
       try {
         for (const record of records) {
           await put({
             ...record,
-            operationParams: { ...record.operationParams, assetLabel: nextLabel.trim() },
+            operationParams: { ...record.operationParams, assetLabel: nextLabel },
           });
         }
         await refreshGallery();
@@ -2666,7 +3015,14 @@ async function refreshGallery(): Promise<void> {
     galleryEl.appendChild(item);
   }
 
-  const selectedAsset = assetGroups.find((asset) => asset.assetId === selectedAssetId);
+  if (!dockAssetGroups.length) {
+    const empty = document.createElement("div");
+    empty.className = "gallery-empty";
+    empty.textContent = "No favourite assets yet.";
+    galleryEl.appendChild(empty);
+  }
+
+  const selectedAsset = dockAssetGroups.find((asset) => asset.assetId === selectedAssetId);
   const records = selectedAsset?.records ?? [];
   versionLevel.classList.toggle("hidden", records.length <= 1);
   versionLevelCount.textContent = String(records.length);
@@ -2766,7 +3122,7 @@ async function refreshGallery(): Promise<void> {
       });
       renameBtn.addEventListener("click", async (event) => {
         event.stopPropagation();
-        const nextLabel = window.prompt("Version name", representative.label);
+        const nextLabel = await requestRename("version", representative.label);
         if (nextLabel === null) return;
         try {
           const renamed = await renameVersion(representative.versionId, nextLabel);
@@ -2932,7 +3288,7 @@ async function pollHealthInternal(): Promise<void> {
   setupBanner.classList.toggle("hidden", !needSetup);
   if (needSetup) {
     (setupBanner.querySelector("span") as HTMLElement).textContent =
-      "Trellis Studio is not set up yet. Run the installer or point it at your models directory.";
+      "Triastasis is not set up yet. Run the installer or point it at your models directory.";
   } else if (!ok && cfg.configured) {
     setupBanner.classList.remove("hidden");
     (setupBanner.querySelector("span") as HTMLElement).textContent =
@@ -3014,7 +3370,7 @@ document.addEventListener("visibilitychange", () => {
   }
 });
 
-// ---- .polyloom.json import / standalone GLB / recovery ----
+// ---- Triastasis manifest import / standalone GLB / recovery ----
 const manifestModal = $("manifest-modal");
 const manifestTitle = $("manifest-title");
 const manifestBody = $("manifest-body");
@@ -3387,13 +3743,7 @@ async function importManifestFlow(
   const label = m.label || "Imported model";
   const assetId = newId();
   const versionId = newId();
-  const params = normalizeGenParams({
-    resolution: (m.resolution === 512 || m.resolution === 1536 ? m.resolution : 1024) as GenParams["resolution"],
-    seed: m.seed,
-    bgRemoval: m.bgRemoval as GenParams["bgRemoval"],
-    uv: m.uv as GenParams["uv"],
-    texture: m.texture,
-  });
+  const params = normalizeGenParams(manifestRecordedParams(m));
   const rec: VersionRecord = {
     id: versionId,
     ts: Date.now(),
@@ -3456,15 +3806,7 @@ async function requeueFromManifest(path: string, m?: GenerationManifest): Promis
   queueJob({
     image: blob,
     name,
-    params: normalizeGenParams({
-      resolution: (manifest.resolution === 512 || manifest.resolution === 1536
-        ? manifest.resolution
-        : 1024) as GenParams["resolution"],
-      seed: manifest.seed,
-      bgRemoval: manifest.bgRemoval as GenParams["bgRemoval"],
-      uv: manifest.uv as GenParams["uv"],
-      texture: manifest.texture,
-    }),
+    params: normalizeGenParams(manifestRecordedParams(manifest)),
     label: `${manifest.label || "Resumed"} · seed ${manifest.seed}`,
     autoOpen: false,
     resumeManifest: {
@@ -3473,7 +3815,12 @@ async function requeueFromManifest(path: string, m?: GenerationManifest): Promis
       versionId: manifest.versionId,
     },
   });
-  toast("Requeued with the original settings", "ok");
+  toast(
+    manifestStoresAdvancedSettings(manifest)
+      ? "Requeued with the original settings"
+      : "Requeued; this older record did not store advanced settings, so defaults were applied",
+    "ok",
+  );
 }
 
 // ---- standalone GLB viewing ----
@@ -3634,10 +3981,13 @@ async function checkInterruptedManifests(): Promise<void> {
     if (interruptedManifests.length) {
       const { singles, sweeps } = groupInterrupted(interruptedManifests);
       const parts: string[] = [];
-      if (singles.length) parts.push(`${singles.length} generation${singles.length === 1 ? "" : "s"}`);
-      if (sweeps.size) parts.push(`${sweeps.size} seed sweep${sweeps.size === 1 ? "" : "s"}`);
-      (recoveryBanner.querySelector("span") as HTMLElement).textContent =
-        `Interrupted work can be resumed: ${parts.join(" and ")}.`;
+      if (singles.length) {
+        parts.push(`${singles.length} unfinished generation${singles.length === 1 ? "" : "s"}`);
+      }
+      if (sweeps.size) {
+        parts.push(`${sweeps.size} unfinished seed sweep${sweeps.size === 1 ? "" : "s"}`);
+      }
+      (recoveryBanner.querySelector("span") as HTMLElement).textContent = parts.join(" and ");
     }
   } catch {
     /* scanning is best-effort */
@@ -3714,15 +4064,7 @@ async function openSweepRecoveryView(groupId: string, anchorPath: string): Promi
       // partially queued before a later candidate is rejected.
       for (const candidate of planned) {
         const m = candidate.candidate.manifest;
-        const restriction = hardwareRestriction(normalizeGenParams({
-          resolution: (m.resolution === 512 || m.resolution === 1536
-            ? m.resolution
-            : 1024) as GenParams["resolution"],
-          seed: m.seed,
-          bgRemoval: m.bgRemoval as GenParams["bgRemoval"],
-          uv: m.uv as GenParams["uv"],
-          texture: m.texture,
-        }));
+        const restriction = hardwareRestriction(normalizeGenParams(manifestRecordedParams(m)));
         if (restriction) throw new Error(`${m.label || `Seed ${m.seed}`}: ${restriction}`);
       }
 
@@ -3739,15 +4081,7 @@ async function openSweepRecoveryView(groupId: string, anchorPath: string): Promi
           queueJob({
             image: source,
             name: `${safeStem(m.label || "resumed")}.png`,
-            params: normalizeGenParams({
-              resolution: (m.resolution === 512 || m.resolution === 1536
-                ? m.resolution
-                : 1024) as GenParams["resolution"],
-              seed: m.seed,
-              bgRemoval: m.bgRemoval as GenParams["bgRemoval"],
-              uv: m.uv as GenParams["uv"],
-              texture: m.texture,
-            }),
+            params: normalizeGenParams(manifestRecordedParams(m)),
             label: m.label || `Candidate · seed ${m.seed}`,
             autoOpen: false,
             sweep: {
@@ -3796,7 +4130,7 @@ $("import-generation-btn").addEventListener("click", async () => {
     const { open } = await import("@tauri-apps/plugin-dialog");
     const picked = await open({
       multiple: false,
-      filters: [{ name: "Polyloom generation", extensions: ["json"] }],
+      filters: [{ name: "Triastasis generation", extensions: ["json"] }],
     });
     if (typeof picked === "string") void openManifestPreview(picked);
   } catch (error) {
@@ -3823,5 +4157,5 @@ async function boot(): Promise<void> {
   }
 }
 void boot().catch((error) => {
-  console.error("Trellis Studio boot failed", error);
+  console.error("Triastasis boot failed", error);
 });

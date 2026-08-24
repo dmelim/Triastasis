@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
-# Trellis Studio — one-command setup for Linux (x86-64).
+# Triastasis: one-command setup for Linux (x86-64).
 #
 #   curl -fsSL https://raw.githubusercontent.com/pwilkin/trellis.cpp/main/install/install.sh | bash
 #
 # Detects the GPU runtime (CUDA / ROCm / Vulkan), downloads the matching
 # trellis-server bundle + the TRELLIS.2 weights (~16.5 GB), installs the
-# Trellis Studio desktop app, and writes the config the app reads on launch.
+# Triastasis desktop app, and writes the config the app reads on launch.
 set -euo pipefail
 
 REPO="pwilkin/trellis.cpp"
@@ -18,13 +18,13 @@ MODELS=(birefnet.gguf dinov3.gguf ss_flow.gguf ss_dec.gguf \
 ROCM_GFX="gfx1030 gfx1031 gfx1032 gfx1100 gfx1101 gfx1102 gfx1103 gfx1150 gfx1151 gfx1152 gfx1200 gfx1201"
 
 # ---- defaults / args -------------------------------------------------------
-DEST="${XDG_DATA_HOME:-$HOME/.local/share}/trellis-studio"
-CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/trellis-studio"
+DEST="${XDG_DATA_HOME:-$HOME/.local/share}/triastasis"
+CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/triastasis"
 BACKEND=""; GPU=0; PORT=8080; MODELS_DIR=""; SKIP_MODELS=0; SKIP_APP=0; ASSUME_YES=0; QUANT=""
 
 usage() {
   cat <<EOF
-Trellis Studio installer (Linux)
+Triastasis installer (Linux)
 
   --backend cuda|cuda12|rocm|vulkan
                               force a runtime (default: auto-detect; cuda12 is
@@ -160,9 +160,9 @@ fi
 if [ "$SKIP_APP" = 1 ]; then
   warn "skipping desktop app download (--skip-app)."
 else
-  log "downloading Trellis Studio desktop app"
-  APP="$DEST/Trellis Studio.AppImage"
-  if curl -fL --retry 2 --progress-bar -o "$APP" "${REL_BASE}/trellis-studio-linux-x86_64.AppImage"; then
+  log "downloading Triastasis desktop app"
+  APP="$DEST/Triastasis.AppImage"
+  if curl -fL --retry 2 --progress-bar -o "$APP" "${REL_BASE}/triastasis-linux-x86_64.AppImage"; then
     chmod +x "$APP"
     info "app installed: $APP"
   else
@@ -189,5 +189,5 @@ JSON
 info "config: $CONFIG_DIR/config.json"
 
 echo
-log "${c_g}done${c_0} — launch Trellis Studio${SKIP_MODELS:+ (add your models dir in Settings)}."
-[ -f "$DEST/Trellis Studio.AppImage" ] && info "run: \"$DEST/Trellis Studio.AppImage\""
+log "${c_g}done${c_0}: launch Triastasis${SKIP_MODELS:+ (add your models dir in Settings)}."
+[ -f "$DEST/Triastasis.AppImage" ] && info "run: \"$DEST/Triastasis.AppImage\""

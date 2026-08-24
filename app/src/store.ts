@@ -59,7 +59,7 @@ export class GalleryPersistenceError extends Error {
     super(
       `Could not ${operation === "clear" ? "clear the persistent gallery" : "delete the saved model"} ` +
         `from disk. The persistent records were not confirmed changed. ` +
-        `Reload Polyloom and retry; if the problem continues, check the app's storage permissions${detail}.`,
+        `Reload Triastasis and retry; if the problem continues, check the app's storage permissions${detail}.`,
     );
     this.name = "GalleryPersistenceError";
     this.operation = operation;

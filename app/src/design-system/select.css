@@ -78,7 +78,7 @@
   flex: 0 0 auto;
   width: 14px;
   height: 14px;
-  color: var(--content-secondary);
+  color: inherit;
   mask-image: url("/icons/caret-down.svg");
   -webkit-mask-image: url("/icons/caret-down.svg");
   transition: transform var(--duration-fast) var(--ease-standard);
@@ -126,11 +126,18 @@
   font-size: var(--font-size-label);
   line-height: var(--line-height-label);
   cursor: pointer;
+  transition:
+    color var(--duration-fast) var(--ease-standard),
+    background var(--duration-fast) var(--ease-standard);
 }
 
 .ds-select-option:hover:not(.is-disabled),
 .ds-select-option.is-active:not(.is-disabled) {
   background: var(--surface-control-hover);
+}
+
+.ds-select-option.is-selected:not(.is-disabled) {
+  color: var(--content-accent);
 }
 
 .ds-select-option.is-disabled {

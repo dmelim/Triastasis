@@ -1,16 +1,16 @@
-# `.polyloom.json` generation manifests
+# `.triastasis.json` generation manifests
 
-Every Polyloom generation written to the output folder is accompanied by a
-`<name>.polyloom.json` manifest: a self-describing record that allows the
+Every Triastasis generation written to the output folder is accompanied by a
+`<name>.triastasis.json` manifest: a self-describing record that allows the
 generation to be re-imported, re-linked, or requeued later with its reference
 image, settings, and lineage intact. The reconstruction-test harness emits the
 same format.
 
-## Schema (version 1)
+## Schema (version 2)
 
 ```jsonc
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "status": "completed",            // completed | interrupted | failed
   "label": "hero.png",
   "sourceImage": "hero_source.png", // relative paths only, see below
@@ -23,6 +23,13 @@ same format.
   "bgRemoval": "auto",
   "uv": "xatlas",
   "texture": true,
+  // Advanced generation settings (schema version 2 fields). Version 1
+  // manifests do not contain them and recover with these defaults.
+  "targetFaces": "auto",            // "auto" | integer 10000–1000000
+  "atlasSize": "auto",              // "auto" | integer 128–4096
+  "textureResolution": "auto",      // "auto" | 512 | 1024
+  "remeshBand": "auto",             // "auto" | integer 0–8
+  "textureEncoding": "auto",        // "auto" | "webp" | "png"
   "jobId": "job-1",
   "nativeRequestId": "req-0",
   "assetId": "job-1",               // original internal lineage; import
@@ -32,7 +39,7 @@ same format.
   "startedAtUtc": "2026-08-21T12:00:01Z",
   "finishedAtUtc": null,
   "durationSeconds": null,
-  "polyloomVersion": "0.5.4",
+  "triastasisVersion": "0.5.4",
   "serverVersion": null,
   "metrics": {
     "dimensions": { "x": 0.61, "y": 0.92, "z": 1.0 },
@@ -49,9 +56,17 @@ same format.
 }
 ```
 
-Unknown fields are ignored on read; missing optional fields default. A bumped
-`schemaVersion` is rejected with a clear error rather than misread — older
-files keep working because version 1 remains supported.
+Unknown fields are ignored on read; missing optional fields default. Schema
+versions 1 and 2 are accepted; anything else is rejected with a clear error
+rather than misread. Every write emits the current schema (version 2), so a
+version 1 manifest updated in place during recovery is upgraded while keeping
+its recorded settings. Advanced values that violate the native server's bounds
+are rejected at read time instead of being replayed.
+
+Triastasis also accepts legacy `.polyloom.json` files and their optional
+`polyloomVersion` field. New writes use `.triastasis.json` and
+`triastasisVersion`; an existing legacy manifest is updated in place during
+recovery or relinking so interrupted work remains recoverable.
 
 ## Path rules
 
@@ -71,7 +86,7 @@ the import preview instead.
 
 ## Import versus Open GLB
 
-- **Import… / dropping a `.polyloom.json`**: validates hashes and formats,
+- **Import… / dropping a `.triastasis.json`**: validates hashes and formats,
   shows a preview, then creates a fresh asset + version with new internal IDs;
   the manifest's original IDs are preserved as provenance. Failed validation
   never creates a gallery record.
@@ -90,7 +105,7 @@ shows up as `Modified since generation` everywhere else.
 ## Interrupted-generation recovery
 
 A manifest is written when a job starts (status `interrupted`) so a crash
-leaves a resumable record. On startup Polyloom lists interrupted generations;
+leaves a resumable record. On startup Triastasis lists interrupted generations;
 Requeue re-runs them with the original seed and settings under a fresh request
 ID, keeps the original asset/version lineage, waits out any orphaned native
 request first (no duplicate GPU work), and updates the same manifest file when

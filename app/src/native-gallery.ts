@@ -10,17 +10,11 @@ import {
   writeTextFile,
 } from "@tauri-apps/plugin-fs";
 import type { GenRecord, VersionRecord } from "./types";
+import { createTransactionalGallery, type GalleryFs } from "./gallery-storage";
 
 const ROOT = "polyloom/gallery-v1";
 const MIGRATION_MARKER = `${ROOT}/indexeddb-migrated`;
 const OPTIONS = { baseDir: BaseDirectory.AppLocalData } as const;
-
-interface StoredMetadata extends Omit<VersionRecord, "input" | "glb" | "thumb"> {
-  inputType: string;
-  glbType: string;
-  thumbType: string | null;
-  hasThumb: boolean;
-}
 
 function recordDirectory(id: string): string {
   const bytes = new TextEncoder().encode(id);
@@ -33,38 +27,55 @@ async function ensureRoot(): Promise<void> {
   await mkdir(ROOT, { ...OPTIONS, recursive: true });
 }
 
+/** Adapter from Tauri's plugin-fs to the injectable gallery filesystem. */
+const tauriFs: GalleryFs = {
+  async mkdir(path, recursive) {
+    await mkdir(path, { ...OPTIONS, recursive });
+  },
+  writeFile(path, data) {
+    return writeFile(path, data, OPTIONS);
+  },
+  writeTextFile(path, text) {
+    return writeTextFile(path, text, OPTIONS);
+  },
+  readFile(path) {
+    return readFile(path, OPTIONS);
+  },
+  readTextFile(path) {
+    return readTextFile(path, OPTIONS);
+  },
+  exists(path) {
+    return exists(path, OPTIONS);
+  },
+  remove(path, recursive) {
+    return remove(path, { ...OPTIONS, recursive });
+  },
+  async listDirectories(path) {
+    try {
+      const entries = await readDir(path, OPTIONS);
+      return entries.filter((entry) => entry.isDirectory && entry.name).map((entry) => entry.name!);
+    } catch {
+      return [];
+    }
+  },
+};
+
+const store = createTransactionalGallery(tauriFs, ROOT);
+
 export async function loadNativeGallery(): Promise<GenRecord[]> {
   await ensureRoot();
-  const entries = await readDir(ROOT, OPTIONS);
+  const entries = await tauriFs.listDirectories(ROOT);
   const records: GenRecord[] = [];
 
-  for (const entry of entries) {
-    if (!entry.isDirectory || !entry.name) continue;
-    const dir = `${ROOT}/${entry.name}`;
+  for (const name of entries) {
     try {
-      const metadata = JSON.parse(await readTextFile(`${dir}/metadata.json`, OPTIONS)) as StoredMetadata;
-      const [input, glb, thumb] = await Promise.all([
-        readFile(`${dir}/input.bin`, OPTIONS),
-        readFile(`${dir}/model.glb`, OPTIONS),
-        metadata.hasThumb ? readFile(`${dir}/thumb.bin`, OPTIONS) : Promise.resolve(null),
-      ]);
-      const {
-        inputType,
-        glbType,
-        thumbType,
-        hasThumb: _hasThumb,
-        ...record
-      } = metadata;
-      records.push({
-        ...record,
-        input: new Blob([input], { type: inputType || "application/octet-stream" }),
-        glb: new Blob([glb], { type: glbType || "model/gltf-binary" }),
-        thumb: thumb ? new Blob([thumb], { type: thumbType || "image/png" }) : null,
-      });
+      // A record is committed through revision metadata (or its legacy
+      // metadata.json); unreadable records are skipped so one bad entry
+      // cannot hide the whole gallery.
+      const record = await store.loadRecord(name);
+      if (record) records.push(record);
     } catch (error) {
-      // A record is committed by writing metadata last. Ignore interrupted or
-      // corrupt directories so one bad entry cannot hide the whole gallery.
-      console.warn(`Skipping unreadable native gallery record ${entry.name}`, error);
+      console.warn(`Skipping unreadable native gallery record ${name}`, error);
     }
   }
   return records;
@@ -72,28 +83,11 @@ export async function loadNativeGallery(): Promise<GenRecord[]> {
 
 export async function writeNativeRecord(record: VersionRecord): Promise<void> {
   await ensureRoot();
-  const dir = recordDirectory(record.id);
-  await mkdir(dir, { ...OPTIONS, recursive: true });
+  await store.writeRecord(encodedIdOf(record.id), record);
+}
 
-  const { input, glb, thumb, ...fields } = record;
-  const metadata: StoredMetadata = {
-    ...fields,
-    inputType: input.type,
-    glbType: glb.type,
-    thumbType: thumb?.type || null,
-    hasThumb: thumb !== null,
-  };
-
-  // Metadata is the commit marker. If the process stops during a blob write,
-  // the old metadata remains valid and the record is retried on the next save.
-  await writeFile(`${dir}/input.bin`, new Uint8Array(await input.arrayBuffer()), OPTIONS);
-  await writeFile(`${dir}/model.glb`, new Uint8Array(await glb.arrayBuffer()), OPTIONS);
-  if (thumb) {
-    await writeFile(`${dir}/thumb.bin`, new Uint8Array(await thumb.arrayBuffer()), OPTIONS);
-  } else if (await exists(`${dir}/thumb.bin`, OPTIONS)) {
-    await remove(`${dir}/thumb.bin`, OPTIONS);
-  }
-  await writeTextFile(`${dir}/metadata.json`, JSON.stringify(metadata), OPTIONS);
+function encodedIdOf(id: string): string {
+  return recordDirectory(id).slice(ROOT.length + 1);
 }
 
 export async function deleteNativeRecords(ids: string[]): Promise<void> {

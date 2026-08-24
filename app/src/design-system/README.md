@@ -1,17 +1,17 @@
-# Polyloom design system
+# Triastasis design system
 
-Polyloom is a compact dark desktop tool for long 3D workflows. The system is intentionally small: one system sans, one technical mono, neutral near-black surfaces, and a single muted loom-gold accent.
+Triastasis is a compact dark desktop tool for long 3D workflows. The system is intentionally small: one system sans, one technical mono, neutral near-black surfaces, and the logo's teal accent.
 
 ## Foundations
 
 - Interface type: `Segoe UI Variable`, then `Segoe UI` and the system sans fallback.
 - Technical values: `Cascadia Mono`, then the system mono fallback.
 - Theme: one dark palette with canvas, viewer, panel, control, raised, and inset surfaces.
-- Accent: muted gold for primary actions, active states, focus, and progress.
+- Accent: logo teal (`#2dd4bfff`) for primary actions, active states, focus, and progress.
 - Spacing: a 4 px base unit. Use the `--space-*` tokens instead of new one-off gaps.
 - Shape: `--radius-control` for controls, `--radius-card` for cards, `--radius-panel` for panels, and `--radius-modal` for dialogs.
 - Elevation: use the named `--elevation-*` tokens only where a surface floats above another surface.
-- Icons: the vendored Phosphor family in `public/icons`, rendered through the shared icon mask classes.
+- Icons: the vendored Lucide 0.468.0 set in `public/icons`, rendered through the shared icon mask classes. Keep the 2 px rounded stroke style and retain the bundled ISC license when adding icons.
 
 All foundations and semantic aliases live in `tokens.css`. Product CSS should consume semantic names such as `--surface-panel`, `--content-primary`, `--border-default`, `--status-danger`, and `--font-family-sans` rather than adding literal values.
 

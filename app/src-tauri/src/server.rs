@@ -173,7 +173,7 @@ pub fn start(
     studio_log(
         app,
         &sink,
-        &format!("Trellis Studio server log: {}", fmt_utc(started)),
+        &format!("Triastasis server log: {}", fmt_utc(started)),
     );
     studio_log(
         app,

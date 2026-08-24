@@ -185,6 +185,15 @@ export async function saveToOutputDir(name: string, bytes: Uint8Array): Promise<
   return path;
 }
 
+/**
+ * Removes a staged file from the output directory (sweep-preparation
+ * rollback). The shell refuses paths outside the configured output folder.
+ */
+export async function removeOutputFile(path: string): Promise<void> {
+  if (!isTauri()) return;
+  await invoke("remove_output_file", { path });
+}
+
 /** Run the bundled TRELLIS background-removal path without generating geometry. */
 export async function previewAlpha(image: Blob, bgRemoval: BgRemoval): Promise<Blob> {
   if (!isTauri()) throw new Error("exact mask preview requires the desktop app");
@@ -223,7 +232,7 @@ export async function automationJobFiles(
   return { glb, input };
 }
 
-// ---- .polyloom.json generation manifests ----
+// ---- Triastasis generation manifests ----
 
 export interface ImportedGeneration {
   manifestPath: string;
@@ -287,7 +296,7 @@ export function scanInterruptedManifests(): Promise<Array<[string, GenerationMan
   return invoke<Array<[string, GenerationManifest]>>("scan_interrupted_manifests");
 }
 
-/** Every `.polyloom.json` in the same directory as `path`. */
+/** Every Triastasis or legacy Polyloom manifest in the same directory as `path`. */
 export function listSiblingManifests(path: string): Promise<string[]> {
   return invoke<string[]>("list_sibling_manifests", { path });
 }

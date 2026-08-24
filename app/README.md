@@ -1,4 +1,6 @@
-# Trellis Studio
+# Triastasis
+
+<img src="public/brand/triastasis-mark.png" width="88" alt="Triastasis logo">
 
 Desktop app (Tauri v2) for local image→3D generation with
 [trellis.cpp](../). It wraps the resident `trellis-server`, drives the
@@ -25,7 +27,7 @@ src-tauri/      Rust shell
   src/tray.rs       keeps the server + serial automation API resident while the
                     window is hidden; exposes live status and lifecycle actions
   src/automation.rs loopback-only queued API with stable job IDs and job assets
-  src/config.rs     reads/writes <config_dir>/trellis-studio/config.json
+  src/config.rs     reads/writes <config_dir>/triastasis/config.json
   src/main.rs       Tauri builder + commands (get_config/save_config/restart_server)
 ```
 
@@ -67,5 +69,5 @@ npm run tauri build    # produces .deb + .AppImage (Linux) / NSIS setup .exe (Wi
 ```
 
 CI (`.github/workflows/release.yml`, `studio` job) publishes these to each release
-as `trellis-studio-linux-x86_64.AppImage`, `trellis-studio-linux-amd64.deb`, and
-`trellis-studio-windows-x64-setup.exe`, which the installers fetch by name.
+as `triastasis-linux-x86_64.AppImage`, `triastasis-linux-amd64.deb`, and
+`triastasis-windows-x64-setup.exe`, which the installers fetch by name.

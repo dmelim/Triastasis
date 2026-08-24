@@ -1,4 +1,4 @@
-# Trellis Studio Power Tools Plan
+# Triastasis Power Tools Plan
 
 Status: implemented baseline with remaining native-pipeline validation
 
@@ -22,7 +22,7 @@ The root project is licensed under the MIT License, copyright 2026 Piotr Wilkin.
 
 The upstream Microsoft TRELLIS reference code and the published `microsoft/TRELLIS.2-4B` model repository are also currently identified as MIT-licensed.
 
-Before publishing or commercially distributing Trellis Studio, complete a dependency and asset notice audit:
+Before publishing or commercially distributing Triastasis, complete a dependency and asset notice audit:
 
 - Retain the repository's root `LICENSE` file and its existing copyright notice.
 - Add our own copyright notice for original modifications without removing upstream notices.
@@ -37,7 +37,7 @@ This is an engineering licensing baseline, not a substitute for legal review bef
 
 ## 3. Product goal
 
-Turn Trellis Studio from a generate-and-preview application into a compact 3D workspace where:
+Turn Triastasis from a generate-and-preview application into a compact 3D workspace where:
 
 1. A casual user can generate, compare, inspect, and export a model without learning 3D terminology.
 2. A power user can inspect topology and materials, make practical non-destructive corrections, and export an optimized model.
@@ -143,7 +143,7 @@ Do not replace Trellis triangle topology. Add excellent triangle inspection and 
 
 ## 6. What “editable” means for the first release
 
-Trying to reproduce Blender inside Trellis Studio would create a large, unfocused product. The first editing release should target common corrections that are valuable after AI generation:
+Trying to reproduce Blender inside Triastasis would create a large, unfocused product. The first editing release should target common corrections that are valuable after AI generation:
 
 - Remove floating or unwanted disconnected geometry.
 - Inspect, isolate, hide, and restore mesh parts.
@@ -336,12 +336,12 @@ Phases A through D have an implementation. The initial feature checkpoint is com
 
 ## 12. Optional advanced pipeline evaluation
 
-Triangles remain Polyloom's generation, runtime, and GLB interchange topology. No quad-retopology or rigging dependency has been added.
+Triangles remain Triastasis's generation, runtime, and GLB interchange topology. No quad-retopology or rigging dependency has been added.
 
 ### DCC handoff first
 
 - Treat reliable self-contained GLB export and re-import as the first advanced workflow.
-- Polyloom should own version lineage, staging, validation, metrics, and derived-version creation.
+- Triastasis should own version lineage, staging, validation, metrics, and derived-version creation.
 - Blender or another DCC should own manual topology, quad preservation, rigging, skinning, animation, and specialist texture work.
 - Browser builds should download files only. A later Tauri integration may launch a user-configured executable without a shell and must never overwrite the parent version.
 

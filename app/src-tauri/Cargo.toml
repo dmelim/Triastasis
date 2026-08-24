@@ -1,8 +1,8 @@
 [package]
-name = "trellis-studio"
-version = "0.6.0"
-description = "Trellis Studio — local image→3D generation UI for trellis.cpp"
-authors = ["trellis.cpp"]
+name = "triastasis"
+version = "0.0.1-alpha.1"
+description = "Triastasis - local image-to-3D generation UI for trellis.cpp"
+authors = ["Triastasis"]
 edition = "2021"
 rust-version = "1.77.2"
 

@@ -22,7 +22,7 @@ Prebuilt binaries for Linux and Windows (Vulkan, ROCm, CUDA) are published on th
 
 ## Quick start
 
-New here? **Trellis Studio** is a one-command install that auto-detects your GPU
+New here? **Triastasis** is a one-command install that auto-detects your GPU
 runtime (CUDA / ROCm / Vulkan), downloads the server + weights, and gives you a
 drag-an-image → 3D desktop app with an interactive preview and a saved gallery.
 
@@ -35,7 +35,7 @@ curl -fsSL https://raw.githubusercontent.com/pwilkin/trellis.cpp/main/install/in
 irm https://raw.githubusercontent.com/pwilkin/trellis.cpp/main/install/install.ps1 | iex
 ```
 
-See [**Trellis Studio (desktop app)**](#trellis-studio-desktop-app) below for what it
+See [**Triastasis (desktop app)**](#triastasis-desktop-app) below for what it
 does and how to use it, or [`docs/getting-started.md`](docs/getting-started.md) for the
 full walkthrough and installer options.
 
@@ -64,18 +64,16 @@ Playwright driver around Google's `<model-viewer>`: it serves
 auto-framing to settle, captures each view via `toBlob`, and
 [`stitch_quad.py`](tools/mv_preview/stitch_quad.py) assembles the final grid.
 
-## Trellis Studio (desktop app)
+## Triastasis (desktop app)
 
-**Trellis Studio** is the standalone desktop app (built with [Tauri](https://tauri.app))
+<img src="app/public/brand/triastasis-mark.png" width="88" alt="Triastasis logo">
+
+**Triastasis** is the standalone desktop app (built with [Tauri](https://tauri.app))
 for anyone who wants image→3D without touching the command line. The one-command
 installer above auto-detects your GPU runtime, downloads the matching
 `trellis-server` build plus the ~16.5 GB of weights, and installs the app; on launch
 it starts and supervises the server for you, so the whole flow is drag-image →
 click → rotate the result.
-
-<p align="center">
-<img src="assets/trellis-studio.png" width="92%" alt="Trellis Studio — drop an image, generate a textured 3D model, preview it interactively">
-</p>
 
 **Using it:**
 
@@ -98,6 +96,24 @@ GPU index, or port; the models directory, backend, and server binary come from t
 skip the app entirely and open it in a browser against a `trellis-server` you started
 yourself — see [`docs/getting-started.md`](docs/getting-started.md) for that, the full
 installer options, and troubleshooting. The app source lives in [`app/`](app/).
+
+### Quickly prototype a 3D game with Codex
+
+The repository includes the project skill
+[`$triastasis-game-prototype`](.agents/skills/triastasis-game-prototype/SKILL.md).
+It uses Triastasis to turn a prompt or reference image into a GLB, inspects and rigs
+characters in Blender, validates deformation, and can place the result into an
+existing Three.js, Godot, Unity, Unreal, or other game project.
+
+Open this repository in Codex, start Triastasis, and ask:
+
+```text
+Use $triastasis-game-prototype to turn this character idea into a playable 3D game prototype.
+```
+
+The skill defaults to one fast 512 generation and preserves the static model when a
+generated mesh is unsuitable for animation. Its scripts use the loopback-only queued
+automation API documented in [`app/AUTOMATION.md`](app/AUTOMATION.md).
 
 The sections below document the **CLI and HTTP server** directly, for advanced and
 scripted use.
@@ -277,7 +293,7 @@ thirdparty/     vendored ggml (gitignored), plus stb + xatlas
 
 ## Open-source lineage and license
 
-This repository is a modified version of [Piotr Wilkin's `trellis.cpp`](https://github.com/pwilkin/trellis.cpp), which ports Microsoft's [TRELLIS.2](https://github.com/microsoft/TRELLIS) image-to-3D pipeline to a native C++/GGML runtime and includes the original Trellis Studio application.
+This repository is a modified version of [Piotr Wilkin's `trellis.cpp`](https://github.com/pwilkin/trellis.cpp), which ports Microsoft's [TRELLIS.2](https://github.com/microsoft/TRELLIS) image-to-3D pipeline to a native C++/GGML runtime. Triastasis is the desktop product built around that runtime.
 
 The software in this repository remains available under the MIT License. Keep the root [`LICENSE`](LICENSE) file and its original copyright notice with copies or substantial portions of the software. Modifications and new contributions can be documented without removing upstream attribution.
 

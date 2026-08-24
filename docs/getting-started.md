@@ -1,6 +1,6 @@
-# Getting started with Trellis Studio
+# Getting started with Triastasis
 
-**Trellis Studio** is a desktop app that runs Microsoft TRELLIS.2 image→3D
+**Triastasis** is a desktop app that runs Microsoft TRELLIS.2 image→3D
 reconstruction locally (via `trellis.cpp`) and previews the result in an
 interactive 3D viewer. This guide gets a brand-new machine from zero to a
 generated `.glb`.
@@ -23,16 +23,19 @@ curl -fsSL https://raw.githubusercontent.com/pwilkin/trellis.cpp/main/install/in
 irm https://raw.githubusercontent.com/pwilkin/trellis.cpp/main/install/install.ps1 | iex
 ```
 
-That's it — launch **Trellis Studio**, drop in an image, and click **Generate 3D**.
+That's it. Launch **Triastasis**, drop in an image, and click **Generate 3D**.
 
 ## What gets installed where
 
 | what | Linux | Windows |
 |------|-------|---------|
-| server + runtime libs | `~/.local/share/trellis-studio/runtime/` | `%LOCALAPPDATA%\trellis-studio\runtime\` |
-| model weights (~16.5 GB) | `~/.local/share/trellis-studio/models/` | `%LOCALAPPDATA%\trellis-studio\models\` |
-| app config | `~/.config/trellis-studio/config.json` | `%APPDATA%\trellis-studio\config.json` |
+| server + runtime libs | `~/.local/share/triastasis/runtime/` | `%LOCALAPPDATA%\triastasis\runtime\` |
+| model weights (~16.5 GB) | `~/.local/share/triastasis/models/` | `%LOCALAPPDATA%\triastasis\models\` |
+| app config | `~/.config/triastasis/config.json` | `%APPDATA%\triastasis\config.json` |
 | desktop app | `.AppImage` in the install dir | installed via the setup .exe (Start menu) |
+
+Upgrades still read the former `trellis-studio` config location when the new
+Triastasis config does not exist, so existing model and output paths carry over.
 
 ## Installer options
 
@@ -84,8 +87,8 @@ The UI is a plain web bundle, so you can skip the desktop app entirely:
 
 ```bash
 # start the server the installer downloaded
-~/.local/share/trellis-studio/runtime/trellis-server \
-  --models ~/.local/share/trellis-studio/models --port 8080
+~/.local/share/triastasis/runtime/trellis-server \
+  --models ~/.local/share/triastasis/models --port 8080
 ```
 
 then open the built UI (or `npm run dev` in `app/`) and point it at
@@ -96,8 +99,8 @@ then open the built UI (or `npm run dev` in `app/`) and point it at
 Prefer not to install anything? Grab the portable archive from the releases page
 instead of running an installer:
 
-- Windows: `trellis-studio-windows-x64-portable.zip`
-- Linux: `trellis-studio-linux-x86_64-portable.tar.gz`
+- Windows: `triastasis-windows-x64-portable.zip`
+- Linux: `triastasis-linux-x86_64-portable.tar.gz`
 
 Unzip it anywhere and run the app in place — it keeps **everything inside that
 folder** (config and generated GLBs go to `./data/`, and it auto-detects a
@@ -113,7 +116,7 @@ Every server launch is written to a timestamped log file (the last 20 are kept):
 
 | | Linux | Windows |
 |--|-------|---------|
-| installed | `~/.local/share/trellis-studio/logs/` | `%LOCALAPPDATA%\trellis-studio\logs\` |
+| installed | `~/.local/share/triastasis/logs/` | `%LOCALAPPDATA%\triastasis\logs\` |
 | portable | `./data/logs/` next to the app | `.\data\logs\` next to the app |
 
 Open the folder straight from **Settings → Server logs → Open**. The log records
@@ -129,7 +132,7 @@ plus its full stdout/stderr — attach the newest file to a bug report.
   automatically. If you still hit it, launch with
   `WEBKIT_DISABLE_DMABUF_RENDERER=1`; to opt back in, set it to `0`.
 - **Legacy gallery is empty immediately after a development update** — launch
-  the packaged app once. Polyloom copies the old origin-bound IndexedDB gallery
+  the packaged app once. Triastasis copies the old origin-bound IndexedDB gallery
   into app-local storage; later packaged and development builds share it.
 - **Settings changes (e.g. models directory) seem ignored** — an older build
   could reuse a server left running by a previous crash. Fully quit the app (or

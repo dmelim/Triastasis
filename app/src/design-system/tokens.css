@@ -64,13 +64,13 @@
   --color-border-subtle: #252a32;
   --color-border: #2b313a;
   --color-border-strong: #3b4451;
-  --color-focus: #d2a552;
+  --color-focus: #2dd4bfff;
 
   /* Brand and semantic colors. */
-  --color-accent: #d2a552;
-  --color-accent-hover: #e0b665;
-  --color-accent-pressed: #b88835;
-  --color-accent-surface: #33291a;
+  --color-accent: #2dd4bfff;
+  --color-accent-hover: #52deccff;
+  --color-accent-pressed: #20aa99ff;
+  --color-accent-surface: rgb(45 212 191 / 0.14);
   --color-success: #38c978;
   --color-success-content: #b9f5ce;
   --color-success-surface: #1b3425;

@@ -1,1 +1,2 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" fill="currentColor"><path d="M224,136v64a16,16,0,0,1-16,16H48a16,16,0,0,1-16-16V136a8,8,0,0,1,16,0v64H216V136a8,8,0,0,1,16,0Zm-69.66,45.66,40-40a8,8,0,0,0-11.32-11.32L136,177.37V32a8,8,0,0,0-16,0V177.37l-47-47a8,8,0,0,0-11.32,11.32l56,56A8,8,0,0,0,128,200a8,8,0,0,0,5.66-2.34Z"/></svg>
+<!-- Lucide v0.468.0, ISC License. -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" x2="12" y1="15" y2="3"/></svg>

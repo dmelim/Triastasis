@@ -3,13 +3,13 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Polyloom</title>
+    <link rel="icon" type="image/png" href="/brand/triastasis-mark.png" />
+    <title>Triastasis</title>
   </head>
   <body>
     <nav class="mode-rail" aria-label="Workspace navigation">
-      <div class="rail-brand" title="Polyloom">
-        <img src="/brand/polyloom-mark.png" alt="" />
-        <span>Polyloom</span>
+      <div class="rail-brand" title="Triastasis">
+        <img src="/brand/triastasis-mark.png" alt="" />
       </div>
       <div class="rail-actions">
         <button id="mode-generate" class="mode-button active" type="button" aria-selected="true">
@@ -19,6 +19,10 @@
         <button id="mode-view" class="mode-button" type="button" aria-selected="false">
           <span class="mode-icon mode-icon-view" aria-hidden="true"></span>
           <span>View</span>
+        </button>
+        <button id="mode-library" class="mode-button" type="button" aria-selected="false">
+          <span class="mode-icon mode-icon-library" aria-hidden="true"></span>
+          <span>Library</span>
         </button>
       </div>
       <button id="settings-btn" class="mode-button mode-settings" type="button" title="Settings" aria-label="Open settings">
@@ -34,10 +38,10 @@
 
     <div id="recovery-banner" class="banner hidden" role="status">
       <span></span>
-      <button id="recovery-review" class="link-btn">Review interrupted generations</button>
+      <button id="recovery-review" class="link-btn">Resume</button>
     </div>
 
-    <main class="workspace">
+    <main id="workspace" class="workspace">
       <aside class="panel panel-left" aria-label="Workspace controls">
         <section id="generate-mode-panel" class="mode-panel">
           <div class="panel-heading">
@@ -481,11 +485,50 @@
         </div>
       </section>
 
+      <section id="library-mode-panel" class="panel library-mode-panel hidden" aria-labelledby="library-mode-title">
+        <div class="library-mode-header">
+          <div>
+            <h1 id="library-mode-title">Library</h1>
+            <p id="library-mode-summary" class="muted">Browse every saved asset.</p>
+          </div>
+        </div>
+        <div class="library-toolbar" role="search">
+          <label class="library-search-control">
+            <span>Search</span>
+            <input id="library-search" type="search" placeholder="Search assets and versions" autocomplete="off" />
+          </label>
+          <div class="library-toolbar-filters">
+            <label class="library-filter-control">
+              <span>Filter</span>
+              <select id="library-filter">
+                <option value="all">All assets</option>
+                <option value="favorites">Favourites</option>
+                <option value="multiple">Multiple versions</option>
+              </select>
+            </label>
+            <label class="library-filter-control">
+              <span>Sort</span>
+              <select id="library-sort">
+                <option value="newest">Newest first</option>
+                <option value="oldest">Oldest first</option>
+                <option value="name">Name A–Z</option>
+              </select>
+            </label>
+          </div>
+        </div>
+        <div id="library-results-summary" class="library-results-summary muted" aria-live="polite"></div>
+        <div id="library-grid" class="library-grid"></div>
+      </section>
+
       <section id="asset-dock" class="asset-dock" aria-label="Generated assets">
         <div class="dock-header">
           <span class="dock-title">Library</span>
           <span id="dock-counts" class="dock-counts muted"></span>
           <div class="dock-header-actions">
+            <button id="dock-favorites-toggle" class="button button--ghost button--sm dock-favorites-toggle" type="button" aria-pressed="false">
+              <span class="button-icon icon-star" aria-hidden="true"></span>
+              <span>Favourites</span>
+            </button>
             <button id="open-glb-btn" class="link-btn" type="button">Open GLB…</button>
             <button id="import-generation-btn" class="link-btn" type="button">Import…</button>
             <span id="standalone-actions" class="standalone-actions hidden">
@@ -558,6 +601,28 @@
           </button>
         </div>
         <div id="manifest-body" class="modal-body" aria-live="polite"></div>
+      </div>
+    </div>
+
+    <div id="rename-modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="rename-title">
+      <div class="modal-card rename-modal-card">
+        <div class="modal-head">
+          <span id="rename-title">Rename asset</span>
+          <button id="rename-close" class="button button--icon modal-close" type="button" aria-label="Close rename dialog" title="Close">
+            <span class="button-icon icon-x" aria-hidden="true"></span>
+          </button>
+        </div>
+        <form id="rename-form" class="modal-body" novalidate>
+          <label class="ctl" for="rename-input">
+            <span id="rename-label">Asset name</span>
+            <input id="rename-input" type="text" autocomplete="off" aria-describedby="rename-error" />
+          </label>
+          <div id="rename-error" class="field-error" role="alert" aria-live="polite"></div>
+          <div class="modal-actions">
+            <button id="rename-cancel" class="button button--secondary" type="button">Cancel</button>
+            <button class="button button--primary" type="submit">Save</button>
+          </div>
+        </form>
       </div>
     </div>
 

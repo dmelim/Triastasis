@@ -10,7 +10,7 @@ import {
   setAllowsGenerationAboveRecommendation,
   type GenerationHardwareProfile,
 } from "./hardware-profile";
-import { invoke, isTauri, logsDir, openLogsDir, openOutputDir, pickDirectory } from "./tauri";
+import { appVersion, invoke, isTauri, logsDir, openLogsDir, openOutputDir, pickDirectory } from "./tauri";
 
 export type ProgressDisplayMode = "notification" | "sidebar";
 export const PROGRESS_DISPLAY_MODE_KEY = "polyloom.progress-display-mode";
@@ -86,7 +86,11 @@ export async function renderSettings(
   body: HTMLElement,
   onSaved: () => void,
 ): Promise<void> {
-  const [cfg, hardware] = await Promise.all([loadConfig(true), detectGenerationHardware()]);
+  const [cfg, hardware, version] = await Promise.all([
+    loadConfig(true),
+    detectGenerationHardware(),
+    isTauri() ? appVersion().catch(() => "unknown") : Promise.resolve("development"),
+  ]);
 
   if (isTauri()) {
     // get_config already fills the default output dir; fall back to it when unset
@@ -102,6 +106,7 @@ export async function renderSettings(
     const logDir = await logsDir();
 
     body.innerHTML = `
+      ${ro("Triastasis version", version)}
       ${ro("Backend", cfg.backend)}
       ${ro("Server binary", cfg.serverBin)}
       ${progressDisplayField()}
@@ -174,6 +179,7 @@ export async function renderSettings(
   } else {
     body.innerHTML = `
       <div class="kv">Running in a browser. Connecting to a trellis-server you launched.</div>
+      ${ro("Triastasis version", version)}
       ${progressDisplayField()}
       ${hardwareRecommendationField(hardware)}
       ${field("Host", "set-host", cfg.host)}

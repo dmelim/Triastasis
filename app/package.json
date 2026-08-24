@@ -1,9 +1,9 @@
 {
-  "name": "trellis-studio",
+  "name": "triastasis",
   "private": true,
-  "version": "0.6.0",
+  "version": "0.0.1-alpha.1",
   "type": "module",
-  "description": "Trellis Studio — desktop app for local image→3D generation with trellis.cpp",
+  "description": "Triastasis - desktop app for local image-to-3D generation with trellis.cpp",
   "scripts": {
     "dev": "vite",
     "dev:tauri": "node scripts/build-watch.mjs",

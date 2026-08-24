@@ -1,4 +1,4 @@
-// Trellis Studio — Tauri v2 desktop shell around the trellis-server image→3D
+// Triastasis: Tauri v2 desktop shell around the trellis-server image-to-3D
 // pipeline. Reads the installer-written config.json, launches & supervises the
 // server, and exposes a few commands to the web UI.
 #![cfg_attr(
@@ -225,6 +225,23 @@ fn read_manifest_asset(path: String, role: String) -> Result<Vec<u8>, String> {
     manifest::read_manifest_asset_impl(&path, &role)
 }
 
+/// Removes a staged file from the output directory (sweep-preparation
+/// rollback). The path must resolve inside the configured output directory.
+#[tauri::command]
+fn remove_output_file(path: String) -> Result<(), String> {
+    let dir = config::resolve_output_dir()?;
+    let candidate = std::path::PathBuf::from(&path);
+    if !candidate.is_absolute() {
+        return Err("file path must be absolute".to_string());
+    }
+    let canonical_dir = dir.canonicalize().map_err(|e| e.to_string())?;
+    let canonical = candidate.canonicalize().map_err(|e| e.to_string())?;
+    if !canonical.starts_with(&canonical_dir) {
+        return Err("file path is outside the output directory".to_string());
+    }
+    std::fs::remove_file(&canonical).map_err(|e| e.to_string())
+}
+
 #[tauri::command]
 fn relink_manifest_file(
     manifest_path: String,
@@ -288,6 +305,7 @@ fn main() {
             import_generation_manifest,
             write_generation_manifest,
             read_manifest_asset,
+            remove_output_file,
             relink_manifest_file,
             find_linked_manifest,
             scan_interrupted_manifests,
@@ -322,7 +340,7 @@ fn main() {
             }
         })
         .build(tauri::generate_context!())
-        .expect("error while building Trellis Studio")
+        .expect("error while building Triastasis")
         .run(|app, event| {
             if let tauri::RunEvent::ExitRequested { .. } = event {
                 automation::stop(app.state::<AutomationState>().inner());

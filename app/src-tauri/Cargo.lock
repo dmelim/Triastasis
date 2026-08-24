@@ -3976,8 +3976,8 @@ dependencies = [
 ]
 
 [[package]]
-name = "trellis-studio"
-version = "0.6.0"
+name = "triastasis"
+version = "0.0.1-alpha.1"
 dependencies = [
  "dirs 5.0.1",
  "libc",

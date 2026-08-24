@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "Trellis Studio",
-  "version": "0.6.0",
+  "productName": "Triastasis",
+  "version": "0.0.1-alpha.1",
   "identifier": "cpp.trellis.studio",
   "build": {
     "frontendDist": "../dist",
@@ -11,7 +11,7 @@
   "app": {
     "windows": [
       {
-        "title": "Trellis Studio",
+        "title": "Triastasis",
         "width": 1200,
         "height": 820,
         "minWidth": 900,
@@ -33,7 +33,7 @@
       "icons/icon.ico"
     ],
     "category": "GraphicsAndDesign",
-    "shortDescription": "Local image→3D generation",
-    "longDescription": "Trellis Studio runs Microsoft TRELLIS.2 image→3D reconstruction locally via trellis.cpp and previews the result in an interactive 3D viewer."
+    "shortDescription": "Local image-to-3D generation",
+    "longDescription": "Triastasis runs Microsoft TRELLIS.2 image-to-3D reconstruction locally via trellis.cpp and previews the result in an interactive 3D viewer."
   }
 }

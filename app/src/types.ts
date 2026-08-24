@@ -1,4 +1,4 @@
-// Shared types for Trellis Studio.
+// Shared types for Triastasis.
 
 export type Resolution = 512 | 1024 | 1536;
 export type BgRemoval = "auto" | "birefnet" | "threshold";
@@ -166,7 +166,7 @@ export interface ModelDimensions {
   z: number;
 }
 
-// ---- .polyloom.json generation manifests ----
+// ---- .triastasis.json generation manifests ----
 
 /** Lifecycle state stored in a generation manifest. */
 export type ManifestStatus = "completed" | "interrupted" | "failed" | "cancelled";
@@ -218,7 +218,7 @@ export interface ManifestQualityWarning {
 }
 
 /**
- * The `.polyloom.json` schema written beside every generated model and
+ * The `.triastasis.json` schema written beside every generated model and
  * emitted by the reconstruction harness. Field names match the Rust
  * `GenerationManifest` serde serialization exactly.
  */
@@ -236,6 +236,16 @@ export interface GenerationManifest {
   bgRemoval: string;
   uv: string;
   texture: boolean;
+  /**
+   * Advanced generation settings. Optional at the read boundary because
+   * schema version 1 manifests predate them; schema version 2 writes always
+   * include every field. Absent fields recover with "auto" defaults.
+   */
+  targetFaces?: TargetFaces;
+  atlasSize?: AtlasSize;
+  textureResolution?: TextureResolution;
+  remeshBand?: RemeshBand;
+  textureEncoding?: TextureEncoding;
   jobId?: string | null;
   nativeRequestId?: string | null;
   assetId?: string | null;
@@ -245,6 +255,8 @@ export interface GenerationManifest {
   startedAtUtc?: string | null;
   finishedAtUtc?: string | null;
   durationSeconds?: number | null;
+  triastasisVersion?: string | null;
+  /** Retained when importing manifests created before the Triastasis rename. */
   polyloomVersion?: string | null;
   serverVersion?: string | null;
   metrics?: ManifestMetrics | null;

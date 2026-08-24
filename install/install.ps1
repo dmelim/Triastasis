@@ -1,11 +1,11 @@
 <#
 .SYNOPSIS
-  Trellis Studio — one-command setup for Windows (x64).
+  Triastasis: one-command setup for Windows (x64).
 
 .DESCRIPTION
   Detects the GPU runtime (CUDA / ROCm / Vulkan), downloads the matching
   trellis-server bundle + the TRELLIS.2 weights (~16.5 GB), installs the
-  Trellis Studio desktop app, and writes the config the app reads on launch.
+  Triastasis desktop app, and writes the config the app reads on launch.
 
 .EXAMPLE
   irm https://raw.githubusercontent.com/pwilkin/trellis.cpp/main/install/install.ps1 | iex
@@ -20,7 +20,7 @@ param(
   [string]$Backend = "",
   [int]$Gpu = 0,
   [int]$Port = 8080,
-  [string]$Dest = "$env:LOCALAPPDATA\trellis-studio",
+  [string]$Dest = "$env:LOCALAPPDATA\triastasis",
   [string]$ModelsDir = "",
   # Quantized weights: "q8" (~9.5 GB, near-lossless) or "q4" (~6 GB). Default f16.
   [string]$Quant = "",
@@ -48,7 +48,7 @@ switch ($Quant) {
   default { Die "invalid -Quant: $Quant (use q8 or q4)" }
 }
 $QuantPath = if ($Quant) { "$Quant/" } else { "" }
-$ConfigDir = Join-Path $env:APPDATA "trellis-studio"
+$ConfigDir = Join-Path $env:APPDATA "triastasis"
 
 function Log($m)  { Write-Host "==> $m" -ForegroundColor Green }
 function Info($m) { Write-Host " -  $m" -ForegroundColor Cyan }
@@ -146,10 +146,10 @@ if ($SkipModels) {
 if ($SkipApp) {
   Warn "skipping desktop app download (-SkipApp)."
 } else {
-  Log "downloading Trellis Studio desktop app"
-  $setup = Join-Path $env:TEMP "trellis-studio-windows-x64-setup.exe"
+  Log "downloading Triastasis desktop app"
+  $setup = Join-Path $env:TEMP "triastasis-windows-x64-setup.exe"
   try {
-    Download "$RelBase/trellis-studio-windows-x64-setup.exe" $setup
+    Download "$RelBase/triastasis-windows-x64-setup.exe" $setup
     Info "launching installer (silent, per-user)"
     Start-Process $setup -ArgumentList "/S" -Wait
   } catch {
@@ -181,4 +181,4 @@ $cfg = [ordered]@{
 Info "config: $(Join-Path $ConfigDir 'config.json')"
 
 Write-Host ""
-Log "done — launch Trellis Studio from the Start menu."
+Log "done: launch Triastasis from the Start menu."

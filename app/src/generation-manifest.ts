@@ -1,4 +1,4 @@
-// .polyloom.json generation-manifest lifecycle for the desktop app.
+// .triastasis.json generation-manifest lifecycle for the desktop app.
 //
 // A manifest is written when a job is submitted (status "interrupted", so a
 // crash or restart leaves a resumable record), then rewritten on completion
@@ -6,15 +6,64 @@
 // hashing is performed by the shell writer; failures here never break a
 // generation in flight.
 
-import { isTauri, readGenerationManifest, saveToOutputDir, writeGenerationManifest } from "./tauri";
+import { isTauri, readGenerationManifest, removeOutputFile, saveToOutputDir, writeGenerationManifest } from "./tauri";
 import type {
+  GenParams,
   GenerationManifest,
   ManifestMetrics,
   ManifestQualityWarning,
   ManifestSweep,
   ModelMetrics,
+  NormalizedGenParams,
   SweepCandidateState,
 } from "./types";
+
+/**
+ * Schema version emitted by every write. Version 2 adds the advanced
+ * generation parameters; version 1 records remain readable and recover with
+ * documented "auto" defaults for the fields it did not store.
+ */
+export const MANIFEST_SCHEMA_VERSION = 2;
+
+/**
+ * The advanced generation parameters schema 2 added. Their presence in a
+ * manifest distinguishes full-fidelity recovery from legacy-default recovery.
+ */
+export const MANIFEST_ADVANCED_FIELDS = [
+  "targetFaces",
+  "atlasSize",
+  "textureResolution",
+  "remeshBand",
+  "textureEncoding",
+] as const;
+
+/**
+ * Reconstructs the generation parameters recorded in a manifest. Advanced
+ * fields absent from a schema 1 record stay undefined so normalizeGenParams
+ * applies its documented defaults; an invalid recorded value surfaces as a
+ * field-specific validation error instead of being silently replaced.
+ */
+export function manifestRecordedParams(manifest: GenerationManifest): Partial<GenParams> {
+  return {
+    resolution: (manifest.resolution === 512 || manifest.resolution === 1536
+      ? manifest.resolution
+      : 1024) as GenParams["resolution"],
+    seed: manifest.seed,
+    bgRemoval: manifest.bgRemoval as GenParams["bgRemoval"],
+    uv: manifest.uv as GenParams["uv"],
+    texture: manifest.texture,
+    targetFaces: manifest.targetFaces,
+    atlasSize: manifest.atlasSize,
+    textureResolution: manifest.textureResolution,
+    remeshBand: manifest.remeshBand,
+    textureEncoding: manifest.textureEncoding,
+  };
+}
+
+/** True when every advanced parameter was stored (schema version 2). */
+export function manifestStoresAdvancedSettings(manifest: GenerationManifest): boolean {
+  return MANIFEST_ADVANCED_FIELDS.every((field) => manifest[field] !== undefined);
+}
 
 export interface ManifestContext {
   dir: string;
@@ -25,7 +74,7 @@ export interface ManifestContext {
   requestId: string;
   submittedAtUtc: string;
   startedAtUtc: string;
-  params: { resolution: number; seed: number; bgRemoval: string; uv: string; texture: boolean };
+  params: NormalizedGenParams;
   label: string;
   sweep?: Pick<ManifestSweep, "groupId" | "index" | "count"> & { state: SweepCandidateState };
 }
@@ -104,7 +153,7 @@ interface BuildArgs {
   modelName: string;
   jobId: string;
   nativeRequestId: string;
-  params: { resolution: number; seed: number; bgRemoval: string; uv: string; texture: boolean };
+  params: NormalizedGenParams;
   submittedAtUtc: string;
   startedAtUtc?: string;
   finishedAtUtc?: string;
@@ -120,7 +169,7 @@ interface BuildArgs {
 
 function buildManifest(args: BuildArgs): GenerationManifest {
   return {
-    schemaVersion: 1,
+    schemaVersion: MANIFEST_SCHEMA_VERSION,
     status: args.status,
     label: args.label,
     sourceImage: args.sourceName,
@@ -130,6 +179,11 @@ function buildManifest(args: BuildArgs): GenerationManifest {
     bgRemoval: args.params.bgRemoval,
     uv: args.params.uv,
     texture: args.params.texture,
+    targetFaces: args.params.targetFaces,
+    atlasSize: args.params.atlasSize,
+    textureResolution: args.params.textureResolution,
+    remeshBand: args.params.remeshBand,
+    textureEncoding: args.params.textureEncoding,
     jobId: args.jobId,
     nativeRequestId: args.nativeRequestId,
     assetId: args.assetId ?? args.jobId,
@@ -139,7 +193,7 @@ function buildManifest(args: BuildArgs): GenerationManifest {
     startedAtUtc: args.startedAtUtc ?? null,
     finishedAtUtc: args.finishedAtUtc ?? null,
     durationSeconds: args.durationSeconds ?? null,
-    polyloomVersion: null,
+    triastasisVersion: null,
     serverVersion: null,
     metrics: args.metrics ?? null,
     qualityWarning: args.qualityWarning ?? null,
@@ -170,7 +224,7 @@ export async function startGenerationManifest(input: {
   jobId: string;
   requestId: string;
   label: string;
-  params: { resolution: number; seed: number; bgRemoval: string; uv: string; texture: boolean };
+  params: NormalizedGenParams;
   sourceBlob: Blob;
   sweep?: ManifestContext["sweep"];
 }): Promise<ManifestContext | null> {
@@ -187,7 +241,7 @@ export async function startGenerationManifest(input: {
     if (!savedPath) return null;
     const dir = dirname(savedPath);
     const modelName = `${input.base}_${input.params.resolution}_seed${input.params.seed}_${input.jobId}.glb`;
-    const fileName = `${safeStem(modelName)}.polyloom.json`;
+    const fileName = `${safeStem(modelName)}.triastasis.json`;
     const submittedAt = nowIso();
     await writeGenerationManifest(
       dir,
@@ -238,7 +292,7 @@ export async function prepareSweepManifests(input: {
   base: string;
   groupId: string;
   labelBase: string;
-  params: { resolution: number; bgRemoval: string; uv: string; texture: boolean };
+  params: Omit<NormalizedGenParams, "seed">;
   seeds: number[];
   sourceBlob: Blob;
 }): Promise<Array<ManifestContext | null>> {
@@ -259,11 +313,11 @@ export async function prepareSweepManifests(input: {
   }
 
   const submittedAt = nowIso();
-  const contexts: Array<ManifestContext | null> = [];
+  const contexts: ManifestContext[] = [];
   for (const [index, seed] of input.seeds.entries()) {
     const jobId = `${shortId(input.groupId)}-${index}-${seed}`;
     const modelName = `${input.base}_${input.params.resolution}_seed${seed}_${jobId}.glb`;
-    const fileName = `${safeStem(modelName)}.polyloom.json`;
+    const fileName = `${safeStem(modelName)}.triastasis.json`;
     try {
       await writeGenerationManifest(
         dir,
@@ -307,13 +361,35 @@ export async function prepareSweepManifests(input: {
         },
       });
     } catch (error) {
-      console.warn(`Could not persist sweep candidate ${index}`, error);
-      contexts.push(null);
+      // A failed candidate invalidates the whole sweep: roll back every
+      // already-written manifest plus the shared source image so restart
+      // recovery never presents an unaccepted sweep as unfinished work.
+      console.warn(`Could not persist sweep candidate ${index}; rolling back the sweep`, error);
+      await rollbackSweepManifests(contexts, dir, sharedSourceName);
+      return input.seeds.map(() => null);
     }
   }
-  // Any failed candidate invalidates the whole persistence step so the
-  // caller can refuse to enqueue a half-recorded sweep.
-  return contexts.some((context) => context === null) ? input.seeds.map(() => null) : contexts;
+  return contexts;
+}
+
+/** Best-effort removal of a prepared sweep's durable traces. */
+async function rollbackSweepManifests(
+  contexts: ManifestContext[],
+  dir: string,
+  sharedSourceName: string,
+): Promise<void> {
+  for (const context of contexts) {
+    try {
+      await removeOutputFile(`${context.dir}/${context.fileName}`);
+    } catch (error) {
+      console.warn(`Could not roll back sweep candidate ${context.jobId}`, error);
+    }
+  }
+  try {
+    await removeOutputFile(`${dir}/${sharedSourceName}`);
+  } catch (error) {
+    console.warn("Could not roll back the shared sweep source image", error);
+  }
 }
 
 /** Records a non-terminal candidate lifecycle change (queued/running). */
@@ -437,8 +513,11 @@ export async function finishResumedManifest(
     if (!isTauri()) return;
     const preview = await readGenerationManifest(manifestPath);
     const m = preview.manifest;
+    // Every write emits the current schema; a v1 record updated here is
+    // upgraded in place while keeping its recorded settings untouched.
     const updated: GenerationManifest = {
       ...m,
+      schemaVersion: MANIFEST_SCHEMA_VERSION,
       status: patch.status,
       jobId: patch.newJobId,
       nativeRequestId: patch.newRequestId,
