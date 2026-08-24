@@ -64,6 +64,7 @@ int trellis_run(const trellis::TrellisParams& cfg) {
     const bool F32 = cfg.f32; trellis::g_sparse_cast_f32 = F32;  // f16 default (rope bug was the real issue)
     trellis::g_no_fa = cfg.no_fa;
     trellis::g_require_gpu = cfg.require_gpu;
+    trellis::g_cpu_threads = cfg.threads;
     const std::string& img = cfg.image;
     const std::string& outglb = cfg.output;
     const std::string& M = cfg.models;
@@ -130,7 +131,9 @@ int trellis_run(const trellis::TrellisParams& cfg) {
     // --dump-bg: write the bg-removal cutout next to the output; --bg-only: stop here.
     if (cfg.dump_bg || cfg.bg_only) {
         const std::string cut_png = outglb.substr(0, outglb.find_last_of('.')) + "_cutout.png";
-        if (cut_sz > 0 && stbi_write_png(cut_png.c_str(), cut_sz, cut_sz, 3, cutout.data(), cut_sz*3))
+        const int cut_channels = cut_sz > 0 && cutout.size() == (size_t)cut_sz * cut_sz * 4 ? 4 : 3;
+        if (cut_sz > 0 && stbi_write_png(cut_png.c_str(), cut_sz, cut_sz, cut_channels,
+                                        cutout.data(), cut_sz*cut_channels))
             printf("      bg-removal cutout -> %s\n", cut_png.c_str());
         else
             fprintf(stderr, "      [warn] could not write bg-removal cutout to %s\n", cut_png.c_str());

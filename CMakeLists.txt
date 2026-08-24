@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.18)
-project(trellis_cpp VERSION 0.5.4 LANGUAGES CXX C)
+project(trellis_cpp VERSION 0.6.0 LANGUAGES CXX C)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -149,7 +149,7 @@ if(TARGET ggml-cuda)
     target_compile_options(trellis_core PRIVATE "$<$<COMPILE_LANGUAGE:CUDA>:-Xcompiler=/Zc:preprocessor>")
   endif()
   target_compile_definitions(trellis_core PUBLIC TRELLIS_HAVE_GPU_DECIMATE)
-  set_target_properties(trellis_core PROPERTIES CUDA_ARCHITECTURES "86;120" CUDA_RUNTIME_LIBRARY Shared)
+  set_target_properties(trellis_core PROPERTIES CUDA_ARCHITECTURES "${CMAKE_CUDA_ARCHITECTURES}" CUDA_RUNTIME_LIBRARY Shared)
   target_link_libraries(trellis_core PUBLIC CUDA::cudart)
   message(STATUS "trellis.cpp: CUDA backend enabled (${GGML_CUDA_LIB})")
 else()
@@ -275,6 +275,21 @@ add_executable(trellis-test-shape-flow src/test_shape_flow.cpp)
 target_link_libraries(trellis-test-shape-flow PRIVATE trellis_core)
 set_target_properties(trellis-test-shape-flow PROPERTIES BUILD_RPATH "${GGML_RPATH}")
 
+# Manual CUDA regression for the >2 Gi half2 mask-stride overflow in
+# high-token-count 1024-cascade FlashAttention. The default case needs
+# about 8.1 GiB of VRAM, so keep it out of the routine test suite.
+if(TARGET ggml-cuda)
+  add_executable(trellis-test-fa-mask-overflow src/test_fa_mask_overflow.cpp)
+  target_link_libraries(trellis-test-fa-mask-overflow PRIVATE trellis_core)
+  set_target_properties(trellis-test-fa-mask-overflow PROPERTIES BUILD_RPATH "${GGML_RPATH}")
+
+  # Small CUDA regression for trellis's V-range protection around the tensor-core
+  # FlashAttention kernels. The optional `raw` mode demonstrates the backend bug.
+  add_executable(trellis-test-fa-bf16-range src/test_fa_bf16_range.cpp)
+  target_link_libraries(trellis-test-fa-bf16-range PRIVATE trellis_core)
+  set_target_properties(trellis-test-fa-bf16-range PROPERTIES BUILD_RPATH "${GGML_RPATH}")
+endif()
+
 add_executable(trellis-test-ss-sample src/test_ss_sample.cpp)
 target_link_libraries(trellis-test-ss-sample PRIVATE trellis_core)
 set_target_properties(trellis-test-ss-sample PROPERTIES BUILD_RPATH "${GGML_RPATH}")
@@ -282,6 +297,10 @@ set_target_properties(trellis-test-ss-sample PROPERTIES BUILD_RPATH "${GGML_RPAT
 add_executable(trellis-test-birefnet src/test_birefnet.cpp)
 target_link_libraries(trellis-test-birefnet PRIVATE trellis_core)
 set_target_properties(trellis-test-birefnet PROPERTIES BUILD_RPATH "${GGML_RPATH}")
+
+add_executable(trellis-test-preprocess src/test_preprocess.cpp)
+target_link_libraries(trellis-test-preprocess PRIVATE trellis_core)
+set_target_properties(trellis-test-preprocess PROPERTIES BUILD_RPATH "${GGML_RPATH}")
 
 add_executable(trellis-test-deform src/test_deform.cpp)
 target_link_libraries(trellis-test-deform PRIVATE trellis_core)
@@ -310,6 +329,10 @@ set_target_properties(trellis-test-bigop PROPERTIES BUILD_RPATH "${GGML_RPATH}")
 add_executable(trellis-test-c2s src/test_c2s.cpp)
 target_link_libraries(trellis-test-c2s PRIVATE trellis_core)
 set_target_properties(trellis-test-c2s PROPERTIES BUILD_RPATH "${GGML_RPATH}")
+
+add_executable(trellis-test-sparse-degenerate src/test_sparse_degenerate.cpp)
+target_link_libraries(trellis-test-sparse-degenerate PRIVATE trellis_core)
+set_target_properties(trellis-test-sparse-degenerate PROPERTIES BUILD_RPATH "${GGML_RPATH}")
 
 add_executable(trellis-test-shape-dec src/test_shape_dec.cpp)
 target_link_libraries(trellis-test-shape-dec PRIVATE trellis_core)
