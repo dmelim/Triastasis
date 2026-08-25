@@ -31,16 +31,11 @@ const REMESH_BAND_RANGE: (u32, u32) = (0, 8);
 /// `"auto"` or a non-negative integer — serializes exactly like the
 /// TypeScript `TargetFaces` / `AtlasSize` / `RemeshBand` union members so the
 /// JSON representation stays identical across the app and the shell.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Default)]
 pub enum AutoU32 {
+    #[default]
     Auto,
     Value(u32),
-}
-
-impl Default for AutoU32 {
-    fn default() -> Self {
-        AutoU32::Auto
-    }
 }
 
 impl Serialize for AutoU32 {
@@ -646,7 +641,7 @@ pub fn write_generation_manifest_impl(
     // interrupted/cancelled under the same file name (e.g. a reused job id).
     if matches!(manifest.status.as_str(), "interrupted" | "cancelled") {
         let existing_name = force_file_name
-            .map(|name| safe_relative_path(name))
+            .map(safe_relative_path)
             .transpose()?
             .map(|name| dir.join(name));
         let existing_name = existing_name.unwrap_or_else(|| dir.join(manifest_filename(&manifest)));

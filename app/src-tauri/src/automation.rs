@@ -307,7 +307,7 @@ fn serialize_store(jobs: &[DurableJob]) -> String {
         version: JOB_STORE_VERSION,
         jobs: jobs
             .iter()
-            .map(|job| serde_json::to_value(job).unwrap_or_else(|_| serde_json::Value::Null))
+            .map(|job| serde_json::to_value(job).unwrap_or(serde_json::Value::Null))
             .collect(),
     };
     serde_json::to_string(&file).unwrap_or_default()
@@ -2071,7 +2071,7 @@ fn worker_loop(queue: Arc<JobQueue>, stop: Arc<AtomicBool>) {
                     .get(&id)
                     .and_then(|job| job.source_disk_path.clone())
             };
-            match path.map(|p| std::fs::read(p)) {
+            match path.map(std::fs::read) {
                 Some(Ok(bytes)) => bytes,
                 _ => {
                     let mut data = queue.data.lock().unwrap();
