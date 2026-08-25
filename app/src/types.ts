@@ -330,6 +330,10 @@ export type OperationParams = Record<string, unknown>;
 export interface AppConfig {
   serverBin: string;
   modelsDir: string;
+  /** managed model storage root; modelsDir remains the active server leaf. */
+  modelsRoot: string;
+  /** active managed bundle id, or empty for a legacy flat model directory. */
+  activeBundle: string;
   backend: string;
   gpu: number;
   host: string;

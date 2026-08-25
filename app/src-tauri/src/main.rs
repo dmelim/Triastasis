@@ -8,8 +8,10 @@
 
 mod automation;
 mod config;
+mod downloader;
 mod hardware;
 mod manifest;
+mod models;
 mod server;
 mod tray;
 
@@ -266,6 +268,204 @@ fn list_sibling_manifests(path: String) -> Result<Vec<String>, String> {
     manifest::list_sibling_manifests_impl(&path)
 }
 
+// ---- model management (Phase 1: catalog + detection + verification) ---------
+
+#[tauri::command]
+fn model_catalog() -> Result<Vec<models::BundleSummary>, String> {
+    let cat = models::catalog()?;
+    Ok(cat
+        .bundles
+        .iter()
+        .map(|b| models::BundleSummary {
+            id: b.id.clone(),
+            display_name: b.display_name.clone(),
+            quantization: b.quantization.clone(),
+            file_count: b.files.len(),
+            total_bytes: models::ModelCatalog::total_bytes(b),
+        })
+        .collect())
+}
+
+#[tauri::command]
+fn scan_models() -> Result<models::ModelsScan, String> {
+    models::scan_models()
+}
+
+/// Full size+SHA-256 verification of one bundle inside the managed root,
+/// writing the installation.json commit marker on success. Blocking; called
+/// from the UI after downloads or manual/offline placement.
+#[tauri::command]
+async fn verify_model_bundle(bundle_id: String) -> Result<String, String> {
+    let cat = models::catalog()?;
+    // Resolve the root before entering the blocking task.
+    let cfg = config::load();
+    let models_dir = cfg
+        .as_ref()
+        .filter(|c| !c.models_dir.trim().is_empty())
+        .map(|c| std::path::PathBuf::from(c.models_dir.trim()))
+        .unwrap_or_else(models::default_models_root);
+    let root = models::resolve_models_root(&models_dir, cat);
+    tauri::async_runtime::spawn_blocking(move || {
+        let _lock = downloader::acquire_models_lock(&root)?;
+        models::verify_and_register(&root, &bundle_id).map(|p| p.to_string_lossy().into_owned())
+    })
+    .await
+    .map_err(|e| format!("verification task failed: {e}"))?
+}
+
+#[tauri::command]
+fn free_disk_space(path: String) -> Result<u64, String> {
+    models::free_space_bytes(std::path::Path::new(&path))
+}
+
+/// Start (or resume) downloading a bundle. Returns immediately; progress
+/// arrives as `model-download-progress` events and via `model_download_status`.
+/// Resuming picks up from existing partial files automatically.
+#[tauri::command]
+fn start_model_download(app: tauri::AppHandle, bundle_id: String) -> Result<(), String> {
+    models::catalog()?
+        .bundle(&bundle_id)
+        .ok_or_else(|| format!("unknown bundle: {bundle_id}"))?;
+    let handle = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let control = handle.state::<downloader::DownloadControl>();
+        let result = downloader::run_download(&handle, control.inner(), &bundle_id);
+        if let Err(e) = &result {
+            eprintln!("[studio] model download failed: {e}");
+        }
+        result
+    });
+    Ok(())
+}
+
+#[tauri::command]
+fn pause_model_download(state: tauri::State<downloader::DownloadControl>) -> Result<(), String> {
+    state.request_pause()
+}
+
+#[tauri::command]
+fn cancel_model_download(state: tauri::State<downloader::DownloadControl>) -> Result<(), String> {
+    state.request_cancel()
+}
+
+#[tauri::command]
+fn model_download_status(
+    state: tauri::State<downloader::DownloadControl>,
+) -> Option<downloader::DownloadStatus> {
+    state.status()
+}
+
+/// Partial downloads found in the managed root (restart recovery).
+#[tauri::command]
+fn scan_partial_downloads() -> Result<Vec<String>, String> {
+    let cat = models::catalog()?;
+    let cfg = config::load();
+    let models_dir = cfg
+        .as_ref()
+        .filter(|c| !c.models_dir.trim().is_empty())
+        .map(|c| std::path::PathBuf::from(c.models_dir.trim()))
+        .unwrap_or_else(models::default_models_root);
+    let root = models::resolve_models_root(&models_dir, cat);
+    Ok(downloader::scan_partial_downloads(&root)
+        .into_iter()
+        .filter(|id| cat.bundle(id).is_some())
+        .collect())
+}
+
+/// Discard one interrupted download's partial files (restart recovery).
+/// Only removes data owned by that bundle's download directory.
+#[tauri::command]
+fn discard_model_download(bundle_id: String) -> Result<(), String> {
+    let cat = models::catalog()?;
+    cat.bundle(&bundle_id)
+        .ok_or_else(|| format!("unknown bundle: {bundle_id}"))?;
+    let cfg = config::load();
+    let models_dir = cfg
+        .as_ref()
+        .filter(|c| !c.models_dir.trim().is_empty())
+        .map(|c| std::path::PathBuf::from(c.models_dir.trim()))
+        .unwrap_or_else(models::default_models_root);
+    let root = models::resolve_models_root(&models_dir, cat);
+    let _lock = downloader::acquire_models_lock(&root)?;
+    downloader::remove_bundle_partials(&root.join("downloads").join(&bundle_id));
+    Ok(())
+}
+
+/// Point the server at a verified bundle and restart it. Reversible: on
+/// failure the previous configuration is restored and restarted.
+#[tauri::command]
+fn activate_model_bundle(
+    app: tauri::AppHandle,
+    automation: tauri::State<AutomationState>,
+    bundle_id: String,
+) -> Result<(), String> {
+    let scan = models::scan_models()?;
+    let entry = scan
+        .managed
+        .iter()
+        .find(|m| m.bundle_id == bundle_id && m.registered)
+        .ok_or("bundle is not installed and verified yet")?;
+    let leaf = entry.dir.clone();
+    let root = scan.models_root.clone();
+
+    // Queue-idle gating: activation must not interrupt running generations.
+    match automation::quiesce_if_idle(automation.inner()) {
+        Ok(()) => {}
+        Err(automation::MaintenanceError::AlreadyInProgress) => {
+            return Err("another maintenance operation is already in progress".to_string());
+        }
+        Err(automation::MaintenanceError::Busy(_)) => {
+            return Err("wait until all generations finish before switching bundles".to_string());
+        }
+    }
+
+    let previous = config::load().map(|c| (c.models_dir, c.models_root, c.active_bundle));
+    let apply = || -> Result<(), String> {
+        let mut cfg = config::load().ok_or("no config.json found")?;
+        cfg.models_dir = leaf.clone();
+        cfg.models_root = root.clone();
+        cfg.active_bundle = bundle_id.clone();
+        config::save(&cfg)?;
+        tray::restart_services(&app)
+    };
+    match apply() {
+        Ok(()) => {
+            automation::resume(automation.inner());
+            Ok(())
+        }
+        Err(e) => {
+            // Roll back to the previously active configuration.
+            if let Some((dir, r#root, active)) = previous {
+                if let Some(mut cfg) = config::load() {
+                    cfg.models_dir = dir;
+                    cfg.models_root = r#root;
+                    cfg.active_bundle = active;
+                    config::save(&cfg).ok();
+                }
+            }
+            tray::restart_services(&app).ok();
+            automation::resume(automation.inner());
+            Err(format!("activation failed, previous bundle restored: {e}"))
+        }
+    }
+}
+
+/// Remove an installed but inactive bundle after explicit confirmation.
+#[tauri::command]
+fn remove_model_bundle(bundle_id: String) -> Result<(), String> {
+    let scan = models::scan_models()?;
+    if scan.active_bundle.as_deref() == Some(bundle_id.as_str()) {
+        return Err("cannot remove the active bundle; switch to another one first".to_string());
+    }
+    let entry = scan
+        .managed
+        .iter()
+        .find(|m| m.bundle_id == bundle_id)
+        .ok_or("bundle is not installed")?;
+    let _lock = downloader::acquire_models_lock(std::path::Path::new(&scan.models_root))?;
+    std::fs::remove_dir_all(&entry.dir).map_err(|e| format!("could not remove bundle: {e}"))
+}
+
 fn main() {
     // WebKitGTK ≥2.42 + the NVIDIA proprietary driver (and some other GPU/driver
     // combos) render a blank white window through the DMA-BUF path, and can even
@@ -285,6 +485,7 @@ fn main() {
         .plugin(tauri_plugin_fs::init())
         .manage(ServerState::default())
         .manage(AutomationState::default())
+        .manage(downloader::DownloadControl::default())
         .manage(LifecycleState::default())
         .invoke_handler(tauri::generate_handler![
             get_config,
@@ -309,7 +510,19 @@ fn main() {
             relink_manifest_file,
             find_linked_manifest,
             scan_interrupted_manifests,
-            list_sibling_manifests
+            list_sibling_manifests,
+            model_catalog,
+            scan_models,
+            verify_model_bundle,
+            free_disk_space,
+            start_model_download,
+            pause_model_download,
+            cancel_model_download,
+            model_download_status,
+            scan_partial_downloads,
+            discard_model_download,
+            activate_model_bundle,
+            remove_model_bundle
         ])
         .setup(|app| {
             // Auto-launch the server if the installer already wrote a usable config.

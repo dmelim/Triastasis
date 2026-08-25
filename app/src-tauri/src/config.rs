@@ -28,6 +28,14 @@ pub struct Config {
     /// Where generated GLBs are auto-saved. Empty => use `default_output_dir()`.
     #[serde(rename = "outputDir", default)]
     pub output_dir: String,
+    /// Managed models root (downloads/, installed/). Empty => derive from
+    /// `modelsDir` (legacy flat layout). Optional; older configs stay valid.
+    #[serde(rename = "modelsRoot", default)]
+    pub models_root: String,
+    /// Currently activated bundle id (e.g. "trellis2-q8"). Empty => no managed
+    /// bundle is active; `modelsDir` is used as-is.
+    #[serde(rename = "activeBundle", default)]
+    pub active_bundle: String,
 }
 
 fn default_backend() -> String {
@@ -46,6 +54,12 @@ fn default_port() -> u16 {
 fn portable_root() -> Option<PathBuf> {
     let dir = std::env::current_exe().ok()?.parent()?.to_path_buf();
     dir.join("portable.dat").exists().then_some(dir)
+}
+
+/// Public accessor for model management: portable installations must keep
+/// models and download state next to the exe, never in AppData.
+pub fn portable_mode_root() -> Option<PathBuf> {
+    portable_root()
 }
 
 fn server_bin_name() -> &'static str {
@@ -155,6 +169,8 @@ pub fn load() -> Option<Config> {
         host: default_host(),
         port: default_port(),
         output_dir: String::new(),
+        models_root: String::new(),
+        active_bundle: String::new(),
     })
 }
 

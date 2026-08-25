@@ -4,13 +4,18 @@
 
 .DESCRIPTION
   Detects the GPU runtime (CUDA / ROCm / Vulkan), downloads the matching
-  trellis-server bundle + the TRELLIS.2 weights (~16.5 GB), installs the
-  Triastasis desktop app, and writes the config the app reads on launch.
+  trellis-server bundle, installs the Triastasis desktop app, and writes the
+  config the app reads on launch.
+
+  Model weights (~6.5-16.5 GB) are NOT downloaded here by default: the app now
+  offers verified, resumable in-app downloads on first launch. Pass
+  -IncludeModels to keep the legacy installer-side download (one transition
+  release only).
 
 .EXAMPLE
   irm https://raw.githubusercontent.com/pwilkin/trellis.cpp/main/install/install.ps1 | iex
   # or, with options:
-  ./install.ps1 -Backend vulkan -SkipModels
+  ./install.ps1 -Backend vulkan -IncludeModels -Quant q8
 #>
 [CmdletBinding()]
 param(
@@ -22,9 +27,10 @@ param(
   [int]$Port = 8080,
   [string]$Dest = "$env:LOCALAPPDATA\triastasis",
   [string]$ModelsDir = "",
-  # Quantized weights: "q8" (~9.5 GB, near-lossless) or "q4" (~6 GB). Default f16.
+  # Legacy opt-in: quantized weights "q8" (~10 GB) or "q4" (~6.5 GB). Default f16.
   [string]$Quant = "",
-  [switch]$SkipModels,
+  # Legacy opt-in: download weights in the installer instead of the app.
+  [switch]$IncludeModels,
   [switch]$SkipApp,
   [switch]$Yes
 )
@@ -41,12 +47,8 @@ if (-not $ModelsDir) { $ModelsDir = Join-Path $Dest "models" }
 $RuntimeDir = Join-Path $Dest "runtime"
 
 # Quantized weights live in q8/ and q4/ subpaths of the HF repo, same filenames.
-switch ($Quant) {
-  ""   { $WeightsLabel = "f16 (~16.5 GB)" }
-  "q8" { $WeightsLabel = "Q8 (~9.5 GB, near-lossless)" }
-  "q4" { $WeightsLabel = "Q4 (~6 GB, slight quality loss)" }
-  default { Die "invalid -Quant: $Quant (use q8 or q4)" }
-}
+$WeightsLabel = if ($Quant) { "$($Quant.ToUpper()) (legacy installer download)" } else { "f16 (legacy installer download)" }
+if ($Quant -and $Quant -notin @("q4", "q8")) { Die "invalid -Quant: $Quant (use q8 or q4)" }
 $QuantPath = if ($Quant) { "$Quant/" } else { "" }
 $ConfigDir = Join-Path $env:APPDATA "triastasis"
 
@@ -96,8 +98,12 @@ if (-not $Backend) {
 
 Write-Host ""
 Info "install dir : $Dest"
-Info ("models dir  : {0}{1}" -f $ModelsDir, $(if ($SkipModels) { " (skipped)" } else { "" }))
-Info "weights     : $WeightsLabel"
+if ($IncludeModels) {
+  Info ("models dir  : {0}" -f $ModelsDir)
+  Info "weights     : $WeightsLabel"
+} else {
+  Info "weights     : downloaded in-app on first launch (use -IncludeModels for legacy behavior)"
+}
 Info "backend/gpu : $Backend / $Gpu     port: $Port"
 Write-Host ""
 if (-not $Yes) {
@@ -133,9 +139,9 @@ if ($Backend -eq "rocm") {
   Warn "If the server fails to start, re-run with -Backend vulkan."
 }
 
-# ---- 2. weights ------------------------------------------------------------
-if ($SkipModels) {
-  Warn "skipping model download (-SkipModels); set the models dir in the app's Settings."
+# ---- 2. weights (legacy opt-in; the app downloads them itself by default) --
+if (-not $IncludeModels) {
+  Info "skipping model download; choose a bundle in-app on first launch."
 } else {
   Log "downloading TRELLIS.2 weights [$WeightsLabel, resumable] -> $ModelsDir"
   New-Item -ItemType Directory -Force -Path $ModelsDir | Out-Null

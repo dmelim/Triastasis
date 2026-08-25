@@ -12,6 +12,7 @@ import {
   type GenerationHardwareProfile,
 } from "./hardware-profile";
 import { appVersion, invoke, isTauri, logsDir, openLogsDir, openOutputDir, pickDirectory } from "./tauri";
+import { renderModelStorage } from "./model-settings";
 
 export type ProgressDisplayMode = "notification" | "sidebar";
 export const PROGRESS_DISPLAY_MODE_KEY = "polyloom.progress-display-mode";
@@ -207,7 +208,8 @@ export async function renderSettings(
             "settings-storage",
             "Storage",
             "Choose where models, generated assets, and diagnostic logs live.",
-            `${field("Models directory", "set-models", cfg.modelsDir, "text", true)}
+            `<div id="settings-model-storage" class="settings-field-wide"></div>
+             ${field("Models directory", "set-models", cfg.modelsDir, "text", true)}
              ${dirField("Output folder (generated GLBs are saved here)", "set-output", outputDir)}
              <label class="ctl settings-field-wide"><span>Server logs (attach these to bug reports)</span>
                <div class="dir-row">
@@ -241,6 +243,7 @@ export async function renderSettings(
       </div>`);
     bindProgressDisplay(body);
     bindHardwareRecommendation(body);
+    void renderModelStorage(body.querySelector<HTMLElement>("#settings-model-storage"));
 
     (body.querySelector("#set-logs-open") as HTMLButtonElement).onclick = async () => {
       try {

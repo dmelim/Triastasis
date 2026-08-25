@@ -3301,6 +3301,8 @@ mod tests {
             host: "127.0.0.1".to_string(),
             port: u16::MAX,
             output_dir: String::new(),
+            models_root: String::new(),
+            active_bundle: String::new(),
         };
 
         let error = match start(&cfg, &state) {

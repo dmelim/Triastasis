@@ -4,8 +4,13 @@
 #   curl -fsSL https://raw.githubusercontent.com/pwilkin/trellis.cpp/main/install/install.sh | bash
 #
 # Detects the GPU runtime (CUDA / ROCm / Vulkan), downloads the matching
-# trellis-server bundle + the TRELLIS.2 weights (~16.5 GB), installs the
-# Triastasis desktop app, and writes the config the app reads on launch.
+# trellis-server bundle, installs the Triastasis desktop app, and writes the
+# config the app reads on launch.
+#
+# Model weights (~6.5-16.5 GB) are NOT downloaded here by default: the app now
+# offers verified, resumable in-app downloads on first launch. Pass
+# --include-models to keep the legacy installer-side download (one transition
+# release only).
 set -euo pipefail
 
 REPO="pwilkin/trellis.cpp"
@@ -20,7 +25,7 @@ ROCM_GFX="gfx1030 gfx1031 gfx1032 gfx1100 gfx1101 gfx1102 gfx1103 gfx1150 gfx115
 # ---- defaults / args -------------------------------------------------------
 DEST="${XDG_DATA_HOME:-$HOME/.local/share}/triastasis"
 CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/triastasis"
-BACKEND=""; GPU=0; PORT=8080; MODELS_DIR=""; SKIP_MODELS=0; SKIP_APP=0; ASSUME_YES=0; QUANT=""
+BACKEND=""; GPU=0; PORT=8080; MODELS_DIR=""; INCLUDE_MODELS=0; SKIP_APP=0; ASSUME_YES=0; QUANT=""
 
 usage() {
   cat <<EOF
@@ -32,11 +37,13 @@ Triastasis installer (Linux)
   --gpu N                      GPU index (default 0; <0 = CPU)
   --port P                     server port (default 8080)
   --dest DIR                   install location (default $DEST)
-  --models-dir DIR             where to put weights (default <dest>/models)
-  --quant q8|q4                download quantized weights instead of f16:
-                                 q8 ~9.5 GB (near-lossless), q4 ~6 GB (smaller,
-                                 slight quality loss). Default: f16 (~16.5 GB).
-  --skip-models                don't download the weights
+  --models-dir DIR             where to put weights with --include-models
+                               (default <dest>/models)
+  --quant q8|q4                quantized weights for --include-models:
+                                 q8 ~10 GB (near-lossless), q4 ~6.5 GB.
+                                 Default: f16 (~16.5 GB).
+  --include-models             LEGACY: download the weights in this installer
+                               instead of in-app on first launch
   --skip-app                   don't download the desktop app
   -y, --yes                    don't prompt for confirmation
   -h, --help                   this help
@@ -50,7 +57,7 @@ while [ $# -gt 0 ]; do
     --dest) DEST="$2"; shift 2;;
     --models-dir) MODELS_DIR="$2"; shift 2;;
     --quant) QUANT="$2"; shift 2;;
-    --skip-models) SKIP_MODELS=1; shift;;
+    --include-models) INCLUDE_MODELS=1; shift;;
     --skip-app) SKIP_APP=1; shift;;
     -y|--yes) ASSUME_YES=1; shift;;
     -h|--help) usage; exit 0;;
@@ -61,11 +68,14 @@ MODELS_DIR="${MODELS_DIR:-$DEST/models}"
 RUNTIME_DIR="$DEST/runtime"
 # Quantized weights live in q8/ and q4/ subpaths of the HF repo, same filenames.
 case "$QUANT" in
-  "")   WEIGHTS_LABEL="f16 (~16.5 GB)";;
-  q8)   WEIGHTS_LABEL="Q8 (~9.5 GB, near-lossless)";;
-  q4)   WEIGHTS_LABEL="Q4 (~6 GB, slight quality loss)";;
+  "")   WEIGHTS_LABEL="f16 (legacy installer download)";;
+  q8)   WEIGHTS_LABEL="Q8 (legacy installer download)";;
+  q4)   WEIGHTS_LABEL="Q4 (legacy installer download)";;
   *)    die "invalid --quant: $QUANT (use q8 or q4)";;
 esac
+if [ "$QUANT" != "" ] && [ "$INCLUDE_MODELS" != 1 ]; then
+  die "--quant only applies together with --include-models"
+fi
 
 # ---- logging ---------------------------------------------------------------
 # Status messages go to stderr so command substitution (e.g. $(detect_backend))
@@ -111,8 +121,12 @@ case "$BACKEND" in cuda|cuda12|rocm|vulkan) ;; *) die "invalid backend: $BACKEND
 
 echo
 info "install dir : $DEST"
-info "models dir  : $MODELS_DIR $([ "$SKIP_MODELS" = 1 ] && echo '(skipped)')"
-info "weights     : $WEIGHTS_LABEL"
+if [ "$INCLUDE_MODELS" = 1 ]; then
+  info "models dir  : $MODELS_DIR"
+  info "weights     : $WEIGHTS_LABEL"
+else
+  info "weights     : downloaded in-app on first launch (--include-models for legacy behavior)"
+fi
 info "backend/gpu : $BACKEND / $GPU     port: $PORT"
 echo
 if [ "$ASSUME_YES" != 1 ] && [ -t 0 ]; then
@@ -146,9 +160,9 @@ if [ "$BACKEND" = "rocm" ]; then
   warn "(TheRock, gfx-matched) or re-run with --backend vulkan."
 fi
 
-# ---- 2. weights ------------------------------------------------------------
-if [ "$SKIP_MODELS" = 1 ]; then
-  warn "skipping model download (--skip-models); set them in the app's Settings."
+# ---- 2. weights (legacy opt-in; the app downloads them itself by default) --
+if [ "$INCLUDE_MODELS" != 1 ]; then
+  info "skipping model download; choose a bundle in-app on first launch."
 else
   log "downloading TRELLIS.2 weights [$WEIGHTS_LABEL, resumable] -> $MODELS_DIR"
   mkdir -p "$MODELS_DIR"
@@ -189,5 +203,5 @@ JSON
 info "config: $CONFIG_DIR/config.json"
 
 echo
-log "${c_g}done${c_0}: launch Triastasis${SKIP_MODELS:+ (add your models dir in Settings)}."
+log "${c_g}done${c_0}: launch Triastasis; it will offer a model bundle on first launch."
 [ -f "$DEST/Triastasis.AppImage" ] && info "run: \"$DEST/Triastasis.AppImage\""

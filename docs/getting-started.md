@@ -8,8 +8,15 @@ generated `.glb`.
 ## One-command install
 
 The installer auto-detects your GPU runtime (**CUDA → ROCm → Vulkan** fallback),
-downloads the matching `trellis-server` build plus the ~16.5 GB of model weights,
-installs the desktop app, and writes the config the app reads on launch.
+downloads the matching `trellis-server` build, installs the desktop app, and
+writes the config the app reads on launch.
+
+**Model weights are not part of the installer.** The app is a small initial
+download; on first launch, Triastasis offers a choice of model bundles between
+approximately 6.5 GB and 16.5 GB with verified, resumable downloads and a
+hardware-based recommendation. To pre-download weights in the installer instead
+(legacy behavior, kept for one transition release), pass `-IncludeModels` /
+`--include-models`.
 
 ### Linux (x86-64)
 
@@ -30,7 +37,7 @@ That's it. Launch **Triastasis**, drop in an image, and click **Generate 3D**.
 | what | Linux | Windows |
 |------|-------|---------|
 | server + runtime libs | `~/.local/share/triastasis/runtime/` | `%LOCALAPPDATA%\triastasis\runtime\` |
-| model weights (~16.5 GB) | `~/.local/share/triastasis/models/` | `%LOCALAPPDATA%\triastasis\models\` |
+| model bundles (in-app download) | `~/.local/share/triastasis/models/installed/…` (configurable in-app) | `%LOCALAPPDATA%\triastasis\models\installed\…` |
 | app config | `~/.config/triastasis/config.json` | `%APPDATA%\triastasis\config.json` |
 | desktop app | `.AppImage` in the install dir | installed via the setup .exe (Start menu) |
 
@@ -48,17 +55,20 @@ Windows):
 | `--gpu N` | GPU index (default `0`; `<0` = CPU) |
 | `--port P` | server port (default `8080`) |
 | `--dest DIR` | install location |
-| `--models-dir DIR` | where to store weights (e.g. a bigger drive) |
-| `--quant q8\|q4` | download quantized weights: `q8` ~9.5 GB (near-lossless), `q4` ~6 GB (smaller, slight quality loss). Default is f16 (~16.5 GB). |
-| `--skip-models` | don't download weights (set the folder later in Settings) |
-| `--skip-app` | don't download the desktop app |
+| `--models-dir DIR` | where to store weights when using `--include-models` (e.g. a bigger drive) |
+| `--quant q8\|q4` | quantized weights for `--include-models`: `q8` ~10 GB (near-lossless), `q4` ~6.5 GB. Default is f16 (~16.5 GB). |
+| `--include-models` / `-IncludeModels` | LEGACY: download weights in the installer instead of in-app on first launch (one transition release) |
+| `--skip-app` / `-SkipApp` | don't download the desktop app |
 | `-y` / `-Yes` | don't prompt for confirmation |
 
 Examples:
 
 ```bash
-# reuse weights already on a fast drive; force Vulkan
-./install/install.sh --backend vulkan --models-dir /mnt/ssd/trellis --skip-models
+# force Vulkan; pick the model bundle inside the app on first launch
+./install/install.sh --backend vulkan
+
+# legacy: pre-download Q8 weights on a fast drive during install
+./install/install.sh --backend vulkan --include-models --models-dir /mnt/ssd/trellis --quant q8
 ```
 
 ## Backend detection

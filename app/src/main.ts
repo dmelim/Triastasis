@@ -39,6 +39,9 @@ import {
   type RecoveryCandidate,
 } from "./sweep-recovery";
 import { escapeHtml, hasBlockingCoreIssue, manifestIssueText } from "./manifest-ui";
+import { initModelDownloadState } from "./model-download-state";
+import { initModelSetup } from "./model-setup";
+import { subscribeModelStorageRefresh } from "./model-settings";
 import type { ManifestMetrics, ManifestQualityWarning } from "./types";
 import {
   detectPlaneCollapse,
@@ -3311,7 +3314,7 @@ async function pollHealthInternal(): Promise<void> {
   setupBanner.classList.toggle("hidden", !needSetup);
   if (needSetup) {
     (setupBanner.querySelector("span") as HTMLElement).textContent =
-      "Triastasis is not set up yet. Run the installer or point it at your models directory.";
+      "Triastasis needs a model bundle before it can generate. Choose one below or in settings.";
   } else if (!ok && cfg.configured) {
     setupBanner.classList.remove("hidden");
     (setupBanner.querySelector("span") as HTMLElement).textContent =
@@ -4169,6 +4172,9 @@ async function boot(): Promise<void> {
   setWorkspaceMode("generate");
   initDockPreference();
   await refreshHardwareGuardrails();
+  initModelSetup();
+  void initModelDownloadState(isTauri());
+  subscribeModelStorageRefresh();
   await pollHealth();
   await syncAutomationResults();
   await checkInterruptedManifests();

@@ -1,0 +1,71 @@
+{
+  "catalogVersion": 1,
+  "modelFamily": "trellis2",
+  "modelRevision": "a57397bd3d351599d9729fc144b3f87c3f87d65b",
+  "source": {
+    "kind": "huggingface",
+    "repo": "ilintar/trellis2-gguf",
+    "baseUrl": "https://huggingface.co/ilintar/trellis2-gguf/resolve"
+  },
+  "license": {
+    "name": "Other/Custom (see upstream repository)",
+    "reference": "https://huggingface.co/ilintar/trellis2-gguf/blob/main/README.md"
+  },
+  "supportedAppVersions": ">=0.0.1-alpha.1",
+  "bundles": [
+    {
+      "id": "trellis2-q4",
+      "displayName": "Starter",
+      "quantization": "q4",
+      "pathPrefix": "q4",
+      "files": [
+        { "name": "birefnet.gguf", "size": 882749024, "sha256": "5b21f4f426dc014c5b28a4da01c87556fff27e74a74b9639478f978f92b97fbe" },
+        { "name": "dinov3.gguf", "size": 172662976, "sha256": "ccdd7f3f45837de2d9f8178d91188877e80dda091cb41960f4e77f1cb9c4f953" },
+        { "name": "shape_dec.gguf", "size": 845423552, "sha256": "4e50c9f5f3d288dcca66617b0e696b605a44dbda292c25d48523c0fb5a4d9b35" },
+        { "name": "shape_flow_1024.gguf", "size": 730520576, "sha256": "10eff70829b4ff7ccd6dce022dd3088043328cecb42dc982d51f5122d65d5ae8" },
+        { "name": "shape_flow_512.gguf", "size": 730520576, "sha256": "3e5f584c0462e78d9c66a9f5fc0f182668721e4b02e51d33e9e0810c8634fa2f" },
+        { "name": "ss_dec.gguf", "size": 147379392, "sha256": "1ff9a924f297553a965228d213da3d42d0464fd053001935950489c55b00be5d" },
+        { "name": "ss_flow.gguf", "size": 730496672, "sha256": "0879ee94052a68c866144fa994661e4157fd7c394bc659d621aca7695a53ba84" },
+        { "name": "tex_dec.gguf", "size": 845414272, "sha256": "920a7310867bd1bb093d9e7da7af68416d09b02b4c61d41e51a8af60a01f68a4" },
+        { "name": "tex_flow_1024.gguf", "size": 730548224, "sha256": "9e53c7555a22d2cb1c98dc67eb3bd0580ffd6ed403f962771adacde0be1657aa" },
+        { "name": "tex_flow_512.gguf", "size": 730548224, "sha256": "642cea2388ac8c9f2ab4e08fdaec6a6af2b0f9ced9a02d2c072d1bdcf3cd0bba" }
+      ]
+    },
+    {
+      "id": "trellis2-q8",
+      "displayName": "Recommended",
+      "quantization": "q8",
+      "pathPrefix": "q8",
+      "files": [
+        { "name": "birefnet.gguf", "size": 882749024, "sha256": "5b21f4f426dc014c5b28a4da01c87556fff27e74a74b9639478f978f92b97fbe" },
+        { "name": "dinov3.gguf", "size": 323657920, "sha256": "8d3289e20635e22684f69b3a0ef22332beee8d6571ca004638c3daf44060fcad" },
+        { "name": "shape_dec.gguf", "size": 881361568, "sha256": "4408ea7bbf13a25b2f7231c24210875dbf44ef536d7152c72b19652a4c5ed012" },
+        { "name": "shape_flow_1024.gguf", "size": 1376125952, "sha256": "ae7a40df873bb770ca2de757ee532fc9f8ee7014bcefea6e737895f36ef7e3c6" },
+        { "name": "shape_flow_512.gguf", "size": 1376125952, "sha256": "c1941fcb7441c68e74edb70f5a92d3a4e4ce22f3f8ddf6a3482f51e21a7ba4bf" },
+        { "name": "ss_dec.gguf", "size": 147379392, "sha256": "1ff9a924f297553a965228d213da3d42d0464fd053001935950489c55b00be5d" },
+        { "name": "ss_flow.gguf", "size": 1376059040, "sha256": "7433f050a2300dc069a5ba9c1cd08405f02cb9b32392fca2307a6751813d60f4" },
+        { "name": "tex_dec.gguf", "size": 881344576, "sha256": "316494725fcebd292c7555dbc8f7831ed0b8bc6be4fba28945624b1e46524920" },
+        { "name": "tex_flow_1024.gguf", "size": 1376178176, "sha256": "381cdff113aeb2120544580013f4edb253df08c26b9f8f0ed0c6a9fae33774dc" },
+        { "name": "tex_flow_512.gguf", "size": 1376178176, "sha256": "14b320d8ad30e3595cb04f8e314fcfa62a78f1850038f62fd79d57824ec27221" }
+      ]
+    },
+    {
+      "id": "trellis2-f16",
+      "displayName": "Full precision",
+      "quantization": "f16",
+      "pathPrefix": "",
+      "files": [
+        { "name": "birefnet.gguf", "size": 882749024, "sha256": "5b21f4f426dc014c5b28a4da01c87556fff27e74a74b9639478f978f92b97fbe" },
+        { "name": "dinov3.gguf", "size": 606773440, "sha256": "5bff7575b1e906c968fb69871c89c6caea08bd143f661167e3085b150dfd8f97" },
+        { "name": "shape_dec.gguf", "size": 948745344, "sha256": "58fe15f30c5ec97f5057a41846c6fad8639d28ebcc343a32d011ee0de73cc647" },
+        { "name": "shape_flow_1024.gguf", "size": 2586636032, "sha256": "78c0b73d22951737b39d7697198bf89396419b82b59a0dae76ed3e3b13191feb" },
+        { "name": "shape_flow_512.gguf", "size": 2586636032, "sha256": "45e59bc5c263e08a5462d0164cf429e883f00cb197da49702820591b496f971c" },
+        { "name": "ss_dec.gguf", "size": 147379392, "sha256": "1ff9a924f297553a965228d213da3d42d0464fd053001935950489c55b00be5d" },
+        { "name": "ss_flow.gguf", "size": 2586488480, "sha256": "3e7d391b53ea94621cba9d173c8828d75ec33b95c2d3d01d5ee846ce9a18f66f" },
+        { "name": "tex_dec.gguf", "size": 948713888, "sha256": "1d595e7eccbd073f8040d2b56c6ccb4754b93e86a3b4ce87aa5bd16bd9cee2a6" },
+        { "name": "tex_flow_1024.gguf", "size": 2586734336, "sha256": "908f3914b5cd68a5f2c2927269ecb95f5bb187b21d4e4e0224294c4319bf139d" },
+        { "name": "tex_flow_512.gguf", "size": 2586734336, "sha256": "f57185599480e5945737ca3c56856e98fbe284eea3dba78cf4cce3516f6342f2" }
+      ]
+    }
+  ]
+}

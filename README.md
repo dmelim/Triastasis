@@ -23,7 +23,7 @@ Prebuilt binaries for Linux and Windows (Vulkan, ROCm, CUDA) are published on th
 ## Quick start
 
 New here? **Triastasis** is a one-command install that auto-detects your GPU
-runtime (CUDA / ROCm / Vulkan), downloads the server + weights, and gives you a
+runtime (CUDA / ROCm / Vulkan), installs the app, and gives you a
 drag-an-image → 3D desktop app with an interactive preview and a saved gallery.
 
 ```bash
@@ -71,8 +71,10 @@ auto-framing to settle, captures each view via `toBlob`, and
 **Triastasis** is the standalone desktop app (built with [Tauri](https://tauri.app))
 for anyone who wants image→3D without touching the command line. The one-command
 installer above auto-detects your GPU runtime, downloads the matching
-`trellis-server` build plus the ~16.5 GB of weights, and installs the app; on launch
-it starts and supervises the server for you, so the whole flow is drag-image →
+`trellis-server` build and installs the app; on first launch it offers verified
+in-app downloads of a model bundle (about 6.5–16.5 GB, recommended for your
+hardware), then starts and supervises the server for you, so the whole flow is
+drag-image →
 click → rotate the result.
 
 **Using it:**
