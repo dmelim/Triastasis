@@ -3,7 +3,7 @@ import type { BufferGeometry, Mesh, Object3D } from "three";
 import { generate, getGenerationProgress, health, type NativeProgress } from "./api";
 import { loadConfig } from "./config";
 import { createButton } from "./design-system/button";
-import { enhanceSelect, refreshSelect } from "./design-system/select";
+import { destroySelect, enhanceSelect, refreshSelect } from "./design-system/select";
 import {
   busyContentFor,
   canCloseModal,
@@ -153,9 +153,13 @@ const viewerPanel = document.querySelector<HTMLElement>(".viewer-panel")!;
 const generateModeBtn = $<HTMLButtonElement>("mode-generate");
 const viewModeBtn = $<HTMLButtonElement>("mode-view");
 const libraryModeBtn = $<HTMLButtonElement>("mode-library");
+const settingsModeBtn = $<HTMLButtonElement>("settings-btn");
 const generateModePanel = $("generate-mode-panel");
 const viewModePanel = $("view-mode-panel");
 const libraryModePanel = $("library-mode-panel");
+const settingsModePanel = $("settings-mode-panel");
+const settingsBody = $("settings-body");
+const assetDock = $("asset-dock");
 const libraryModeSummary = $("library-mode-summary");
 const librarySearch = $<HTMLInputElement>("library-search");
 const libraryFilter = $<HTMLSelectElement>("library-filter");
@@ -432,7 +436,7 @@ function updateViewerCaption(): void {
   viewerCaption.textContent = parts.join(" | ");
 }
 
-type WorkspaceMode = "generate" | "view" | "library";
+type WorkspaceMode = "generate" | "view" | "library" | "settings";
 
 type CandidateStatus = "queued" | "generating" | "ready" | "failed" | "cancelled";
 interface CandidateSlot {
@@ -505,18 +509,25 @@ function setWorkspaceMode(mode: WorkspaceMode): void {
   const generatingMode = mode === "generate";
   const viewingMode = mode === "view";
   const libraryMode = mode === "library";
+  const settingsMode = mode === "settings";
+  const fullPageMode = libraryMode || settingsMode;
   generateModeBtn.classList.toggle("active", generatingMode);
   viewModeBtn.classList.toggle("active", viewingMode);
   libraryModeBtn.classList.toggle("active", libraryMode);
+  settingsModeBtn.classList.toggle("active", settingsMode);
   generateModeBtn.setAttribute("aria-selected", String(generatingMode));
   viewModeBtn.setAttribute("aria-selected", String(viewingMode));
   libraryModeBtn.setAttribute("aria-selected", String(libraryMode));
+  settingsModeBtn.setAttribute("aria-selected", String(settingsMode));
   generateModePanel.classList.toggle("hidden", !generatingMode);
   viewModePanel.classList.toggle("hidden", !viewingMode);
-  panelLeft.classList.toggle("hidden", libraryMode);
-  viewerPanel.classList.toggle("hidden", libraryMode);
+  panelLeft.classList.toggle("hidden", fullPageMode);
+  viewerPanel.classList.toggle("hidden", fullPageMode);
   libraryModePanel.classList.toggle("hidden", !libraryMode);
+  settingsModePanel.classList.toggle("hidden", !settingsMode);
+  assetDock.classList.toggle("hidden", settingsMode);
   workspace.classList.toggle("is-library-mode", libraryMode);
+  workspace.classList.toggle("is-settings-mode", settingsMode);
   syncViewerReference();
 }
 
@@ -3258,23 +3269,35 @@ clearGalleryBtn.addEventListener("click", async () => {
   }
 });
 
-// ---- settings modal ----
-const modal = $("settings-modal");
-async function openSettings(): Promise<void> {
-  await renderSettings($("settings-body"), () => {
-    pollHealth();
-    void refreshHardwareGuardrails();
-    modal.classList.add("hidden");
-    toast("Settings applied");
-  });
-  modal.classList.remove("hidden");
+// ---- settings page ----
+async function renderSettingsPage(): Promise<void> {
+  settingsBody.setAttribute("aria-busy", "true");
+  try {
+    await renderSettings(settingsBody, () => {
+      pollHealth();
+      void refreshHardwareGuardrails();
+      toast("Settings applied");
+      void renderSettingsPage();
+    });
+  } catch (error) {
+    const runtimeStatus = settingsBody.querySelector<HTMLElement>(".settings-runtime");
+    settingsBody.querySelectorAll<HTMLSelectElement>("select").forEach(destroySelect);
+    settingsBody.innerHTML = `<div class="settings-error">${escapeHtml((error as Error).message || "Could not load settings")}</div>`;
+    if (runtimeStatus) {
+      runtimeStatus.classList.add("hidden");
+      settingsBody.append(runtimeStatus);
+    }
+  } finally {
+    settingsBody.setAttribute("aria-busy", "false");
+  }
 }
-$("settings-btn").addEventListener("click", openSettings);
+
+async function openSettings(): Promise<void> {
+  setWorkspaceMode("settings");
+  await renderSettingsPage();
+}
+settingsModeBtn.addEventListener("click", openSettings);
 $("banner-settings").addEventListener("click", openSettings);
-$("settings-close").addEventListener("click", () => modal.classList.add("hidden"));
-modal.addEventListener("click", (e) => {
-  if (e.target === modal) modal.classList.add("hidden");
-});
 
 // ---- server status ----
 async function pollHealthInternal(): Promise<void> {

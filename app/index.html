@@ -25,7 +25,7 @@
           <span>Library</span>
         </button>
       </div>
-      <button id="settings-btn" class="mode-button mode-settings" type="button" title="Settings" aria-label="Open settings">
+      <button id="settings-btn" class="mode-button mode-settings" type="button" aria-selected="false">
         <span class="mode-icon mode-icon-settings" aria-hidden="true"></span>
         <span>Settings</span>
       </button>
@@ -520,6 +520,26 @@
         <div id="library-grid" class="library-grid"></div>
       </section>
 
+      <section id="settings-mode-panel" class="settings-mode-panel panel hidden" aria-labelledby="settings-mode-title">
+        <header class="settings-mode-header">
+          <div>
+            <h1 id="settings-mode-title">Settings</h1>
+            <p>Configure how Triastasis generates and stores assets.</p>
+          </div>
+        </header>
+        <div id="settings-body" class="settings-page-body" aria-live="polite">
+          <div class="settings-runtime" aria-label="Runtime status">
+            <span class="settings-runtime-label">Runtime</span>
+            <div class="status">
+              <span id="automation-badge" class="badge api-badge" title="Local automation API">API starting</span>
+              <span id="backend-badge" class="badge" title="Active backend">-</span>
+              <span id="server-dot" class="dot" title="Server status"></span>
+              <span id="server-label" class="server-label">connecting…</span>
+            </div>
+          </div>
+          <div class="settings-loading">Loading settings…</div>
+        </div>
+      </section>
       <section id="asset-dock" class="asset-dock" aria-label="Generated assets">
         <div class="dock-header">
           <span class="dock-title">Library</span>
@@ -571,26 +591,6 @@
       </section>
     </main>
 
-    <div id="settings-modal" class="modal hidden">
-      <div class="modal-card">
-        <div class="modal-head">
-          <span>Settings</span>
-          <button id="settings-close" class="button button--icon modal-close" type="button" aria-label="Close settings" title="Close settings">
-            <span class="button-icon icon-x" aria-hidden="true"></span>
-          </button>
-        </div>
-        <div class="settings-runtime" aria-label="Runtime status">
-          <span class="settings-runtime-label">Runtime</span>
-          <div class="status">
-            <span id="automation-badge" class="badge api-badge" title="Local automation API">API starting</span>
-            <span id="backend-badge" class="badge" title="Active backend">-</span>
-            <span id="server-dot" class="dot" title="Server status"></span>
-            <span id="server-label" class="server-label">connecting…</span>
-          </div>
-        </div>
-        <div id="settings-body" class="modal-body"></div>
-      </div>
-    </div>
 
     <div id="manifest-modal" class="modal hidden">
       <div class="modal-card">
