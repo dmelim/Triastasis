@@ -22,10 +22,10 @@ export interface ManagedBundleState {
 }
 
 export type LegacyStatus =
-  | "CompleteUnverified"
-  | "Incomplete"
-  | "Unrecognized"
-  | "Empty";
+  | "completeUnverified"
+  | "incomplete"
+  | "unrecognized"
+  | "empty";
 
 export interface LegacyMatch {
   status: LegacyStatus;
