@@ -522,6 +522,10 @@ function setWorkspaceMode(mode: WorkspaceMode): void {
   viewModeBtn.setAttribute("aria-selected", String(viewingMode));
   libraryModeBtn.setAttribute("aria-selected", String(libraryMode));
   settingsModeBtn.setAttribute("aria-selected", String(settingsMode));
+  generateModeBtn.tabIndex = generatingMode ? 0 : -1;
+  viewModeBtn.tabIndex = viewingMode ? 0 : -1;
+  libraryModeBtn.tabIndex = libraryMode ? 0 : -1;
+  settingsModeBtn.tabIndex = settingsMode ? 0 : -1;
   generateModePanel.classList.toggle("hidden", !generatingMode);
   viewModePanel.classList.toggle("hidden", !viewingMode);
   panelLeft.classList.toggle("hidden", fullPageMode);
@@ -1228,6 +1232,21 @@ generateModeBtn.addEventListener("click", () => setWorkspaceMode("generate"));
 viewModeBtn.addEventListener("click", () => setWorkspaceMode("view"));
 libraryModeBtn.addEventListener("click", () => setWorkspaceMode("library"));
 
+const workspaceTabs = [generateModeBtn, viewModeBtn, libraryModeBtn, settingsModeBtn];
+workspaceTabs.forEach((tab, index) => {
+  tab.addEventListener("keydown", (event) => {
+    let nextIndex: number | null = null;
+    if (event.key === "ArrowDown" || event.key === "ArrowRight") nextIndex = (index + 1) % workspaceTabs.length;
+    if (event.key === "ArrowUp" || event.key === "ArrowLeft") nextIndex = (index - 1 + workspaceTabs.length) % workspaceTabs.length;
+    if (event.key === "Home") nextIndex = 0;
+    if (event.key === "End") nextIndex = workspaceTabs.length - 1;
+    if (nextIndex === null) return;
+    event.preventDefault();
+    workspaceTabs[nextIndex].click();
+    workspaceTabs[nextIndex].focus();
+  });
+});
+
 document.querySelectorAll<HTMLButtonElement>("[data-display-mode]").forEach((button) => {
   button.addEventListener("click", () => {
     const mode = button.dataset.displayMode as DisplayMode;
@@ -1561,6 +1580,8 @@ function showInputPreview(which: "source" | "mask"): void {
   maskTab.classList.toggle("active", showMask);
   sourceTab.setAttribute("aria-selected", String(!showMask));
   maskTab.setAttribute("aria-selected", String(showMask));
+  sourceTab.tabIndex = showMask ? -1 : 0;
+  maskTab.tabIndex = showMask ? 0 : -1;
 }
 
 function clearMaskPreview(): void {
@@ -1573,6 +1594,8 @@ function clearMaskPreview(): void {
   maskTab.classList.remove("active");
   sourceTab.setAttribute("aria-selected", "true");
   maskTab.setAttribute("aria-selected", "false");
+  sourceTab.tabIndex = 0;
+  maskTab.tabIndex = -1;
   previewMaskBtn.disabled = !inputImage || !isTauri();
   previewMaskBtn.textContent = "Preview mask";
   maskHelp.textContent = "";
@@ -1581,6 +1604,23 @@ function clearMaskPreview(): void {
 
 sourceTab.addEventListener("click", () => showInputPreview("source"));
 maskTab.addEventListener("click", () => showInputPreview("mask"));
+[sourceTab, maskTab].forEach((tab) => {
+  tab.addEventListener("keydown", (event) => {
+    const availableTabs = [sourceTab, maskTab].filter((candidate) => !candidate.disabled);
+    const currentIndex = availableTabs.indexOf(tab);
+    if (currentIndex < 0) return;
+    let nextIndex: number | null = null;
+    if (event.key === "ArrowRight") nextIndex = (currentIndex + 1) % availableTabs.length;
+    if (event.key === "ArrowLeft") nextIndex = (currentIndex - 1 + availableTabs.length) % availableTabs.length;
+    if (event.key === "Home") nextIndex = 0;
+    if (event.key === "End") nextIndex = availableTabs.length - 1;
+    if (nextIndex === null) return;
+    event.preventDefault();
+    const nextTab = availableTabs[nextIndex];
+    showInputPreview(nextTab === maskTab ? "mask" : "source");
+    nextTab.focus();
+  });
+});
 previewMaskBtn.addEventListener("click", async () => {
   if (!inputImage || generating || !isTauri()) return;
   let params: GenParams;
@@ -2474,6 +2514,9 @@ let userCollapsedVersionsThisSession = false;
 function applyLevelCollapsed(level: HTMLElement, toggle: HTMLButtonElement, collapsed: boolean): void {
   level.classList.toggle("is-collapsed", collapsed);
   toggle.setAttribute("aria-expanded", String(!collapsed));
+  const contentId = toggle.getAttribute("aria-controls");
+  const content = contentId ? document.getElementById(contentId) : null;
+  if (content) content.hidden = collapsed;
 }
 
 function initDockPreference(): void {
@@ -2853,6 +2896,8 @@ async function refreshGallery(): Promise<void> {
     assetLevelCount.textContent = "";
     versionLevelCount.textContent = "";
     versionLevel.classList.add("hidden");
+    dockFavoritesToggle.disabled = true;
+    clearGalleryBtn.disabled = true;
     selectedAssetId = null;
     const empty = document.createElement("div");
     empty.className = "gallery-empty";
@@ -2860,6 +2905,8 @@ async function refreshGallery(): Promise<void> {
     galleryEl.appendChild(empty);
     return;
   }
+  dockFavoritesToggle.disabled = false;
+  clearGalleryBtn.disabled = generating;
   const assetIds = [...new Set(recs.map((record) => record.assetId))];
   const assetGroups: AssetGroup[] = await Promise.all(assetIds.map(async (assetId) => ({
     assetId,
@@ -4171,9 +4218,9 @@ async function boot(): Promise<void> {
   renderViewerStats(null);
   setWorkspaceMode("generate");
   initDockPreference();
+  await initModelDownloadState(isTauri());
+  await initModelSetup();
   await refreshHardwareGuardrails();
-  initModelSetup();
-  void initModelDownloadState(isTauri());
   subscribeModelStorageRefresh();
   await pollHealth();
   await syncAutomationResults();

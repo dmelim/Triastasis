@@ -7,31 +7,38 @@
     <title>Triastasis</title>
   </head>
   <body>
-    <nav class="mode-rail" aria-label="Workspace navigation">
+    <nav class="mode-rail" role="tablist" aria-label="Workspace navigation" aria-orientation="vertical">
       <div class="rail-brand" title="Triastasis">
         <img src="/brand/triastasis-mark.png" alt="" />
       </div>
       <div class="rail-actions">
-        <button id="mode-generate" class="mode-button active" type="button" aria-selected="true">
+        <button id="mode-generate" class="mode-button active" type="button" role="tab" aria-selected="true" aria-controls="generate-mode-panel" tabindex="0">
           <span class="mode-icon mode-icon-generate" aria-hidden="true"></span>
           <span>Generate</span>
         </button>
-        <button id="mode-view" class="mode-button" type="button" aria-selected="false">
+        <button id="mode-view" class="mode-button" type="button" role="tab" aria-selected="false" aria-controls="view-mode-panel" tabindex="-1">
           <span class="mode-icon mode-icon-view" aria-hidden="true"></span>
           <span>View</span>
         </button>
-        <button id="mode-library" class="mode-button" type="button" aria-selected="false">
+        <button id="mode-library" class="mode-button" type="button" role="tab" aria-selected="false" aria-controls="library-mode-panel" tabindex="-1">
           <span class="mode-icon mode-icon-library" aria-hidden="true"></span>
           <span>Library</span>
         </button>
       </div>
-      <button id="settings-btn" class="mode-button mode-settings" type="button" aria-selected="false">
+      <button id="settings-btn" class="mode-button mode-settings" type="button" role="tab" aria-selected="false" aria-controls="settings-mode-panel" tabindex="-1">
         <span class="mode-icon mode-icon-settings" aria-hidden="true"></span>
         <span>Settings</span>
       </button>
     </nav>
 
-    <section id="model-setup" class="model-setup hidden" role="region" aria-label="Model setup"></section>
+    <section
+      id="model-setup"
+      class="model-setup hidden"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="model-setup-title"
+      tabindex="-1"
+    ></section>
 
     <div id="setup-banner" class="banner hidden">
       <span></span>
@@ -45,7 +52,7 @@
 
     <main id="workspace" class="workspace">
       <aside class="panel panel-left" aria-label="Workspace controls">
-        <section id="generate-mode-panel" class="mode-panel">
+        <section id="generate-mode-panel" class="mode-panel" role="tabpanel" aria-labelledby="mode-generate">
           <div class="panel-heading">
             <div>
               <h1>Generate</h1>
@@ -55,8 +62,8 @@
 
           <div class="input-head">
             <div class="preview-tabs" role="tablist" aria-label="Input preview">
-              <button id="preview-source-tab" class="preview-tab active" type="button" role="tab" aria-selected="true">Source</button>
-              <button id="preview-mask-tab" class="preview-tab" type="button" role="tab" aria-selected="false" disabled>Model input</button>
+              <button id="preview-source-tab" class="preview-tab active" type="button" role="tab" aria-selected="true" aria-controls="input-preview" tabindex="0">Source</button>
+              <button id="preview-mask-tab" class="preview-tab" type="button" role="tab" aria-selected="false" aria-controls="mask-preview" tabindex="-1" disabled>Model input</button>
             </div>
             <div class="input-head-actions">
               <button id="preview-mask-btn" class="link-btn" type="button" disabled>Preview mask</button>
@@ -439,7 +446,7 @@
         </section>
       </aside>
 
-      <section class="panel viewer-panel">
+      <section class="panel viewer-panel" id="view-mode-panel" role="tabpanel" aria-labelledby="mode-view">
         <div id="viewer-mount" class="viewer-mount">
           <div id="viewer-reference-popover" class="viewer-reference-popover hidden">
             <img id="viewer-reference-image" alt="Source image used to generate the current model" />
@@ -487,7 +494,7 @@
         </div>
       </section>
 
-      <section id="library-mode-panel" class="panel library-mode-panel hidden" aria-labelledby="library-mode-title">
+      <section id="library-mode-panel" class="panel library-mode-panel hidden" role="tabpanel" aria-labelledby="mode-library">
         <div class="library-mode-header">
           <div>
             <h1 id="library-mode-title">Library</h1>
@@ -522,7 +529,7 @@
         <div id="library-grid" class="library-grid"></div>
       </section>
 
-      <section id="settings-mode-panel" class="settings-mode-panel panel hidden" aria-labelledby="settings-mode-title">
+      <section id="settings-mode-panel" class="settings-mode-panel panel hidden" role="tabpanel" aria-labelledby="settings-btn">
         <header class="settings-mode-header">
           <div>
             <h1 id="settings-mode-title">Settings</h1>
@@ -547,7 +554,7 @@
           <span class="dock-title">Library</span>
           <span id="dock-counts" class="dock-counts muted"></span>
           <div class="dock-header-actions">
-            <button id="dock-favorites-toggle" class="button button--ghost button--sm dock-favorites-toggle" type="button" aria-pressed="false">
+            <button id="dock-favorites-toggle" class="button button--ghost button--sm dock-favorites-toggle" type="button" aria-pressed="false" disabled>
               <span class="button-icon icon-star" aria-hidden="true"></span>
               <span>Favourites</span>
             </button>
@@ -557,7 +564,7 @@
               <button id="add-viewed-to-assets" class="link-btn" type="button">Add to Assets</button>
               <button id="import-linked-manifest" class="link-btn hidden" type="button">Import linked generation</button>
             </span>
-            <button id="clear-gallery" class="link-btn" type="button">Clear all</button>
+            <button id="clear-gallery" class="link-btn" type="button" disabled>Clear all</button>
           </div>
         </div>
         <div id="asset-dock-body" class="dock-body">

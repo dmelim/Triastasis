@@ -23,7 +23,9 @@
         { "path": "**/*.bmp" },
         { "path": "**/*.BMP" },
         { "path": "**/*.gif" },
-        { "path": "**/*.GIF" }
+        { "path": "**/*.GIF" },
+        { "path": "**/*.glb" },
+        { "path": "**/*.GLB" }
       ]
     },
     {
