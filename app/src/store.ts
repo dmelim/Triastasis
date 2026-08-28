@@ -628,3 +628,8 @@ export async function clear(): Promise<void> {
 export function isEphemeral(): boolean {
   return useMemory;
 }
+
+/** A native gallery failure must not be presented as a genuinely empty library. */
+export function galleryLoadFailed(): boolean {
+  return nativePersistenceFailure !== null;
+}

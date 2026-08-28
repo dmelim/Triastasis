@@ -75,6 +75,7 @@ import {
   clear as clearStore,
   createDerivedVersion,
   del as removeRecord,
+  galleryLoadFailed,
   isEphemeral,
   listAssetVersions,
   newId,
@@ -2919,7 +2920,9 @@ async function refreshGallery(): Promise<void> {
     selectedAssetId = null;
     const empty = document.createElement("div");
     empty.className = "gallery-empty";
-    empty.textContent = "No assets yet. Generate a model to start a version history.";
+    empty.textContent = galleryLoadFailed()
+      ? "Saved assets could not be loaded. Your files remain on disk. Restart Triastasis and try again."
+      : "No assets yet. Generate a model to start a version history.";
     galleryEl.appendChild(empty);
     return;
   }

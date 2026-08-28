@@ -1110,7 +1110,7 @@ input:focus-visible,
   display: flex;
   align-items: flex-start;
   gap: 6px;
-  padding: 0 12px 12px;
+  padding: var(--space-3);
   overflow-x: auto;
   min-height: 96px;
   scroll-padding-inline: 12px;
@@ -1635,7 +1635,7 @@ input:focus-visible,
 }
 
 @media (max-width: 760px) {
-  .gallery { gap: 5px; padding-inline: 8px; scroll-padding-inline: 8px; }
+  .gallery { gap: 5px; scroll-padding-inline: var(--space-3); }
   .asset-group { max-width: calc(100vw - 16px); }
 }
 

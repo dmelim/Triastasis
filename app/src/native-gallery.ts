@@ -61,12 +61,8 @@ const tauriFs: GalleryFs = {
   },
   async listDirectories(path) {
     const fs = await loadFsPlugin();
-    try {
-      const entries = await fs.readDir(path, appLocalOptions(fs));
-      return entries.filter((entry) => entry.isDirectory && entry.name).map((entry) => entry.name!);
-    } catch {
-      return [];
-    }
+    const entries = await fs.readDir(path, appLocalOptions(fs));
+    return entries.filter((entry) => entry.isDirectory && entry.name).map((entry) => entry.name!);
   },
 };
 
