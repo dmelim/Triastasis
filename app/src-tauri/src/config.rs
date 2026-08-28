@@ -36,6 +36,10 @@ pub struct Config {
     /// bundle is active; `modelsDir` is used as-is.
     #[serde(rename = "activeBundle", default)]
     pub active_bundle: String,
+    /// Last custom model directory explicitly accepted by the user. Custom
+    /// files remain user-owned and are never managed or deleted by Triastasis.
+    #[serde(rename = "customModelsDir", default)]
+    pub custom_models_dir: String,
 }
 
 fn default_backend() -> String {
@@ -171,6 +175,7 @@ pub fn load() -> Option<Config> {
         output_dir: String::new(),
         models_root: String::new(),
         active_bundle: String::new(),
+        custom_models_dir: String::new(),
     })
 }
 

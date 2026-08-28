@@ -10,6 +10,7 @@ function scan(overrides: Partial<ModelsScan> = {}): ModelsScan {
     portable: false,
     activeBundle: null,
     managed: [],
+    custom: null,
     legacy: null,
     freeBytes: null,
     catalogVersion: 1,
@@ -91,4 +92,32 @@ test("the welcome appears once even when a model is already usable", () => {
 
 test("model recovery reopens setup without repeating onboarding", () => {
   assert.equal(shouldShowSetup(scan(), true), true);
+});
+
+test("an available active custom folder opens the normal app", () => {
+  const value = scan({
+    activeBundle: "custom-local",
+    custom: {
+      bundleId: "custom-local",
+      dir: "C:/models/custom",
+      available: true,
+      ggufFiles: 10,
+      error: null,
+    },
+  });
+  assert.equal(needsSetup(value), false);
+});
+
+test("a missing active custom folder reopens setup", () => {
+  const value = scan({
+    activeBundle: "custom-local",
+    custom: {
+      bundleId: "custom-local",
+      dir: "C:/models/missing",
+      available: false,
+      ggufFiles: 0,
+      error: "folder unavailable",
+    },
+  });
+  assert.equal(needsSetup(value), true);
 });

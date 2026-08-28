@@ -16,6 +16,7 @@ import {
 } from "./model-download-state";
 import {
   activateBundle,
+  activateCustomBundle,
   availableBytes,
   cancelBundle,
   detectNativeHardware,
@@ -24,7 +25,9 @@ import {
   recommendBundle,
   selectionWarning,
   setModelsRoot,
+  stopFailedBundle,
 } from "./model-manager";
+import { busyContentFor } from "./modal-busy";
 import { isTauri, pickDirectory } from "./tauri";
 
 function escapeHtml(value: string): string {
@@ -42,6 +45,7 @@ function section(): HTMLElement | null {
 
 const APP_SHELL_SELECTOR = ".mode-rail, #setup-banner, #recovery-banner, #workspace";
 const ONBOARDING_STORAGE_KEY = "triastasis.onboarding.complete.v1";
+let pendingCustomPath: string | null = null;
 
 function onboardingWasCompleted(): boolean {
   try {
@@ -112,7 +116,9 @@ export function needsSetup(scan: ModelsScan): boolean {
     (m) => m.registered && m.bundleId === scan.activeBundle,
   );
   const legacyUsable = scan.legacy?.status === "completeUnverified";
-  return !hasVerifiedActive && !legacyUsable;
+  const customUsable =
+    scan.activeBundle === "custom-local" && scan.custom?.available === true;
+  return !hasVerifiedActive && !legacyUsable && !customUsable;
 }
 
 /** The welcome is shown once; missing models still reopen the focused setup screen. */
@@ -204,17 +210,24 @@ async function renderSetup(
 
   const cards = views
     .map((view) => {
-      const isActive = progress?.bundleId === view.summary.id &&
-        ["preparing", "downloading", "verifying"].includes(progress.state);
+      const ownProgress = progress?.bundleId === view.summary.id ? progress : null;
       let action: string;
-      if (isActive && progress) {
+      if (ownProgress?.state === "preparing") {
+        action = `
+          <button class="button button--primary button--sm" type="button" disabled aria-busy="true">
+            <span class="spinner" aria-hidden="true"></span>
+            <span class="spinner-label">Starting...</span>
+          </button>`;
+      } else if (ownProgress && ["downloading", "verifying"].includes(ownProgress.state)) {
         action = `
           <button class="button button--secondary button--sm" data-act="pause" data-id="${view.summary.id}">Pause</button>
           <button class="button button--secondary button--sm" data-act="cancel" data-id="${view.summary.id}">Cancel</button>`;
       } else if (view.installed) {
         action = `<span class="model-badge ok">Installed</span>`;
-      } else if (progress?.bundleId === view.summary.id && progress.state === "paused") {
+      } else if (ownProgress?.state === "paused") {
         action = `<button class="button button--primary button--sm" data-act="resume" data-id="${view.summary.id}">Resume download</button>`;
+      } else if (ownProgress?.state === "failed") {
+        action = "";
       } else {
         action = `<button class="button button--primary button--sm" data-act="download" data-id="${view.summary.id}">Download</button>`;
       }
@@ -235,10 +248,13 @@ async function renderSetup(
     })
     .join("");
 
-  const progressBar =
-    progress && ["preparing", "downloading", "verifying"].includes(progress.state)
+  const progressPanel = progress
+    ? ["preparing", "downloading", "verifying"].includes(progress.state)
       ? renderProgress(progress)
-      : "";
+      : progress.state === "failed"
+        ? renderDownloadFailure(progress)
+        : ""
+    : "";
 
   const legacyPanel = renderLegacyPanel(scan);
   const installedIds = new Set(installedBundleIds(scan));
@@ -268,6 +284,43 @@ async function renderSetup(
         </div>
       </section>`
     : "";
+  const customPrompt = scan.custom
+    ? `
+      <section class="installed-bundle-prompt installed-bundle-prompt--custom" aria-labelledby="custom-bundle-title">
+        <div>
+          <div class="bundle-head">
+            <h3 id="custom-bundle-title">Custom model folder found</h3>
+            <span class="model-badge custom">Unverified custom bundle</span>
+          </div>
+          <p>${scan.custom.available
+            ? `${escapeHtml(scan.custom.dir)} contains ${scan.custom.ggufFiles} readable GGUF file${scan.custom.ggufFiles === 1 ? "" : "s"}.`
+            : escapeHtml(scan.custom.error || "The custom model folder is unavailable.")}</p>
+        </div>
+        ${scan.custom.available
+          ? `<div class="installed-bundle-actions">
+              <button class="button button--primary" data-act="${scan.activeBundle === scan.custom.bundleId ? "continue" : "use-custom"}" data-path="${escapeHtml(scan.custom.dir)}">
+                ${scan.activeBundle === scan.custom.bundleId ? "Continue with custom folder" : "Use custom folder"}
+              </button>
+            </div>`
+          : ""}
+      </section>`
+    : "";
+  const customImport = `
+    <div id="custom-model-import" class="custom-model-import">
+      <button class="link-btn" type="button" data-act="pick-custom">
+        ${scan.custom ? "Choose a different custom folder" : "Use your own model files"}
+      </button>
+      ${pendingCustomPath ? `
+        <div class="custom-model-confirm" role="alert" aria-labelledby="custom-model-warning-title">
+          <strong id="custom-model-warning-title">Use unverified model files?</strong>
+          <p>Custom model files are not verified or supported by Triastasis. They may be incompatible, unsafe, or incorrectly licensed. You are responsible for the files and their source.</p>
+          <code>${escapeHtml(pendingCustomPath)}</code>
+          <div class="custom-model-confirm-actions">
+            <button class="button button--primary button--sm" data-act="confirm-custom" data-path="${escapeHtml(pendingCustomPath)}">Use this folder</button>
+            <button class="button button--secondary button--sm" data-act="cancel-custom">Cancel</button>
+          </div>
+        </div>` : ""}
+    </div>`;
 
   root.setAttribute("aria-labelledby", showWelcome ? "model-setup-title" : "model-bundle-title");
   root.innerHTML = `
@@ -287,6 +340,7 @@ async function renderSetup(
           <p>${escapeHtml(intro)}</p>
         </div>
         ${installedPrompt}
+        ${customPrompt}
         <div class="model-location">
           <label>Storage location</label>
           <code id="model-root-path">${escapeHtml(scan.modelsRoot)}</code>
@@ -298,8 +352,9 @@ async function renderSetup(
         ${views.length
           ? `<div class="bundle-grid">${cards}</div>`
           : `<div class="model-catalog-empty" role="alert">Model choices are unavailable. Try restarting Triastasis.</div>`}
-        ${progressBar}
+        ${progressPanel}
         ${legacyPanel}
+        ${customImport}
         ${partials.length ? `<p class="model-note">An unfinished download was found and can be resumed.</p>` : ""}
       </section>
     </div>
@@ -318,10 +373,28 @@ function renderProgress(progress: NonNullable<ReturnType<typeof modelDownloadSna
       : progress.fileName
         ? `${escapeHtml(progress.fileName)} (${formatGigabytes(progress.fileBytesDone)} of ${formatGigabytes(progress.fileBytesTotal)})`
         : "Preparing...";
+  const summary = progress.state === "preparing"
+    ? "Starting download..."
+    : `${pct}%, ${formatSpeed(progress.bytesPerSecond)}, ${formatEta(progress.etaSeconds)} remaining`;
   return `
     <div class="model-progress" role="status" aria-label="Model download progress">
       <div class="model-progress-bar" aria-hidden="true"><div style="width:${pct}%"></div></div>
-      <p>${pct}%, ${formatSpeed(progress.bytesPerSecond)}, ${formatEta(progress.etaSeconds)} remaining<br><span>${detail}</span></p>
+      <p>${summary}<br><span>${detail}</span></p>
+    </div>`;
+}
+
+function renderDownloadFailure(
+  progress: NonNullable<ReturnType<typeof modelDownloadSnapshot>["progress"]>,
+): string {
+  const detail = progress.error || "The download stopped before the model bundle was ready.";
+  return `
+    <div class="model-progress model-progress--failed" role="alert">
+      <strong>Download stopped</strong>
+      <p>${escapeHtml(detail)}<br><span>The partial file was kept so Retry verification does not download it again.</span></p>
+      <div class="model-progress-actions">
+        <button class="button button--primary button--sm" data-act="resume" data-id="${escapeHtml(progress.bundleId)}">Retry verification</button>
+        <button class="button button--secondary button--sm" data-act="stop-download" data-id="${escapeHtml(progress.bundleId)}">Stop and remove partial</button>
+      </div>
     </div>`;
 }
 
@@ -342,7 +415,7 @@ function renderLegacyPanel(scan: ModelsScan): string {
   return `
     <div class="model-legacy">
       <p>This folder contains model files Triastasis could not recognize. They were left untouched.</p>
-      <p class="model-note">Choose another location above, or remove the unrecognized files yourself.</p>
+      <p class="model-note">Use them as a custom bundle below, choose another location, or manage the files yourself.</p>
     </div>`;
 }
 
@@ -359,7 +432,22 @@ function bindActions(root: HTMLElement, scan: ModelsScan): void {
     btn.onclick = async () => {
       const act = btn.dataset.act;
       const id = btn.dataset.id ?? "";
+      const beginsDownload =
+        act === "download" ||
+        act === "resume" ||
+        act === "confirm-custom" ||
+        act === "use-custom";
+      const originalHtml = btn.innerHTML;
+      const originalMinWidth = btn.style.minWidth;
       btn.disabled = true;
+      if (beginsDownload) {
+        const busy = busyContentFor(btn.getBoundingClientRect().width);
+        btn.style.minWidth = busy.minWidth;
+        btn.innerHTML = busy.html;
+        btn.querySelector<HTMLElement>(".spinner-label")!.textContent =
+          act === "resume" ? "Resuming..." : "Starting...";
+        btn.setAttribute("aria-busy", "true");
+      }
       try {
         if (act === "change-location") {
           const picked = await pickDirectory(scan.modelsRoot);
@@ -368,12 +456,25 @@ function bindActions(root: HTMLElement, scan: ModelsScan): void {
             if (free == null) throw new Error("The chosen folder is not accessible.");
             await setModelsRoot(picked);
           }
+        } else if (act === "pick-custom") {
+          const picked = await pickDirectory(scan.custom?.dir || scan.modelsDir || scan.modelsRoot);
+          if (picked) pendingCustomPath = picked;
+        } else if (act === "cancel-custom") {
+          pendingCustomPath = null;
+        } else if (act === "confirm-custom" || act === "use-custom") {
+          const path = btn.dataset.path ?? "";
+          showMessage(root, "Switching to the custom model folder...", false);
+          await activateCustomBundle(path);
+          pendingCustomPath = null;
+          markOnboardingCompleted();
         } else if (act === "download" || act === "resume") {
           await downloadBundle(id);
         } else if (act === "pause") {
           await pauseBundle();
         } else if (act === "cancel") {
           await cancelBundle();
+        } else if (act === "stop-download") {
+          await stopFailedBundle(id);
         } else if (act === "use") {
           showMessage(root, "Switching to this bundle...", false);
           await activateBundle(id);
@@ -384,6 +485,11 @@ function bindActions(root: HTMLElement, scan: ModelsScan): void {
       } catch (e) {
         showMessage(root, (e as Error).message || String(e), true);
       } finally {
+        if (beginsDownload) {
+          btn.innerHTML = originalHtml;
+          btn.style.minWidth = originalMinWidth;
+          btn.removeAttribute("aria-busy");
+        }
         btn.disabled = false;
         void refreshModelSetup();
       }

@@ -3303,6 +3303,7 @@ mod tests {
             output_dir: String::new(),
             models_root: String::new(),
             active_bundle: String::new(),
+            custom_models_dir: String::new(),
         };
 
         let error = match start(&cfg, &state) {

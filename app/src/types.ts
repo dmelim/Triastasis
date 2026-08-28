@@ -334,6 +334,8 @@ export interface AppConfig {
   modelsRoot: string;
   /** active managed bundle id, or empty for a legacy flat model directory. */
   activeBundle: string;
+  /** last user-approved, unverified custom model directory. */
+  customModelsDir: string;
   backend: string;
   gpu: number;
   host: string;
@@ -352,7 +354,7 @@ export interface GenRecord {
   params: GenParams;
   input: Blob; // source image
   glb: Blob; // resulting model/gltf-binary
-  thumb: Blob | null; // model-viewer snapshot for the gallery
+  thumb: Blob | null; // rendered snapshot for the gallery
   /** Present when this record is one candidate inside a seed sweep. */
   sweepGroupId?: string;
   sweepIndex?: number;

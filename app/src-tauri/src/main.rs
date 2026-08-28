@@ -450,6 +450,53 @@ fn activate_model_bundle(
     }
 }
 
+/// Activate a user-selected local model folder without claiming catalog or
+/// publisher verification. The folder remains user-owned and is never copied
+/// or deleted by this command.
+#[tauri::command]
+fn activate_custom_model_directory(app: tauri::AppHandle, path: String) -> Result<(), String> {
+    let requested = path.trim();
+    if requested.is_empty() {
+        return Err("choose a custom model folder first".to_string());
+    }
+    let (canonical, _) = models::inspect_custom_model_dir(std::path::Path::new(requested))?;
+    let custom_dir = canonical.to_string_lossy().into_owned();
+    let previous = config::load().ok_or("no config.json found")?;
+    let mut next = previous.clone();
+    if next.models_root.trim().is_empty() {
+        let scan = models::scan_models()?;
+        next.models_root = scan.models_root;
+    }
+    next.models_dir = custom_dir.clone();
+    next.custom_models_dir = custom_dir;
+    next.active_bundle = models::CUSTOM_BUNDLE_ID.to_string();
+    config::save(&next)?;
+
+    match tray::restart_services(&app) {
+        Ok(()) => Ok(()),
+        Err(error) => {
+            config::save(&previous).ok();
+            tray::restart_services(&app).ok();
+            Err(format!(
+                "custom model activation failed, previous model folder restored: {error}"
+            ))
+        }
+    }
+}
+
+/// Forget a custom folder without touching any files inside it.
+#[tauri::command]
+fn forget_custom_model_directory() -> Result<(), String> {
+    let mut cfg = config::load().ok_or("no config.json found")?;
+    if cfg.active_bundle == models::CUSTOM_BUNDLE_ID {
+        return Err(
+            "switch to another model bundle before forgetting the active custom folder".to_string(),
+        );
+    }
+    cfg.custom_models_dir.clear();
+    config::save(&cfg)
+}
+
 /// Remove an installed but inactive bundle after explicit confirmation.
 #[tauri::command]
 fn remove_model_bundle(bundle_id: String) -> Result<(), String> {
@@ -522,6 +569,8 @@ fn main() {
             scan_partial_downloads,
             discard_model_download,
             activate_model_bundle,
+            activate_custom_model_directory,
+            forget_custom_model_directory,
             remove_model_bundle
         ])
         .setup(|app| {

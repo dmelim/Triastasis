@@ -11,16 +11,20 @@ import {
 } from "./model-download-state";
 import {
   activateBundle,
+  activateCustomBundle,
   availableBytes,
   cancelBundle,
   discardPartial,
   downloadBundle,
+  forgetCustomBundle,
   pauseBundle,
   removeBundle,
   verifyAndRegister,
 } from "./model-manager";
+import { pickDirectory } from "./tauri";
 
 let storageMessage: { text: string; error: boolean } | null = null;
+let pendingCustomDirectory: string | null = null;
 
 function storageMessageHtml(): string {
   if (!storageMessage) return "";
@@ -109,6 +113,43 @@ export async function renderModelStorage(container: HTMLElement | null): Promise
         </div>`;
     })
     .join("");
+  const custom = scan.custom;
+  const customActive = custom?.bundleId === scan.activeBundle;
+  const customRow = custom
+    ? `
+      <div class="bundle-row${customActive ? " active" : ""}">
+        <div class="bundle-row-main">
+          <strong>Custom model folder <span class="model-badge custom">Unverified custom bundle</span>${customActive ? ' <span class="model-badge ok">Active</span>' : ""}</strong>
+          <span>${custom.available
+            ? `${escapeHtml(custom.dir)} (${custom.ggufFiles} readable GGUF file${custom.ggufFiles === 1 ? "" : "s"})`
+            : escapeHtml(custom.error || "Folder unavailable")}</span>
+        </div>
+        <div class="bundle-actions">
+          ${custom.available && !customActive
+            ? `<button class="button button--primary button--sm" data-act="use-custom" data-path="${escapeHtml(custom.dir)}">Use this folder</button>`
+            : ""}
+          ${!customActive
+            ? `<button class="button button--secondary button--sm" data-act="forget-custom">Forget</button>`
+            : ""}
+        </div>
+      </div>`
+    : "";
+  const customImport = `
+    <div class="custom-model-import">
+      <button class="button button--secondary button--sm" data-act="pick-custom">
+        ${custom ? "Choose a different custom folder" : "Add custom model folder"}
+      </button>
+      ${pendingCustomDirectory ? `
+        <div class="custom-model-confirm" role="alert" aria-labelledby="settings-custom-warning-title">
+          <strong id="settings-custom-warning-title">Use unverified model files?</strong>
+          <p>Custom model files are not verified or supported by Triastasis. They may be incompatible, unsafe, or incorrectly licensed. You are responsible for the files and their source.</p>
+          <code>${escapeHtml(pendingCustomDirectory)}</code>
+          <div class="custom-model-confirm-actions">
+            <button class="button button--primary button--sm" data-act="confirm-custom" data-path="${escapeHtml(pendingCustomDirectory)}">Use this folder</button>
+            <button class="button button--secondary button--sm" data-act="cancel-custom">Cancel</button>
+          </div>
+        </div>` : ""}
+    </div>`;
 
   container.innerHTML = `
     <div class="model-storage">
@@ -118,7 +159,8 @@ export async function renderModelStorage(container: HTMLElement | null): Promise
         <div class="settings-meta-item"><span>Estimated model storage used</span><strong>${escapeHtml(formatGigabytes(used))}</strong></div>
         <div class="settings-meta-item"><span>Model revision</span><strong>${escapeHtml(scan.modelRevision.slice(0, 12))}</strong></div>
       </div>
-      <div class="bundle-list">${rows}</div>
+      <div class="bundle-list">${rows}${customRow}</div>
+      ${customImport}
       ${storageMessageHtml()}
     </div>`;
 
@@ -130,13 +172,35 @@ export async function renderModelStorage(container: HTMLElement | null): Promise
       let rerender = true;
       try {
         storageMessage = null;
-        if ((act === "remove" || act === "discard-partial") && btn.dataset.confirm !== "true") {
+        if (
+          (act === "remove" || act === "discard-partial" || act === "forget-custom") &&
+          btn.dataset.confirm !== "true"
+        ) {
           btn.dataset.confirm = "true";
-          btn.textContent = act === "remove" ? "Confirm removal" : "Confirm discard";
+          btn.textContent =
+            act === "remove"
+              ? "Confirm removal"
+              : act === "forget-custom"
+                ? "Confirm forget"
+                : "Confirm discard";
           rerender = false;
           return;
         }
         if (act === "use") await activateBundle(id);
+        if (act === "pick-custom") {
+          const picked = await pickDirectory(custom?.dir || scan.modelsDir || scan.modelsRoot);
+          if (picked) pendingCustomDirectory = picked;
+        }
+        if (act === "cancel-custom") pendingCustomDirectory = null;
+        if (act === "confirm-custom" || act === "use-custom") {
+          await activateCustomBundle(btn.dataset.path ?? "");
+          pendingCustomDirectory = null;
+          storageMessage = { text: "Custom model folder activated.", error: false };
+        }
+        if (act === "forget-custom") {
+          await forgetCustomBundle();
+          storageMessage = { text: "Custom folder forgotten. No model files were deleted.", error: false };
+        }
         if (act === "verify") {
           await verifyAndRegister(id);
           storageMessage = { text: "All model files verified successfully.", error: false };

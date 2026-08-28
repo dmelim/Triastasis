@@ -12,6 +12,7 @@ const DEFAULTS: AppConfig = {
   modelsDir: "",
   modelsRoot: "",
   activeBundle: "",
+  customModelsDir: "",
   backend: "unknown",
   gpu: 0,
   host: "127.0.0.1",

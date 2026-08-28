@@ -23,6 +23,39 @@ let snapshot: ModelDownloadSnapshot = { progress: null, partial: [], catalog: []
 const listeners = new Set<Listener>();
 let initialized = false;
 
+export function startingDownloadProgress(
+  bundleId: string,
+  totalBytes: number,
+): DownloadProgress {
+  return {
+    bundleId,
+    state: "preparing",
+    error: null,
+    fileName: null,
+    fileIndex: 0,
+    fileCount: 0,
+    fileBytesDone: 0,
+    fileBytesTotal: 0,
+    totalBytesDone: 0,
+    totalBytesTotal: totalBytes,
+    bytesPerSecond: 0,
+    etaSeconds: null,
+  };
+}
+
+export function failedDownloadProgress(
+  previous: DownloadProgress,
+  error: string,
+): DownloadProgress {
+  return {
+    ...previous,
+    state: "failed",
+    error,
+    bytesPerSecond: 0,
+    etaSeconds: null,
+  };
+}
+
 export function modelDownloadSnapshot(): ModelDownloadSnapshot {
   return snapshot;
 }
@@ -35,6 +68,28 @@ export function subscribeModelDownloads(listener: Listener): () => void {
 function emit(): void {
   const copy = snapshot;
   listeners.forEach((listener) => listener(copy));
+}
+
+/** Show feedback synchronously while the native worker is being scheduled. */
+export function markDownloadStarting(bundleId: string): void {
+  const totalBytes = snapshot.catalog.find((bundle) => bundle.id === bundleId)?.totalBytes ?? 0;
+  snapshot = { ...snapshot, progress: startingDownloadProgress(bundleId, totalBytes) };
+  emit();
+}
+
+/** Preserve an invoke failure in the shared UI instead of reverting to idle. */
+export function markDownloadFailed(bundleId: string, error: string): void {
+  const current = snapshot.progress?.bundleId === bundleId
+    ? snapshot.progress
+    : startingDownloadProgress(bundleId, 0);
+  snapshot = { ...snapshot, progress: failedDownloadProgress(current, error) };
+  emit();
+}
+
+export function clearDownloadProgress(bundleId: string): void {
+  if (snapshot.progress?.bundleId !== bundleId) return;
+  snapshot = { ...snapshot, progress: null };
+  emit();
 }
 
 /** Idempotent bootstrapping: event subscription + initial partial/catalog scan. */

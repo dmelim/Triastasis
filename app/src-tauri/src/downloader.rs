@@ -1,8 +1,8 @@
 // Phase 2 of the in-app model installation plan
-// (docs/model-installation-plan.md): the native download engine.
+// Native model download engine with resumable partial files and verification.
 //
 // Streaming resumable downloads against the pinned catalog revision, with
-// pause/cancel, bounded retries, ETag-validated resume, atomic commits, a
+// pause/cancel, bounded retries, range-validated resume, atomic commits, a
 // models-directory lock, and progress events for the UI. Downloads never touch
 // the active bundle; activation is a separate command.
 
@@ -24,6 +24,7 @@ pub struct DownloadProgress {
     pub bundle_id: String,
     /// preparing | downloading | paused | verifying | ready | failed | cancelled
     pub state: String,
+    pub error: Option<String>,
     pub file_name: Option<String>,
     pub file_index: usize,
     pub file_count: usize,
@@ -198,12 +199,135 @@ fn now_secs() -> u64 {
         .unwrap_or(0)
 }
 
-fn strip_etag(value: &str) -> String {
-    value
-        .trim()
-        .trim_start_matches("W/")
-        .trim_matches('"')
-        .to_ascii_lowercase()
+#[derive(Debug, Deserialize)]
+struct HuggingFaceLfs {
+    oid: String,
+    size: u64,
+}
+
+#[derive(Debug, Deserialize)]
+struct HuggingFaceTreeEntry {
+    path: String,
+    size: u64,
+    lfs: Option<HuggingFaceLfs>,
+}
+
+fn sha256_from_tree_metadata(
+    body: &str,
+    expected_path: &str,
+    expected_size: u64,
+) -> Result<String, String> {
+    let entries = serde_json::from_str::<Vec<HuggingFaceTreeEntry>>(body)
+        .map_err(|error| format!("invalid upstream metadata: {error}"))?;
+    let entry = entries
+        .into_iter()
+        .find(|entry| entry.path == expected_path)
+        .ok_or_else(|| format!("upstream metadata did not list {expected_path}"))?;
+    if entry.size != expected_size {
+        return Err(format!(
+            "upstream metadata reports {} bytes, expected {}",
+            entry.size, expected_size
+        ));
+    }
+    let lfs = entry
+        .lfs
+        .ok_or_else(|| "upstream metadata did not provide an LFS SHA-256".to_string())?;
+    if lfs.size != expected_size {
+        return Err(format!(
+            "upstream LFS metadata reports {} bytes, expected {}",
+            lfs.size, expected_size
+        ));
+    }
+    if lfs.oid.len() != 64 || !lfs.oid.chars().all(|c| c.is_ascii_hexdigit()) {
+        return Err("upstream metadata returned an invalid SHA-256".to_string());
+    }
+    Ok(lfs.oid.to_ascii_lowercase())
+}
+
+fn upstream_file_path(bundle: &models::Bundle, file: &models::ModelFile) -> String {
+    if bundle.path_prefix.is_empty() {
+        file.name.clone()
+    } else {
+        format!("{}/{}", bundle.path_prefix, file.name)
+    }
+}
+
+fn pinned_upstream_sha256(
+    client: &reqwest::blocking::Client,
+    catalog: &ModelCatalog,
+    bundle: &models::Bundle,
+    file: &models::ModelFile,
+) -> Result<String, String> {
+    if catalog.source.kind != "huggingface" {
+        return Err(format!(
+            "unsupported catalog source: {}",
+            catalog.source.kind
+        ));
+    }
+    let tree_url = if bundle.path_prefix.is_empty() {
+        format!(
+            "https://huggingface.co/api/models/{}/tree/{}?recursive=false&expand=true",
+            catalog.source.repo, catalog.model_revision
+        )
+    } else {
+        format!(
+            "https://huggingface.co/api/models/{}/tree/{}/{}?recursive=false&expand=true",
+            catalog.source.repo, catalog.model_revision, bundle.path_prefix
+        )
+    };
+    let response = client
+        .get(&tree_url)
+        .send()
+        .map_err(|error| format!("upstream metadata request failed: {error}"))?;
+    if !response.status().is_success() {
+        return Err(format!(
+            "upstream metadata returned HTTP {}",
+            response.status()
+        ));
+    }
+    let body = response
+        .text()
+        .map_err(|error| format!("could not read upstream metadata: {error}"))?;
+    let expected_path = upstream_file_path(bundle, file);
+    sha256_from_tree_metadata(&body, &expected_path, file.size)
+}
+
+fn verify_hash_with_fallback(
+    client: &reqwest::blocking::Client,
+    catalog: &ModelCatalog,
+    bundle: &models::Bundle,
+    file: &models::ModelFile,
+    actual: &str,
+) -> Result<bool, String> {
+    if actual == file.sha256 {
+        return Ok(false);
+    }
+    let source_url = catalog.file_url(bundle, file);
+    match pinned_upstream_sha256(client, catalog, bundle, file) {
+        Ok(upstream) if upstream == actual => Ok(true),
+        Ok(upstream) => Err(format!(
+            "Could not verify {}. Download source: {}. Catalog expected {}, downloaded {}, and pinned upstream metadata reports {}.",
+            file.name, source_url, file.sha256, actual, upstream
+        )),
+        Err(reason) => Err(format!(
+            "Could not verify {}. Download source: {}. Catalog expected {} and downloaded {}. The pinned upstream metadata check also failed: {}.",
+            file.name, source_url, file.sha256, actual, reason
+        )),
+    }
+}
+
+fn replace_effective_hash(
+    catalog: &mut ModelCatalog,
+    bundle_id: &str,
+    file_name: &str,
+    sha256: &str,
+) {
+    if let Some(file) = catalog
+        .bundle_mut(bundle_id)
+        .and_then(|bundle| bundle.files.iter_mut().find(|file| file.name == file_name))
+    {
+        file.sha256 = sha256.to_string();
+    }
 }
 
 fn set_state(status: &Mutex<DownloadStatus>, state: &str, error: Option<String>) {
@@ -244,6 +368,7 @@ fn progress_payload(
     DownloadProgress {
         bundle_id: bundle_id.into(),
         state: state.into(),
+        error: None,
         file_name: file_name.map(Into::into),
         file_index,
         file_count,
@@ -270,22 +395,21 @@ fn fail(
     total_total: u64,
 ) -> String {
     set_state(status, "failed", Some(message.to_string()));
-    emit_progress(
-        app,
-        &progress_payload(
-            bundle_id,
-            "failed",
-            None,
-            file_index,
-            file_count,
-            0,
-            0,
-            total_done,
-            total_total,
-            0,
-        ),
+    let mut progress = progress_payload(
+        bundle_id,
+        "failed",
+        None,
+        file_index,
+        file_count,
+        0,
+        0,
+        total_done,
+        total_total,
+        0,
     );
-    format!("model download failed: {message}")
+    progress.error = Some(message.to_string());
+    emit_progress(app, &progress);
+    message.to_string()
 }
 
 fn retryable(attempt: u32) -> bool {
@@ -376,21 +500,20 @@ pub fn run_download(
                 .map(|bundle| (bundle.files.len(), ModelCatalog::total_bytes(bundle)))
                 .unwrap_or((0, 0));
             set_state(&active.status, "failed", Some(error.clone()));
-            emit_progress(
-                app,
-                &progress_payload(
-                    bundle_id,
-                    "failed",
-                    None,
-                    0,
-                    file_count,
-                    0,
-                    0,
-                    0,
-                    total_bytes,
-                    0,
-                ),
+            let mut progress = progress_payload(
+                bundle_id,
+                "failed",
+                None,
+                0,
+                file_count,
+                0,
+                0,
+                0,
+                total_bytes,
+                0,
             );
+            progress.error = Some(error.clone());
+            emit_progress(app, &progress);
         }
     }
     control.finish(bundle_id);
@@ -407,6 +530,7 @@ fn run_download_inner(
     bundle_id: &str,
 ) -> Result<(), String> {
     let cat = models::catalog()?;
+    let mut effective_catalog = cat.clone();
     let bundle = cat
         .bundle(bundle_id)
         .ok_or_else(|| format!("unknown bundle: {bundle_id}"))?
@@ -474,6 +598,36 @@ fn run_download_inner(
         .build()
         .map_err(|e| format!("network client: {e}"))?;
 
+    for file in &bundle.files {
+        if !is_final(&file.name, file.size) {
+            continue;
+        }
+        let path = leaf.join(&file.name);
+        let actual = models::hash_file(&path)?;
+        match verify_hash_with_fallback(&client, cat, &bundle, file, &actual) {
+            Ok(true) => {
+                eprintln!(
+                    "[studio] catalog hash for {} was stale; pinned upstream SHA-256 confirmed the existing file",
+                    file.name
+                );
+                replace_effective_hash(&mut effective_catalog, bundle_id, &file.name, &actual);
+            }
+            Ok(false) => {}
+            Err(message) => {
+                return Err(fail(
+                    app,
+                    status,
+                    bundle_id,
+                    &message,
+                    0,
+                    file_count,
+                    0,
+                    total_total,
+                ));
+            }
+        }
+    }
+
     let mut total_done: u64 = bundle
         .files
         .iter()
@@ -494,19 +648,54 @@ fn run_download_inner(
         // locally instead of issuing an invalid bytes=<size>- range request.
         if partial.metadata().map(|m| m.len()).unwrap_or(0) == file.size {
             match models::hash_file(&partial) {
-                Ok(hash) if hash == file.sha256 => {
-                    let target = leaf.join(&file.name);
-                    if target.exists() {
-                        std::fs::remove_file(&target)
-                            .map_err(|e| format!("replace {}: {e}", target.display()))?;
+                Ok(hash) => match verify_hash_with_fallback(&client, cat, &bundle, file, &hash) {
+                    Ok(used_fallback) => {
+                        if used_fallback {
+                            eprintln!(
+                                "[studio] catalog hash for {} was stale; pinned upstream SHA-256 confirmed the partial file",
+                                file.name
+                            );
+                            replace_effective_hash(
+                                &mut effective_catalog,
+                                bundle_id,
+                                &file.name,
+                                &hash,
+                            );
+                        }
+                        let target = leaf.join(&file.name);
+                        if target.exists() {
+                            std::fs::remove_file(&target)
+                                .map_err(|e| format!("replace {}: {e}", target.display()))?;
+                        }
+                        std::fs::rename(&partial, &target)
+                            .map_err(|e| format!("commit {}: {e}", target.display()))?;
+                        total_done += file.size;
+                        continue;
                     }
-                    std::fs::rename(&partial, &target)
-                        .map_err(|e| format!("commit {}: {e}", target.display()))?;
-                    total_done += file.size;
-                    continue;
-                }
-                _ => {
-                    std::fs::remove_file(&partial).ok();
+                    Err(message) => {
+                        return Err(fail(
+                            app,
+                            status,
+                            bundle_id,
+                            &message,
+                            index,
+                            file_count,
+                            total_done + file.size,
+                            total_total,
+                        ));
+                    }
+                },
+                Err(error) => {
+                    return Err(fail(
+                        app,
+                        status,
+                        bundle_id,
+                        &error,
+                        index,
+                        file_count,
+                        total_done,
+                        total_total,
+                    ));
                 }
             }
         }
@@ -559,9 +748,7 @@ fn run_download_inner(
 
             let mut request = client.get(&url);
             if start_len > 0 {
-                request = request
-                    .header("Range", format!("bytes={start_len}-"))
-                    .header("If-Range", format!("\"{}\"", file.sha256));
+                request = request.header("Range", format!("bytes={start_len}-"));
             }
             let mut response = match request.send() {
                 Ok(r) => r,
@@ -583,23 +770,6 @@ fn run_download_inner(
                     ));
                 }
             };
-
-            // Refuse anything that is not the pinned object before writing.
-            if let Some(etag) = response
-                .headers()
-                .get("etag")
-                .and_then(|v| v.to_str().ok())
-                .map(strip_etag)
-                .filter(|e| !e.is_empty())
-            {
-                if etag != file.sha256.to_ascii_lowercase() {
-                    return Err(fail(
-                        app, status, bundle_id,
-                        "the remote file no longer matches the pinned revision; refusing to download",
-                        index, file_count, total_done, total_total,
-                    ));
-                }
-            }
 
             let append = response.status() == reqwest::StatusCode::PARTIAL_CONTENT;
             if append {
@@ -799,27 +969,33 @@ fn run_download_inner(
                 ));
             }
             match models::hash_file(&partial) {
-                Ok(hash) if hash == file.sha256 => {}
-                Ok(hash) => {
-                    // Wrong content: discard the partial and spend a retry.
-                    std::fs::remove_file(&partial).ok();
-                    let msg = format!("checksum mismatch ({hash})");
-                    if retryable(attempts) {
-                        eprintln!("[studio] {msg}; discarding partial and retrying from scratch");
-                        backoff(attempts);
-                        continue;
+                Ok(hash) => match verify_hash_with_fallback(&client, cat, &bundle, file, &hash) {
+                    Ok(true) => {
+                        eprintln!(
+                            "[studio] catalog hash for {} was stale; pinned upstream SHA-256 confirmed the downloaded file",
+                            file.name
+                        );
+                        replace_effective_hash(
+                            &mut effective_catalog,
+                            bundle_id,
+                            &file.name,
+                            &hash,
+                        );
                     }
-                    return Err(fail(
-                        app,
-                        status,
-                        bundle_id,
-                        "downloaded file failed checksum verification repeatedly",
-                        index,
-                        file_count,
-                        total_done + start_len + received,
-                        total_total,
-                    ));
-                }
+                    Ok(false) => {}
+                    Err(message) => {
+                        return Err(fail(
+                            app,
+                            status,
+                            bundle_id,
+                            &message,
+                            index,
+                            file_count,
+                            total_done + start_len + received,
+                            total_total,
+                        ));
+                    }
+                },
                 Err(e) => {
                     return Err(fail(
                         app,
@@ -861,7 +1037,7 @@ fn run_download_inner(
             0,
         ),
     );
-    if let Err(e) = models::verify_and_register(&root, bundle_id) {
+    if let Err(e) = models::verify_and_register_with_catalog(&root, bundle_id, &effective_catalog) {
         return Err(fail(
             app,
             status,
@@ -891,4 +1067,33 @@ fn run_download_inner(
         ),
     );
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::sha256_from_tree_metadata;
+
+    const SHA256: &str = "10c5dd4dcac904cf81c9a16180eb66f167dd52ab55867f54a44567b0b2babbc1";
+
+    #[test]
+    fn pinned_tree_metadata_returns_the_lfs_sha256() {
+        let body = format!(
+            r#"[{{"path":"q8/birefnet.gguf","size":882749024,"xetHash":"not-a-sha256","lfs":{{"oid":"{SHA256}","size":882749024}}}}]"#
+        );
+        assert_eq!(
+            sha256_from_tree_metadata(&body, "q8/birefnet.gguf", 882_749_024).unwrap(),
+            SHA256
+        );
+    }
+
+    #[test]
+    fn pinned_tree_metadata_rejects_missing_lfs_or_wrong_sizes() {
+        let no_lfs = r#"[{"path":"q8/birefnet.gguf","size":882749024}]"#;
+        assert!(sha256_from_tree_metadata(no_lfs, "q8/birefnet.gguf", 882_749_024).is_err());
+
+        let wrong_size = format!(
+            r#"[{{"path":"q8/birefnet.gguf","size":1,"lfs":{{"oid":"{SHA256}","size":1}}}}]"#
+        );
+        assert!(sha256_from_tree_metadata(&wrong_size, "q8/birefnet.gguf", 882_749_024).is_err());
+    }
 }

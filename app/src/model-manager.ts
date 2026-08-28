@@ -5,10 +5,18 @@
 import { invoke } from "./tauri";
 import { loadConfig, saveConfig } from "./config";
 import {
+  clearDownloadProgress,
+  markDownloadFailed,
+  markDownloadStarting,
+  refreshPartialDownloads,
+} from "./model-download-state";
+import {
+  activateCustomModelDirectory,
   activateModelBundle,
   cancelModelDownload,
   discardModelDownload,
   freeDiskSpace,
+  forgetCustomModelDirectory,
   pauseModelDownload,
   removeModelBundle,
   startModelDownload,
@@ -107,7 +115,14 @@ export async function currentModelsRoot(fallback: string): Promise<string> {
 // ---- actions ------------------------------------------------------------------
 
 export async function downloadBundle(bundleId: string): Promise<void> {
-  await startModelDownload(bundleId);
+  markDownloadStarting(bundleId);
+  try {
+    await startModelDownload(bundleId);
+  } catch (error) {
+    const message = (error as Error).message || String(error);
+    markDownloadFailed(bundleId, message);
+    throw error;
+  }
 }
 
 export async function pauseBundle(): Promise<void> {
@@ -118,12 +133,28 @@ export async function cancelBundle(): Promise<void> {
   await cancelModelDownload();
 }
 
+export async function stopFailedBundle(bundleId: string): Promise<void> {
+  await discardModelDownload(bundleId);
+  clearDownloadProgress(bundleId);
+  await refreshPartialDownloads();
+}
+
 export async function verifyAndRegister(bundleId: string): Promise<void> {
   await verifyModelBundle(bundleId);
 }
 
 export async function activateBundle(bundleId: string): Promise<void> {
   await activateModelBundle(bundleId);
+  await loadConfig(true);
+}
+
+export async function activateCustomBundle(path: string): Promise<void> {
+  await activateCustomModelDirectory(path);
+  await loadConfig(true);
+}
+
+export async function forgetCustomBundle(): Promise<void> {
+  await forgetCustomModelDirectory();
   await loadConfig(true);
 }
 

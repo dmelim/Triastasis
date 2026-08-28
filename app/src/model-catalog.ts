@@ -1,5 +1,5 @@
 // Typed bridge over the native model-management commands (Phases 1-2 of
-// docs/model-installation-plan.md). All commands are Tauri-only; callers must
+// All commands are Tauri-only; callers must
 // guard with isTauri().
 
 import { invoke, listen } from "./tauri";
@@ -19,6 +19,14 @@ export interface ManagedBundleState {
   registered: boolean;
   sizedFiles: number;
   totalFiles: number;
+}
+
+export interface CustomBundleState {
+  bundleId: string;
+  dir: string;
+  available: boolean;
+  ggufFiles: number;
+  error: string | null;
 }
 
 export type LegacyStatus =
@@ -41,6 +49,7 @@ export interface ModelsScan {
   portable: boolean;
   activeBundle: string | null;
   managed: ManagedBundleState[];
+  custom: CustomBundleState | null;
   legacy: LegacyMatch | null;
   freeBytes: number | null;
   catalogVersion: number;
@@ -59,6 +68,7 @@ export type DownloadState =
 export interface DownloadProgress {
   bundleId: string;
   state: DownloadState;
+  error: string | null;
   fileName: string | null;
   fileIndex: number;
   fileCount: number;
@@ -131,6 +141,16 @@ export function discardModelDownload(bundleId: string): Promise<void> {
 /** Point the server at a verified bundle and restart it. */
 export function activateModelBundle(bundleId: string): Promise<void> {
   return invoke<void>("activate_model_bundle", { bundleId });
+}
+
+/** Use a local, user-owned model folder without curated verification. */
+export function activateCustomModelDirectory(path: string): Promise<void> {
+  return invoke<void>("activate_custom_model_directory", { path });
+}
+
+/** Forget a custom folder without deleting any user files. */
+export function forgetCustomModelDirectory(): Promise<void> {
+  return invoke<void>("forget_custom_model_directory");
 }
 
 /** Remove an installed but inactive bundle. */

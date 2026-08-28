@@ -1,5 +1,5 @@
 // Phase 1 of the in-app model installation plan
-// (docs/model-installation-plan.md): bundled model catalog, installed/legacy
+// Bundled model catalog, installed/legacy
 // bundle detection, free-space reporting, and full SHA-256 verification that
 // writes the `installation.json` commit marker.
 //
@@ -11,6 +11,7 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 
 const CATALOG_JSON: &str = include_str!("../catalog/model-catalog.json");
+pub const CUSTOM_BUNDLE_ID: &str = "custom-local";
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ModelFile {
@@ -116,12 +117,23 @@ pub struct ManagedBundleState {
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct CustomBundleState {
+    pub bundle_id: String,
+    pub dir: String,
+    pub available: bool,
+    pub gguf_files: usize,
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ModelsScan {
     pub models_root: String,
     pub models_dir: String,
     pub portable: bool,
     pub active_bundle: Option<String>,
     pub managed: Vec<ManagedBundleState>,
+    pub custom: Option<CustomBundleState>,
     pub legacy: Option<LegacyMatch>,
     pub free_bytes: Option<u64>,
     pub catalog_version: u32,
@@ -398,6 +410,43 @@ fn scan_legacy_dir(dir: &Path, cat: &ModelCatalog) -> LegacyMatch {
     }
 }
 
+pub fn inspect_custom_model_dir(dir: &Path) -> Result<(PathBuf, usize), String> {
+    let canonical = std::fs::canonicalize(dir)
+        .map_err(|e| format!("could not open custom model folder {}: {e}", dir.display()))?;
+    if !canonical.is_dir() {
+        return Err(format!(
+            "custom model path is not a folder: {}",
+            canonical.display()
+        ));
+    }
+
+    let entries = std::fs::read_dir(&canonical)
+        .map_err(|e| format!("could not read custom model folder: {e}"))?;
+    let mut readable_ggufs = 0;
+    for entry in entries {
+        let entry = entry.map_err(|e| format!("could not read custom model folder: {e}"))?;
+        let path = entry.path();
+        let is_gguf = path
+            .extension()
+            .and_then(|extension| extension.to_str())
+            .map(|extension| extension.eq_ignore_ascii_case("gguf"))
+            .unwrap_or(false);
+        if is_gguf
+            && path
+                .metadata()
+                .map(|metadata| metadata.is_file())
+                .unwrap_or(false)
+            && std::fs::File::open(&path).is_ok()
+        {
+            readable_ggufs += 1;
+        }
+    }
+    if readable_ggufs == 0 {
+        return Err("the selected folder contains no readable GGUF files".to_string());
+    }
+    Ok((canonical, readable_ggufs))
+}
+
 /// Full launch-time detection over the configured installation.
 pub fn scan_models() -> Result<ModelsScan, String> {
     let cat = catalog()?;
@@ -434,14 +483,38 @@ pub fn scan_models() -> Result<ModelsScan, String> {
         None
     };
 
+    let custom = cfg
+        .as_ref()
+        .filter(|config| !config.custom_models_dir.trim().is_empty())
+        .map(|config| {
+            let configured = PathBuf::from(config.custom_models_dir.trim());
+            match inspect_custom_model_dir(&configured) {
+                Ok((dir, gguf_files)) => CustomBundleState {
+                    bundle_id: CUSTOM_BUNDLE_ID.to_string(),
+                    dir: dir.to_string_lossy().into_owned(),
+                    available: true,
+                    gguf_files,
+                    error: None,
+                },
+                Err(error) => CustomBundleState {
+                    bundle_id: CUSTOM_BUNDLE_ID.to_string(),
+                    dir: configured.to_string_lossy().into_owned(),
+                    available: false,
+                    gguf_files: 0,
+                    error: Some(error),
+                },
+            }
+        });
+
     Ok(ModelsScan {
         models_root: root.to_string_lossy().into_owned(),
         models_dir: models_dir.to_string_lossy().into_owned(),
         portable: portable_root().is_some(),
-        active_bundle: cfg.and_then(|c| {
+        active_bundle: cfg.as_ref().and_then(|c| {
             (!c.active_bundle.trim().is_empty()).then_some(c.active_bundle.trim().to_string())
         }),
         managed,
+        custom,
         legacy,
         free_bytes: free_space_bytes(&root).ok(),
         catalog_version: cat.catalog_version,
@@ -497,6 +570,16 @@ fn atomic_write(target: &Path, data: &str) -> Result<(), String> {
 /// verification manual/offline registration must pass through.
 pub fn verify_and_register(models_root: &Path, bundle_id: &str) -> Result<PathBuf, String> {
     let cat = catalog()?;
+    verify_and_register_with_catalog(models_root, bundle_id, cat)
+}
+
+/// Downloader-only registration path for a catalog whose stale hashes were
+/// independently confirmed against the exact pinned upstream revision.
+pub(crate) fn verify_and_register_with_catalog(
+    models_root: &Path,
+    bundle_id: &str,
+    cat: &ModelCatalog,
+) -> Result<PathBuf, String> {
     let bundle = cat
         .bundle(bundle_id)
         .ok_or_else(|| format!("unknown bundle: {bundle_id}"))?;
@@ -840,6 +923,18 @@ mod tests {
         let nested = std::env::temp_dir().join("no-such-sub-dir-triastasis");
         let w = free_space_bytes(&nested).expect("free space on temp volume");
         assert!(w > 0);
+    }
+
+    #[test]
+    fn custom_model_inspection_requires_only_a_readable_gguf() {
+        let dir = unique_tmp("custom-models");
+        assert!(inspect_custom_model_dir(&dir).is_err());
+
+        std::fs::write(dir.join("community-model.GGUF"), b"not catalog verified").unwrap();
+        let (canonical, count) = inspect_custom_model_dir(&dir).unwrap();
+        assert_eq!(canonical, std::fs::canonicalize(&dir).unwrap());
+        assert_eq!(count, 1);
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     // A small deterministic catalog standing in for multi-GB real bundles in

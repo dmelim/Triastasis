@@ -1687,6 +1687,9 @@ input:focus-visible,
 }
 .installed-bundle-prompt h3 { margin: 0 0 var(--space-1); font-size: var(--font-size-title); }
 .installed-bundle-prompt p { margin: 0; color: var(--content-secondary); }
+.installed-bundle-prompt--custom { background: var(--surface-warning); }
+.installed-bundle-prompt--custom .bundle-head { justify-content: flex-start; flex-wrap: wrap; }
+.installed-bundle-prompt--custom h3 { margin: 0; }
 .installed-bundle-actions { display: flex; gap: var(--space-2); flex-wrap: wrap; justify-content: flex-end; }
 .model-location { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; margin-bottom: 16px; font-size: .9rem; }
 .model-location label { color: var(--content-secondary); }
@@ -1703,6 +1706,7 @@ input:focus-visible,
 .model-badge { font-size: .72rem; padding: 3px 7px; border-radius: var(--radius-pill); white-space: nowrap; }
 .model-badge.rec { background: var(--color-accent); color: var(--content-inverse); }
 .model-badge.ok { background: var(--surface-success); color: var(--content-success); border: 1px solid var(--border-success); }
+.model-badge.custom { background: var(--surface-warning); color: var(--content-warning); border: 1px solid var(--border-warning); }
 .model-warning { color: var(--content-warning); font-size: .82rem; margin: 0; }
 .model-legacy { margin-top: 16px; padding: 12px 14px; border-radius: var(--radius-card); background: var(--surface-warning); display: flex; flex-direction: column; gap: 6px; align-items: flex-start; }
 .model-legacy p { margin: 0; font-size: .88rem; }
@@ -1711,6 +1715,16 @@ input:focus-visible,
 .model-progress-bar > div { height: 100%; background: var(--color-accent); transition: width .3s ease; }
 .model-progress p { margin: 6px 0 0; font-size: .84rem; }
 .model-progress span { color: var(--content-secondary); font-size: .8rem; }
+.model-progress--failed { color: var(--content-danger); }
+.model-progress--failed strong { font-size: var(--font-size-body); }
+.model-progress--failed p { color: var(--content-danger); }
+.model-progress--failed span { color: var(--content-secondary); }
+.model-progress-actions { display: flex; align-items: center; flex-wrap: wrap; gap: var(--space-2); margin-top: var(--space-3); }
+.custom-model-import { display: flex; flex-direction: column; align-items: flex-start; gap: var(--space-3); margin-top: var(--space-4); }
+.custom-model-confirm { max-width: 760px; padding: var(--space-4); border-radius: var(--radius-card); background: var(--surface-warning); color: var(--content-warning); }
+.custom-model-confirm p { max-width: 68ch; margin: var(--space-2) 0; color: var(--content-secondary); font-size: var(--font-size-body); }
+.custom-model-confirm code { display: block; max-width: 100%; padding: var(--space-2); overflow-wrap: anywhere; border-radius: var(--radius-control); background: var(--surface-control); color: var(--content-primary); }
+.custom-model-confirm-actions { display: flex; align-items: center; flex-wrap: wrap; gap: var(--space-2); margin-top: var(--space-3); }
 .model-catalog-empty, .onboarding-error { padding: var(--space-4); border-radius: var(--radius-card); background: var(--surface-danger); color: var(--content-danger); }
 .onboarding-error { max-width: 620px; }
 .onboarding-error .button { margin-top: var(--space-4); }
