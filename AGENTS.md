@@ -61,3 +61,29 @@ integration, generation workflow, and packaging before merging into `main`.
 Record the upstream commit or release integrated by the sync. Security fixes and
 critical backend corrections should be prioritized; unrelated upstream UI work
 may be left out.
+
+## Filesystem copy and ACL safety
+
+Treat Windows ACLs and other filesystem security metadata as part of any copy,
+move, restore, or migration involving paths outside the repository workspace,
+especially `%LOCALAPPDATA%`, other application-data directories, packaged-app
+storage, and backups. Codex's sandboxed or brokered execution context can cause
+destination objects to inherit capability ACLs that the consuming application
+cannot use, even when file contents and SHA-256 hashes remain correct.
+
+- Prefer an application-native import or a normal user process outside the Codex
+  sandbox for runtime-data migration. Do not bulk-copy application data through
+  the Codex sandbox without first proving that the destination ACLs are correct.
+- Resolve and report the exact source, destination, copy-versus-move behavior,
+  execution context, and whether security descriptors will be inherited or
+  preserved before changing data.
+- Preserve an untouched backup and capture the original SDDL for every target
+  whose ACL may change.
+- Test one record first. Compare content hashes and ACLs, then verify that the
+  consuming application can enumerate and read it before expanding the scope.
+- Never change a parent ACL that contains inheritable rules, or run recursive ACL
+  normalization, without separate explicit approval. Windows may propagate a
+  parent ACL change into child objects even when the command targets only the
+  parent.
+- If an ACL result differs from the plan, stop immediately. Restore only from the
+  saved ACL snapshot, revalidate content hashes, and leave the backup untouched.
