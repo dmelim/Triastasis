@@ -136,6 +136,11 @@ export function discardModelDownload(bundleId: string): Promise<void> {
   return invoke<void>("discard_model_download", { bundleId });
 }
 
+/** Delete an inactive incomplete bundle and its partial download files. */
+export function resetIncompleteModelBundle(bundleId: string): Promise<void> {
+  return invoke<void>("reset_incomplete_model_bundle", { bundleId });
+}
+
 // ---- activation + removal -------------------------------------------------------
 
 /** Point the server at a verified bundle and restart it. */

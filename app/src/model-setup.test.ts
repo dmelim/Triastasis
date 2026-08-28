@@ -1,6 +1,12 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { installedBundleIds, needsSetup, shouldShowSetup } from "./model-setup";
+import {
+  bundleCanResume,
+  bundleNeedsRegistration,
+  installedBundleIds,
+  needsSetup,
+  shouldShowSetup,
+} from "./model-setup";
 import type { ModelsScan } from "./model-catalog";
 
 function scan(overrides: Partial<ModelsScan> = {}): ModelsScan {
@@ -62,6 +68,44 @@ test("registered inactive bundles are offered directly", () => {
   });
   assert.deepEqual(installedBundleIds(value), ["trellis2-q4"]);
   assert.equal(needsSetup(value), true);
+});
+
+test("complete managed files without a marker are offered for registration", () => {
+  const value = scan({
+    managed: [{
+      bundleId: "trellis2-q8",
+      quantization: "q8",
+      dir: "C:/models/managed/trellis2-q8",
+      registered: false,
+      sizedFiles: 10,
+      totalFiles: 10,
+    }],
+  });
+
+  assert.equal(bundleNeedsRegistration(value, "trellis2-q8"), true);
+  assert.equal(bundleNeedsRegistration(value, "trellis2-q4"), false);
+  assert.equal(needsSetup(value), true);
+});
+
+test("incomplete managed files are not mistaken for a complete bundle", () => {
+  const value = scan({
+    managed: [{
+      bundleId: "trellis2-q8",
+      quantization: "q8",
+      dir: "C:/models/managed/trellis2-q8",
+      registered: false,
+      sizedFiles: 9,
+      totalFiles: 10,
+    }],
+  });
+
+  assert.equal(bundleNeedsRegistration(value, "trellis2-q8"), false);
+  assert.equal(bundleCanResume(value, "trellis2-q8"), true);
+});
+
+test("partial download files are offered for verification and resume", () => {
+  assert.equal(bundleCanResume(scan(), "trellis2-q8", ["trellis2-q8"]), true);
+  assert.equal(bundleCanResume(scan(), "trellis2-q4", ["trellis2-q8"]), false);
 });
 test("a complete legacy bundle opens the normal app", () => {
   const value = scan({

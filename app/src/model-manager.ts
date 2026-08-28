@@ -10,6 +10,7 @@ import {
   markDownloadStarting,
   refreshPartialDownloads,
 } from "./model-download-state";
+import { curatedModelTermsAccepted } from "./model-terms";
 import {
   activateCustomModelDirectory,
   activateModelBundle,
@@ -19,6 +20,7 @@ import {
   forgetCustomModelDirectory,
   pauseModelDownload,
   removeModelBundle,
+  resetIncompleteModelBundle,
   startModelDownload,
   verifyModelBundle,
 } from "./model-catalog";
@@ -115,6 +117,9 @@ export async function currentModelsRoot(fallback: string): Promise<string> {
 // ---- actions ------------------------------------------------------------------
 
 export async function downloadBundle(bundleId: string): Promise<void> {
+  if (!curatedModelTermsAccepted()) {
+    throw new Error("Review and accept the upstream model terms before downloading a curated bundle.");
+  }
   markDownloadStarting(bundleId);
   try {
     await startModelDownload(bundleId);
@@ -135,6 +140,12 @@ export async function cancelBundle(): Promise<void> {
 
 export async function stopFailedBundle(bundleId: string): Promise<void> {
   await discardModelDownload(bundleId);
+  clearDownloadProgress(bundleId);
+  await refreshPartialDownloads();
+}
+
+export async function resetIncompleteBundle(bundleId: string): Promise<void> {
+  await resetIncompleteModelBundle(bundleId);
   clearDownloadProgress(bundleId);
   await refreshPartialDownloads();
 }

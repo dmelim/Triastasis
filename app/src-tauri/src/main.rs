@@ -392,6 +392,38 @@ fn discard_model_download(bundle_id: String) -> Result<(), String> {
     Ok(())
 }
 
+/// Remove an inactive, incomplete managed bundle and all of its partial files.
+/// This is intentionally separate from ordinary removal so the frontend can
+/// require explicit confirmation after a recovery attempt fails.
+#[tauri::command]
+fn reset_incomplete_model_bundle(bundle_id: String) -> Result<(), String> {
+    let cat = models::catalog()?;
+    cat.bundle(&bundle_id)
+        .ok_or_else(|| format!("unknown bundle: {bundle_id}"))?;
+
+    let scan = models::scan_models()?;
+    if scan.active_bundle.as_deref() == Some(bundle_id.as_str()) {
+        return Err("cannot delete the active bundle; switch to another one first".to_string());
+    }
+
+    let managed = scan.managed.iter().find(|m| m.bundle_id == bundle_id);
+    if managed.is_some_and(|entry| entry.registered) {
+        return Err("this bundle is installed and verified; use Remove instead".to_string());
+    }
+
+    let root = std::path::Path::new(&scan.models_root);
+    let _lock = downloader::acquire_models_lock(root)?;
+    if let Some(entry) = managed {
+        let path = std::path::Path::new(&entry.dir);
+        if path.exists() {
+            std::fs::remove_dir_all(path)
+                .map_err(|e| format!("could not remove incomplete bundle: {e}"))?;
+        }
+    }
+    downloader::remove_bundle_partials(&root.join("downloads").join(&bundle_id));
+    Ok(())
+}
+
 /// Point the server at a verified bundle and restart it. Reversible: on
 /// failure the previous configuration is restored and restarted.
 #[tauri::command]
@@ -571,6 +603,7 @@ fn main() {
             model_download_status,
             scan_partial_downloads,
             discard_model_download,
+            reset_incomplete_model_bundle,
             activate_model_bundle,
             activate_custom_model_directory,
             forget_custom_model_directory,

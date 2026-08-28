@@ -40,7 +40,7 @@ import {
 } from "./sweep-recovery";
 import { escapeHtml, hasBlockingCoreIssue, manifestIssueText } from "./manifest-ui";
 import { initModelDownloadState } from "./model-download-state";
-import { initModelSetup } from "./model-setup";
+import { initModelSetup, openModelSetup } from "./model-setup";
 import { subscribeModelStorageRefresh } from "./model-settings";
 import type { ManifestMetrics, ManifestQualityWarning } from "./types";
 import {
@@ -409,6 +409,7 @@ let inputName = "input.png";
 let currentGlb: Blob | null = null;
 let activeId: string | null = null;
 let serverOnline = false;
+let serverConfigured = false;
 let generating = false;
 let abort: AbortController | null = null;
 let elapsedTimer: number | null = null;
@@ -1758,7 +1759,7 @@ function fmtElapsed(ms: number): string {
 }
 
 function updateGenerateEnabled(): void {
-  const enabled = Boolean(serverOnline && inputImage);
+  const enabled = Boolean(inputImage);
   generateBtn.disabled = !enabled;
   sweepBtn.disabled = !enabled;
   previewMaskBtn.disabled = !inputImage || generating || !isTauri();
@@ -1766,6 +1767,18 @@ function updateGenerateEnabled(): void {
   clearCandidatesBtn.disabled = generating;
   generateBtn.textContent = generating || generationQueue.length ? "Add to queue" : "Generate 3D";
   clearQueueBtn.disabled = generationQueue.length === 0;
+}
+
+function generationBackendReady(): boolean {
+  if (serverOnline) return true;
+  if (!serverConfigured) {
+    const message = "No model bundle is ready. Complete onboarding to choose or download one.";
+    toast(message, "err");
+    void openModelSetup(message);
+    return false;
+  }
+  toast("The model server is offline. Wait for it to finish starting, or review Models in Settings.", "err");
+  return false;
 }
 
 // ---- canonical job progress ----
@@ -2366,6 +2379,7 @@ async function runGenerationQueue(): Promise<void> {
 
 function doGenerate(): void {
   if (!inputImage) return;
+  if (!generationBackendReady()) return;
   let params: GenParams;
   try {
     params = readParams();
@@ -2408,6 +2422,7 @@ clearQueueBtn.addEventListener("click", () => {
 
 async function doSweep(): Promise<void> {
   if (!inputImage) return;
+  if (!generationBackendReady()) return;
   let baseParams: NormalizedGenParams;
   try {
     baseParams = normalizeGenParams(readParams());
@@ -3368,11 +3383,18 @@ async function openSettings(): Promise<void> {
   await renderSettingsPage();
 }
 settingsModeBtn.addEventListener("click", openSettings);
-$("banner-settings").addEventListener("click", openSettings);
+$("banner-settings").addEventListener("click", () => {
+  if (setupBanner.dataset.action === "onboarding") {
+    void openModelSetup();
+    return;
+  }
+  void openSettings();
+});
 
 // ---- server status ----
 async function pollHealthInternal(): Promise<void> {
   const cfg = await loadConfig(true);
+  serverConfigured = cfg.configured;
   backendBadge.textContent = cfg.backend !== "unknown" ? cfg.backend : "-";
   const ok = await health();
   serverOnline = ok;
@@ -3382,11 +3404,15 @@ async function pollHealthInternal(): Promise<void> {
   setupBanner.classList.toggle("hidden", !needSetup);
   if (needSetup) {
     (setupBanner.querySelector("span") as HTMLElement).textContent =
-      "Triastasis needs a model bundle before it can generate. Choose one below or in settings.";
+      "No model bundle is ready. Complete onboarding before generating.";
+    $("banner-settings").textContent = "Complete onboarding";
+    setupBanner.dataset.action = "onboarding";
   } else if (!ok && cfg.configured) {
     setupBanner.classList.remove("hidden");
     (setupBanner.querySelector("span") as HTMLElement).textContent =
       "Server is offline. It may still be loading; check the models directory in settings.";
+    $("banner-settings").textContent = "Open settings";
+    setupBanner.dataset.action = "settings";
   }
   updateGenerateEnabled();
   if (isTauri()) {
@@ -3421,6 +3447,7 @@ async function pollHealth(): Promise<void> {
   } catch (error) {
     console.warn("Could not refresh Trellis server status", error);
     serverOnline = false;
+    serverConfigured = false;
     serverDot.className = "dot err";
     serverLabel.textContent = "offline";
     automationBadge.textContent = "API offline";

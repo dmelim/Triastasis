@@ -19,8 +19,13 @@ import {
   forgetCustomBundle,
   pauseBundle,
   removeBundle,
+  resetIncompleteBundle,
   verifyAndRegister,
 } from "./model-manager";
+import {
+  bindCuratedModelTerms,
+  curatedModelTermsHtml,
+} from "./model-terms";
 import { pickDirectory } from "./tauri";
 
 let storageMessage: { text: string; error: boolean } | null = null;
@@ -71,6 +76,9 @@ export async function renderModelStorage(container: HTMLElement | null): Promise
       const downloading =
         progress?.bundleId === bundle.id &&
         ["preparing", "downloading", "verifying"].includes(progress.state);
+      const hasInterruptedDownload =
+        snapshot.partial.includes(bundle.id) ||
+        (progress?.bundleId === bundle.id && progress.state === "failed");
 
       let statusLine: string;
       let actions = "";
@@ -90,14 +98,21 @@ export async function renderModelStorage(container: HTMLElement | null): Promise
         actions = `
           <button class="button button--primary button--sm" data-act="use" data-id="${bundle.id}">Use this bundle</button>
           <button class="button button--secondary button--sm" data-act="remove" data-id="${bundle.id}">Remove</button>`;
+      } else if (managed && managed.totalFiles > 0 && managed.sizedFiles === managed.totalFiles) {
+        statusLine = "All files present, verification required";
+        actions = `
+          <button class="button button--primary button--sm" data-act="verify" data-id="${bundle.id}">Verify and register</button>
+          <button class="button button--secondary button--sm" data-act="remove" data-id="${bundle.id}">Remove files</button>`;
       } else if (progress?.bundleId === bundle.id && progress.state === "paused") {
         statusLine = "Download paused";
         actions = `<button class="button button--primary button--sm" data-act="download" data-id="${bundle.id}">Resume</button>
           <button class="button button--secondary button--sm" data-act="discard-partial" data-id="${bundle.id}">Discard download</button>`;
-      } else if (managed) {
-        statusLine = `Incomplete (${managed.sizedFiles} of ${managed.totalFiles} files)`;
-        actions = `<button class="button button--primary button--sm" data-act="download" data-id="${bundle.id}">Download missing files</button>
-          <button class="button button--secondary button--sm" data-act="discard-partial" data-id="${bundle.id}">Discard partial files</button>`;
+      } else if (managed || hasInterruptedDownload) {
+        statusLine = managed
+          ? `Incomplete (${managed.sizedFiles} of ${managed.totalFiles} files). Existing files will be verified before missing data is downloaded.`
+          : "Incomplete download found. Existing data will be verified before the download resumes.";
+        actions = `<button class="button button--primary button--sm" data-act="download" data-id="${bundle.id}">Verify and resume</button>
+          <button class="button button--secondary button--sm" data-act="reset-incomplete" data-id="${bundle.id}">Delete incomplete files</button>`;
       } else {
         statusLine = "Not installed";
         actions = `<button class="button button--primary button--sm" data-act="download" data-id="${bundle.id}">Download</button>`;
@@ -159,10 +174,13 @@ export async function renderModelStorage(container: HTMLElement | null): Promise
         <div class="settings-meta-item"><span>Estimated model storage used</span><strong>${escapeHtml(formatGigabytes(used))}</strong></div>
         <div class="settings-meta-item"><span>Model revision</span><strong>${escapeHtml(scan.modelRevision.slice(0, 12))}</strong></div>
       </div>
+      ${curatedModelTermsHtml()}
       <div class="bundle-list">${rows}${customRow}</div>
       ${customImport}
       ${storageMessageHtml()}
     </div>`;
+
+  bindCuratedModelTerms(container, () => void renderModelStorage(container));
 
   container.querySelectorAll<HTMLButtonElement>("[data-act]").forEach((btn) => {
     btn.onclick = async () => {
@@ -173,13 +191,20 @@ export async function renderModelStorage(container: HTMLElement | null): Promise
       try {
         storageMessage = null;
         if (
-          (act === "remove" || act === "discard-partial" || act === "forget-custom") &&
+          (
+            act === "remove" ||
+            act === "discard-partial" ||
+            act === "reset-incomplete" ||
+            act === "forget-custom"
+          ) &&
           btn.dataset.confirm !== "true"
         ) {
           btn.dataset.confirm = "true";
           btn.textContent =
             act === "remove"
               ? "Confirm removal"
+              : act === "reset-incomplete"
+                ? "Confirm deletion"
               : act === "forget-custom"
                 ? "Confirm forget"
                 : "Confirm discard";
@@ -215,6 +240,13 @@ export async function renderModelStorage(container: HTMLElement | null): Promise
         if (act === "discard-partial") {
           await discardPartial(id);
           storageMessage = { text: "Incomplete download discarded.", error: false };
+        }
+        if (act === "reset-incomplete") {
+          await resetIncompleteBundle(id);
+          storageMessage = {
+            text: "Incomplete files deleted. Start the download again when ready.",
+            error: false,
+          };
         }
       } catch (e) {
         storageMessage = { text: (e as Error).message || String(e), error: true };
