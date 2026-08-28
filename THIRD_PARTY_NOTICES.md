@@ -1,6 +1,6 @@
 # Third-Party Notices
 
-This repository is a modified version of [`pwilkin/trellis.cpp`](https://github.com/pwilkin/trellis.cpp). The project is distributed under the MIT License found in [`LICENSE`](LICENSE). That license and the original copyright notice must remain with copies or substantial portions of the software.
+Triastasis contains substantial modified code from [`pwilkin/trellis.cpp`](https://github.com/pwilkin/trellis.cpp). The root [`LICENSE`](LICENSE) retains Piotr Wilkin's MIT copyright and permission notice, as required when distributing copies or substantial portions of that software. It also identifies the Triastasis modifications separately.
 
 This file is an attribution and release-audit baseline. It does not replace the full license texts shipped with third-party source packages, dependencies, or model repositories.
 
@@ -9,7 +9,7 @@ This file is an attribution and release-audit baseline. It does not replace the 
 | Component | Copyright or project | License | Source |
 |---|---|---|---|
 | trellis.cpp and Trellis Studio | Copyright 2026 Piotr Wilkin | MIT | <https://github.com/pwilkin/trellis.cpp> |
-| TRELLIS reference implementation | Microsoft Corporation | MIT | <https://github.com/microsoft/TRELLIS> |
+| TRELLIS.2 reference implementation | Microsoft Corporation | MIT | <https://github.com/microsoft/TRELLIS.2> |
 | TRELLIS.2-4B source checkpoints | Microsoft | MIT according to the model repository metadata | <https://huggingface.co/microsoft/TRELLIS.2-4B> |
 
 Modifications made in this repository do not remove or replace upstream copyright notices. Contributors may add notices for their original work while continuing to distribute the combined project under the MIT License.
@@ -35,14 +35,10 @@ The ggml submodule is not populated in every source checkout. Release packaging 
 | Tauri and official Tauri plugins | Tauri Programme within The Commons Conservancy | Apache-2.0 or MIT | `app/package.json`, `app/src-tauri/Cargo.toml`, <https://github.com/tauri-apps/tauri> |
 | Three.js | three.js authors | MIT | `app/node_modules/three/LICENSE`, <https://github.com/mrdoob/three.js> |
 | Three.js TypeScript definitions | DefinitelyTyped contributors | MIT | `app/package.json`, <https://github.com/DefinitelyTyped/DefinitelyTyped> |
-| model-viewer | Google LLC | Apache-2.0 | `app/public/vendor/model-viewer.min.js`, <https://github.com/google/model-viewer> |
-| Lit code contained in the vendored model-viewer bundle | Google LLC | BSD 3-Clause | License headers inside `app/public/vendor/model-viewer.min.js` |
 | Inter typeface | The Inter Project Authors (Rasmus Andersson and contributors) | SIL Open Font License 1.1 | `app/public/fonts/InterVariable.woff2` with its license at `app/public/fonts/LICENSE.txt`, <https://github.com/rsms/inter> |
-| Phosphor Icons | Copyright 2023 Phosphor Icons | MIT | `app/public/icons`, <https://github.com/phosphor-icons/core> |
+| Lucide icons | Lucide Contributors and Feather contributors | ISC and MIT | `app/public/icons`, with the bundled license at `app/public/icons/LICENSE-lucide.txt`, <https://github.com/lucide-icons/lucide> |
 | TypeScript | Microsoft Corporation | Apache-2.0 | `app/package.json`, <https://github.com/microsoft/TypeScript> |
 | Vite | Evan You and Vite contributors | MIT | `app/package.json`, <https://github.com/vitejs/vite> |
-
-The vendored model-viewer file remains in the working tree even though the experimental direct Three.js viewer no longer imports it. Until it is removed from source and release artifacts, its notices still apply.
 
 Rust and npm dependencies have transitive dependencies with their own terms. A release build must generate or verify a lockfile-based license inventory rather than relying only on this direct-dependency list.
 
@@ -75,4 +71,4 @@ Before publishing a packaged release:
 3. Include the complete license text required by each bundled dependency.
 4. Generate a dependency report from `package-lock.json`, `Cargo.lock`, the CMake dependency revisions, and the populated ggml submodule.
 5. Verify the model-download license chain separately from the source-code license.
-6. Add contributor copyright notices for original modifications if desired, without removing upstream notices.
+6. Keep contributor copyright notices for original modifications without removing upstream notices.

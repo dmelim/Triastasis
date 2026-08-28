@@ -129,7 +129,7 @@ strips `typename` from `List_inl.h:202`; C++20 makes it optional), `MAX_JOBS=4`
 | texel density CV | **0.24 / 0.44** | 1.69 / 1.90 |
 | doubleSided | False | True |
 
-Visual renders (model-viewer, `tools/mv_preview/`) are at parity on both
+Historical visual renders were at parity on both
 models. Remaining evidence-backed deltas, all atlas-side (P4 backlog):
 
 1. **Chart fragmentation** — 2.7–13× more charts than the oracle; our
@@ -149,7 +149,7 @@ models. Remaining evidence-backed deltas, all atlas-side (P4 backlog):
 ## Addendum 3 — P4 parity pass (closes Addendum 2's deltas)
 
 All four Addendum-2 items were implemented, verified per dump with
-`post-replay` + `glb_metrics.py` + model-viewer renders vs `refs/oracle/`:
+`post-replay` + `glb_metrics.py` + archived visual renders vs `refs/oracle/`:
 
 1. **Clustering** (`uv_bake.cpp`): the greedy seed-flood normal-cone clustering
    was replaced with a faithful CPU port of cumesh `compute_charts`

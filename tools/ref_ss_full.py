@@ -12,9 +12,9 @@ from trellis2.models.sparse_structure_flow import SparseStructureFlowModel
 from trellis2.models.sparse_structure_vae import SparseStructureDecoder
 from trellis2.pipelines.samplers import FlowEulerGuidanceIntervalSampler
 
-M = "/media/ilintar/D_SSD/models/trellis2"
-OUT = M + "/ref/ss_full"; os.makedirs(OUT, exist_ok=True)
-DEV = "cuda:1"; DT = torch.float32
+M = os.environ.get("TRELLIS2_MODELS", "models")
+OUT = os.environ.get("OUT", M + "/ref/ss_full"); os.makedirs(OUT, exist_ok=True)
+DEV = os.environ.get("REF_DEV", "cuda:0"); DT = torch.float32
 
 cfg = json.load(open(M + "/ckpts/ss_flow_img_dit_1_3B_64_bf16.json"))["args"]
 with torch.device(DEV): flow = SparseStructureFlowModel(**cfg)

@@ -223,7 +223,7 @@ safetensors/gguf weights:
   (Stage ① / cumesh marching, already produced as active-voxel-derived geometry).
 - faces [F,3] int32 — same source.
 
-No entry in any of /devel/alt/trellis.cpp/docs/spec/keys/*.keys.txt corresponds
+No entry in any of `docs/spec/keys/*.keys.txt` corresponds
 to this component (verified: the key dumps are all DiT / encoder / decoder /
 conditioner weights: ss_dec_conv3d, shape_enc/dec, slat_flow, ss_flow, dinov3,
 birefnet — none are mesh-export params). Nothing to map.
@@ -287,7 +287,7 @@ Patterns worth mirroring from the existing tree:
 - include/npy.h already establishes the project's binary-file read/write idiom
   (raw fwrite of little-endian POD, header string assembly). mesh_glb.cpp should
   follow the same plain-C++ style (std::ofstream/fwrite, std::vector<uint8_t>
-  scratch). Read /devel/alt/trellis.cpp/include/npy.h before writing for the
+  scratch). Read `include/npy.h` before writing for the
   house style of LE serialization.
 - The upstream Python write_ply (mesh_utils.py:120 write_ply, and write_pbr_ply)
   is a useful reference for the *PLY* alternative if a quick debug dump is wanted
@@ -340,4 +340,3 @@ include/npy.h and writes out.glb.
    compute flat normals from faces. Action: if rendering looks unlit, add a
    POSTPROCESS step generating per-face flat normals as a separate accessor —
    small, optional follow-up.
-

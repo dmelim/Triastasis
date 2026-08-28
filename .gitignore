@@ -24,8 +24,6 @@ __pycache__/
 
 # scratch
 /out/
-/assets/reconstruction-test-set/runs/
 *.glb
-!assets/showcase/*/*.glb
 *.tmp
 dumps/

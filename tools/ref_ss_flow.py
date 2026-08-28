@@ -6,7 +6,7 @@ seeded input and saves inputs + per-stage intermediates to .npy. Runs on GPU
 (weights load straight to VRAM) to keep host RAM low — never a CPU forward of
 the 1.3B net.
 
-    /media/ilintar/D_SSD/trellis2-venv/bin/python tools/ref_ss_flow.py
+    python tools/ref_ss_flow.py
 """
 import os, sys, json
 os.environ["ATTN_BACKEND"] = "sdpa"          # must precede trellis2 import
@@ -17,8 +17,9 @@ import torch
 from safetensors.torch import load_file
 from trellis2.models.sparse_structure_flow import SparseStructureFlowModel
 
-CKPT = "/media/ilintar/D_SSD/models/trellis2/ckpts/ss_flow_img_dit_1_3B_64_bf16"
-OUT  = "/media/ilintar/D_SSD/models/trellis2/ref/ss_flow"
+MODELS = os.environ.get("TRELLIS2_MODELS", "models")
+CKPT = f"{MODELS}/ckpts/ss_flow_img_dit_1_3B_64_bf16"
+OUT  = os.environ.get("OUT", f"{MODELS}/ref/ss_flow")
 os.makedirs(OUT, exist_ok=True)
 DEV  = os.environ.get("REF_DEV", "cuda:1")     # 5060 Ti has the most free VRAM
 DTYPE = torch.float32                          # clean f32 golden

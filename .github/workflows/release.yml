@@ -13,10 +13,10 @@ on:
 permissions:
   contents: write
 
-# Standard asset names must match Lemonade's media_release_asset():
+# Standard native-runtime asset names consumed by the Triastasis installers:
 #   trellis-<backend>-<os>-x64.<tar.gz|zip>
 # cuda12 is an additional legacy artifact selected by the standalone installer
-# for Pascal/Volta devices; it does not replace Lemonade's current-CUDA asset.
+# for Pascal/Volta devices; it does not replace the current-CUDA asset.
 jobs:
   build:
     name: ${{ matrix.os }} · ${{ matrix.release_backend || matrix.backend }}
@@ -86,9 +86,9 @@ jobs:
           cuda: ${{ matrix.cuda_version }}
           method: network
 
-      # Best-effort ROCm 7.12 (TheRock), matching the version Lemonade pins.
+      # Best-effort ROCm 7.12 (TheRock), matching the validated runtime.
       # Marked experimental: this leg is allowed to fail.
-      # ROCm via TheRock (gfx1151, Strix Halo — Lemonade's validated target).
+      # ROCm via TheRock (gfx1151, Strix Halo, the validated target).
       # Best-effort: allow-failure (no AMD GPU in CI to run-test).
       - name: ROCm TheRock (Linux, gfx1151)
         if: matrix.backend == 'rocm' && matrix.os == 'linux'
@@ -195,7 +195,7 @@ jobs:
             cp build/trellis-server dist/
             cp build/trellis-cli dist/
             cp -P build/libggml*.so* dist/ 2>/dev/null || true
-            # The ROCm runtime comes from the shared TheRock SDK that Lemonade
+            # The ROCm runtime comes from the shared TheRock SDK that the build
             # installs per the user's gfx arch (via LD_LIBRARY_PATH), not bundled
             # here. CUDA has no such shared SDK, so bundle its runtime next to the
             # binary (mirrors sd-cpp / llama.cpp); the $ORIGIN rpath below then

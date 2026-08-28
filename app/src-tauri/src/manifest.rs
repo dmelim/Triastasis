@@ -1746,22 +1746,15 @@ mod tests {
         assert_eq!(&imported.glb_bytes[0..4], b"glTF");
     }
 
-    /// Every reconstruction-run manifest must validate and import cleanly,
-    /// with its recorded hashes matching the files on disk.
+    /// An optional external reconstruction run must validate and import cleanly,
+    /// with its recorded hashes matching the files on disk. The large corpus is
+    /// intentionally not distributed with the source repository.
     #[test]
     fn reconstruction_set_imports_end_to_end() {
-        let run_dir = std::env::var("TRIASTASIS_RECON_RUN")
-            .or_else(|_| std::env::var("POLYLOOM_RECON_RUN"))
-            .map(PathBuf::from)
-            .unwrap_or_else(|_| {
-                PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                    .join("..")
-                    .join("..")
-                    .join("assets")
-                    .join("reconstruction-test-set")
-                    .join("runs")
-                    .join("2026-08-21-api-smoke")
-            });
+        let Ok(run_dir) = std::env::var("TRIASTASIS_RECON_RUN").map(PathBuf::from) else {
+            eprintln!("TRIASTASIS_RECON_RUN not set; skipping external corpus");
+            return;
+        };
         if !run_dir.is_dir() {
             eprintln!("reconstruction run not present; skipping");
             return;

@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Convert TRELLIS.2 (and helper) safetensors checkpoints to GGUF.
 
-Run with the project's uv venv:
-    /media/ilintar/D_SSD/trellis2-venv/bin/python tools/convert.py [component ...]
+Run from the project's Python environment:
+    python tools/convert.py [component ...]
 
 Design:
   * safetensors is parsed by hand (the numpy backend can't read bf16), so we
@@ -16,8 +16,8 @@ import json, struct, sys, os
 import numpy as np
 import gguf
 
-MODELS = "/media/ilintar/D_SSD/models/trellis2"
-OUT = f"{MODELS}/gguf"
+MODELS = os.environ.get("TRELLIS2_MODELS", "models")
+OUT = os.environ.get("OUT", f"{MODELS}/gguf")
 
 # component -> (safetensors path, config json path or None, gguf arch tag)
 MANIFEST = {

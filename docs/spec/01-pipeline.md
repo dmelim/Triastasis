@@ -2,7 +2,7 @@
 
 ## TRELLIS.2 Image-to-3D Pipeline — End-to-End Inference Spec
 
-Entry class: `Trellis2ImageTo3DPipeline` in `/tmp/TRELLIS.2/trellis2/pipelines/trellis2_image_to_3d.py`. Base: `Pipeline` in `/tmp/TRELLIS.2/trellis2/pipelines/base.py`. Driver: `/tmp/TRELLIS.2/example.py`. Real config read from `/run/media/ilintar/D_SSD/models/trellis2/pipeline.json` — concrete values below.
+Entry class: `Trellis2ImageTo3DPipeline` in `/tmp/TRELLIS.2/trellis2/pipelines/trellis2_image_to_3d.py`. Base: `Pipeline` in `/tmp/TRELLIS.2/trellis2/pipelines/base.py`. Driver: `/tmp/TRELLIS.2/example.py`. Real config read from `$TRELLIS2_MODELS/pipeline.json`; concrete values follow.
 
 ### 0. Top-level call graph (example.py)
 ```
@@ -171,7 +171,7 @@ Pipeline-level ops (model internals are separate components):
 
 ## Open questions
 
-RESOLVED from `/run/media/ilintar/D_SSD/models/trellis2/pipeline.json`:
+RESOLVED from `$TRELLIS2_MODELS/pipeline.json`:
 - All three samplers = `FlowEulerGuidanceIntervalSampler`, sigma_min=1e-5. Params: SS {steps12, gs7.5, grescale0.7, ginterval[0.6,1.0], rescale_t5.0}; shape {steps12, gs7.5, grescale0.5, ginterval[0.6,1.0], rescale_t3.0}; tex {steps12, gs1.0, grescale0.0, ginterval[0.6,0.9], rescale_t3.0}.
 - Latents are 32-channel; exact mean/std vectors captured verbatim.
 - DINOv3 = `facebook/dinov3-vitl16-pretrain-lvd1689m` (ViT-L/16, D=1024). rembg = BiRefNet class with `briaai/RMBG-2.0` weights.

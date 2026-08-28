@@ -5,8 +5,8 @@ export const REFERENCE_GUIDANCE =
   "Use a three-quarter view with visible depth, clear lighting, and a neutral background.";
 
 /**
- * Background-plane attachment thresholds, chosen from classified evidence in
- * assets/reconstruction-test-set/runs/plane-metrics.json:
+ * Background-plane attachment thresholds, chosen from a private classified
+ * reconstruction-quality corpus:
  *
  * - Fully collapsed outputs sit at thinRatio ≈ 0.004 with ~49% of vertices in
  *   a 5% slab (caught by the existing collapsed-plane rule).

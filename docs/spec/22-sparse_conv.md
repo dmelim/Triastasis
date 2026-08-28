@@ -170,7 +170,7 @@ Decoder input coords = active voxels from Stage ① (e.g. at 64³, ~few-thousand
 
 ## Weight key map
 
-All keys verified against /devel/alt/trellis.cpp/docs/spec/keys/ckpts__shape_dec_next_dc_f16c32_fp16.keys.txt (292 keys) and ckpts__shape_enc_next_dc_f16c32_fp16.keys.txt (284 keys). All f16.
+All keys verified against `docs/spec/keys/ckpts__shape_dec_next_dc_f16c32_fp16.keys.txt` (292 keys) and `ckpts__shape_enc_next_dc_f16c32_fp16.keys.txt` (284 keys). All f16.
 
 === SHAPE DECODER (runtime) ===
 Top-level:

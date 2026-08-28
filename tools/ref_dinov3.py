@@ -7,7 +7,7 @@ ImageNet-normalize, run the ViT, take the PRE-final-norm hidden states, then a
 manual non-affine F.layer_norm. Cross-attention over cond is permutation-invariant,
 so token order is irrelevant to the pipeline (we just match our own GGML to this dump).
 
-    /media/ilintar/D_SSD/trellis2-venv/bin/python tools/ref_dinov3.py [image.png]
+    python tools/ref_dinov3.py [image.png]
 """
 import os, sys
 os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
@@ -16,10 +16,11 @@ from PIL import Image
 from safetensors.torch import load_file
 import timm
 
-W = "/media/ilintar/D_SSD/models/trellis2/dinov3/model.safetensors"
-OUT = "/media/ilintar/D_SSD/models/trellis2/ref/dinov3"; os.makedirs(OUT, exist_ok=True)
+MODELS = os.environ.get("TRELLIS2_MODELS", "models")
+W = f"{MODELS}/dinov3/model.safetensors"
+OUT = os.environ.get("OUT", f"{MODELS}/ref/dinov3"); os.makedirs(OUT, exist_ok=True)
 DEV = os.environ.get("REF_DEV", "cuda:1")
-IMG = sys.argv[1] if len(sys.argv) > 1 else "/devel/alt/trellis.cpp/assets/goblin.png"
+IMG = sys.argv[1] if len(sys.argv) > 1 else os.path.join(os.path.dirname(__file__), "..", "assets", "goblin.png")
 SIZE = 512
 
 m = timm.create_model("vit_large_patch16_dinov3", pretrained=False, num_classes=0, img_size=SIZE)

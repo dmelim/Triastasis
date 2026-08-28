@@ -35,8 +35,9 @@ def _sdpa(*args, **kwargs):
     return s.replace(out) if s is not None else out
 _spm.sparse_scaled_dot_product_attention = _sdpa
 
-CK = "/media/ilintar/D_SSD/models/trellis2/ckpts/slat_flow_img2shape_dit_1_3B_512_bf16"
-OUT = os.environ.get("OUT", "/media/ilintar/D_SSD/models/trellis2/ref/slat_shape"); os.makedirs(OUT, exist_ok=True)
+MODELS = os.environ.get("TRELLIS2_MODELS", "models")
+CK = f"{MODELS}/ckpts/slat_flow_img2shape_dit_1_3B_512_bf16"
+OUT = os.environ.get("OUT", f"{MODELS}/ref/slat_shape"); os.makedirs(OUT, exist_ok=True)
 DEV = os.environ.get("REF_DEV", "cuda:1"); DT = torch.float32
 GS = float(os.environ.get("GS", "7.5")); GR = float(os.environ.get("GR", "0.5"))
 N = int(os.environ.get("N", "3000")); RES = 32; NIMG = 1029

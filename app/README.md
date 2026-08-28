@@ -5,9 +5,9 @@
 Desktop app (Tauri v2) for local image→3D generation with
 [trellis.cpp](../). It wraps the resident `trellis-server`, drives the
 image→3D pipeline, and previews the result in an interactive
-`<model-viewer>` (three.js) viewer with a locally-persisted gallery.
+Three.js viewer with a locally persisted gallery.
 
-For end users: see [`docs/getting-started.md`](../docs/getting-started.md) — you
+For end users: see [`docs/getting-started.md`](../docs/getting-started.md). You
 don't need this directory unless you're developing the app.
 
 ## Architecture
@@ -15,7 +15,7 @@ don't need this directory unless you're developing the app.
 ```
 src/            web UI (Vite + TypeScript, framework-free)
   api.ts        POST /generate, GET /health against trellis-server
-  viewer.ts     <model-viewer> wrapper (vendored in public/vendor)
+  viewer.ts     direct Three.js scene, inspection modes, and editing overlays
   store.ts      gallery API + one-time legacy IndexedDB migration
   native-gallery.ts  Tauri app-local gallery (input + GLB + thumbnail blobs)
   config.ts     resolves server host/port/models (Tauri command or localStorage)
@@ -31,13 +31,14 @@ src-tauri/      Rust shell
   src/main.rs       Tauri builder + commands (get_config/save_config/restart_server)
 ```
 
-The app is **backend-agnostic and small**: it does *not* bundle the server or the
-16.5 GB of weights. The `install/` scripts place those in a per-user data dir and
-write `config.json`; the app reads it, launches the server, and connects. The same
-web UI also runs in a plain browser against a manually-started server.
+The app is **backend-agnostic and small**: it does *not* bundle the server or model
+weights. The `install/` scripts install the matching native runtime and desktop app.
+Triastasis then offers verified, resumable model downloads on first launch, writes
+its local configuration, launches the server, and connects. The same web UI also
+runs in a plain browser against a manually started server.
 
 Closing the desktop window hides it to the system tray so the native server and
-automation API remain available to the Trellis skill. Reopen it from the tray;
+automation API remain available to the Triastasis skill. Reopen it from the tray;
 the tray status shows live queue activity. Restart and Quit are guarded while a
 generation is running or queued. A second launch reuses the existing instance
 and focuses its window.
@@ -60,7 +61,7 @@ outside the webview origin; the old IndexedDB remains untouched as a rollback
 copy.
 
 Requires Node 20+, a Rust toolchain, and the Tauri v2 Linux deps
-(`libwebkit2gtk-4.1-dev` etc. — see `.github/workflows/release.yml`).
+(`libwebkit2gtk-4.1-dev` etc.; see `.github/workflows/release.yml`).
 
 ## Build
 

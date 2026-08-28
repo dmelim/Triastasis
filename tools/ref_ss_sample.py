@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Golden dump for the FlowEulerGuidanceIntervalSampler driving the SS-flow DiT.
 Runs on GPU (VRAM), host-RAM-light. Saves noise, cond, neg_cond, final latent.
-    /media/ilintar/D_SSD/trellis2-venv/bin/python tools/ref_ss_sample.py
+    python tools/ref_ss_sample.py
 """
 import os, sys, json
 os.environ["ATTN_BACKEND"] = "sdpa"
@@ -15,8 +15,9 @@ from trellis2.pipelines.samplers import FlowEulerGuidanceIntervalSampler
 
 GS = float(os.environ.get("GS", "7.5"))
 GR = float(os.environ.get("GR", "0.7"))
-CKPT = "/media/ilintar/D_SSD/models/trellis2/ckpts/ss_flow_img_dit_1_3B_64_bf16"
-OUT  = os.environ.get("OUT", "/media/ilintar/D_SSD/models/trellis2/ref/ss_sample"); os.makedirs(OUT, exist_ok=True)
+MODELS = os.environ.get("TRELLIS2_MODELS", "models")
+CKPT = f"{MODELS}/ckpts/ss_flow_img_dit_1_3B_64_bf16"
+OUT  = os.environ.get("OUT", f"{MODELS}/ref/ss_sample"); os.makedirs(OUT, exist_ok=True)
 DEV  = os.environ.get("REF_DEV", "cuda:1")
 DT   = torch.float32
 

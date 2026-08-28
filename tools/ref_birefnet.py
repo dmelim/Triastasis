@@ -5,7 +5,10 @@ Usage: ref_birefnet.py <image.png> [out_dir]   (REF_DEV env picks cuda device)""
 import os, sys, types, json, importlib.util
 import numpy as np
 
-BIREF = "/media/ilintar/D_SSD/models/trellis2/birefnet"
+BIREF = os.environ.get(
+    "BIREFNET_SOURCE",
+    os.path.join(os.environ.get("TRELLIS2_MODELS", "models"), "birefnet"),
+)
 
 # kornia is only used by the training-time laplacian; stub it so import works for inference
 kf = types.ModuleType("kornia.filters"); kf.laplacian = lambda *a, **k: a[0]

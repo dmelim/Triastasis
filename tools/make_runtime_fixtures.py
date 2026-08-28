@@ -4,10 +4,10 @@ import/recovery testing. Output goes outside any real gallery (default:
 %TEMP%/triastasis-runtime-fixtures) so the packaged app can be pointed at it
 without touching production data.
 
-Uses real artifacts when available: the GPU-generated GLB from the runtime
-smoke run and a reconstruction input image. Every directory is named for the
-behavior it exercises; RUNTIME-FIXTURES.md inside the output documents what
-each case must show in the app.
+Uses the repository's small sample image and generates minimal valid GLBs, so
+the fixture matrix does not depend on a private reconstruction corpus. Every
+directory is named for the behavior it exercises; RUNTIME-FIXTURES.md inside
+the output documents what each case must show in the app.
 """
 import argparse
 import hashlib
@@ -18,9 +18,7 @@ import sys
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-REAL_GLB = REPO_ROOT / "assets" / "reconstruction-test-set" / "runs" / "runtime-check" / "model.glb"
-REAL_INPUT = REPO_ROOT / "assets" / "reconstruction-test-set" / "inputs" / "01-baseline.png"
-FALLBACK_INPUT = REPO_ROOT / "assets" / "reconstruction-test-set" / "runs" / "2026-08-21-api-smoke" / "01-baseline" / "input.png"
+SAMPLE_INPUT = REPO_ROOT / "assets" / "goblin.png"
 
 
 def sha256_file(path: Path) -> str:
@@ -113,9 +111,8 @@ def main() -> int:
         shutil.rmtree(out)
     out.mkdir(parents=True)
 
-    glb_source = REAL_GLB if REAL_GLB.is_file() else None
-    input_source = REAL_INPUT if REAL_INPUT.is_file() else FALLBACK_INPUT
-    assert input_source.is_file(), "no input image available"
+    input_source = SAMPLE_INPUT
+    assert input_source.is_file(), f"sample input not found: {input_source}"
 
     def case(name: str) -> Path:
         d = out / name
@@ -124,8 +121,7 @@ def main() -> int:
 
     def with_artifacts(d: Path, image_name="source.png", model_name="model.glb") -> None:
         shutil.copyfile(input_source, d / image_name)
-        if glb_source:
-            shutil.copyfile(glb_source, d / model_name)
+        synthetic_large_glb(d / model_name, 0)
 
     # 1. Valid completed manifest.
     d = case("01-valid-completed")
@@ -170,10 +166,9 @@ def main() -> int:
     d = case("07-modified-glb")
     with_artifacts(d)
     finalize(d, base_manifest())
-    if glb_source:
-        raw = bytearray((d / "model.glb").read_bytes())
-        raw[-1] ^= 0xFF  # flip one bit deep in the payload
-        (d / "model.glb").write_bytes(bytes(raw))
+    raw = bytearray((d / "model.glb").read_bytes())
+    raw[-1] ^= 0xFF  # flip one bit deep in the payload
+    (d / "model.glb").write_bytes(bytes(raw))
 
     # 8. Unsupported schema version.
     d = case("08-unsupported-version")
@@ -214,10 +209,7 @@ def main() -> int:
 
     # 13. Valid standalone GLB (no manifest).
     d = case("13-standalone-glb")
-    if glb_source:
-        shutil.copyfile(glb_source, d / "orphan-model.glb")
-    else:
-        synthetic_large_glb(d / "orphan-model.glb", 2)
+    synthetic_large_glb(d / "orphan-model.glb", 2)
 
     # 14. Standalone GLB with a matching sibling manifest.
     d = case("14-glb-with-sibling-manifest")
@@ -231,8 +223,7 @@ def main() -> int:
 
     # 15. Standalone GLB with an INVALID sibling manifest.
     d = case("15-glb-with-invalid-sibling")
-    if glb_source:
-        shutil.copyfile(glb_source, d / "broken-sibling.glb")
+    synthetic_large_glb(d / "broken-sibling.glb", 0)
     atomic_write(d / "broken-sibling.triastasis.json", "{{{ not json")
 
     # 16. Duplicate lineage IDs: same asset/version IDs in two cases; importing
@@ -247,8 +238,7 @@ def main() -> int:
     # 17. Unicode filenames.
     d = case("17-unicode-filenames")
     shutil.copyfile(input_source, d / "référence-日本語.png")
-    if glb_source:
-        shutil.copyfile(glb_source, d / "модель-★.glb")
+    synthetic_large_glb(d / "модель-★.glb", 0)
     m = base_manifest()
     m.update(sourceImage="référence-日本語.png", model="модель-★.glb", label="unicode-fixture")
     m["files"] = [

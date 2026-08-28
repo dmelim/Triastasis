@@ -77,7 +77,7 @@ On upsample blocks: `subdiv = self.to_subdiv(x)` where `to_subdiv = SparseLinear
 
 ## Weight key map
 
-Parameterized submodules in sparse_core and their weight keys (cross-checked vs `/devel/alt/trellis.cpp/docs/spec/keys/`):
+Parameterized submodules in sparse_core and their weight keys (cross-checked vs `docs/spec/keys/`):
 
 SPARSE PRIMITIVES THEMSELVES (Linear/Norm/Spatial) — note which carry weights:
 - `SparseLinear` -> `nn.Linear` => keys `<prefix>.weight [out,in]`, `<prefix>.bias [out]`. In SLAT flow DiT (`ckpts__slat_flow_*_dit_1_3B_512_bf16.keys.txt`): `input_layer.weight/bias` ([model_channels=1024 (verify), in_channels], +bias) and `out_layer.weight/bias`. (The SS flow `ckpts__ss_flow_img_dit_1_3B_64_bf16` is the DENSE DiT already done — its input/out are dense Linear, but topologically identical.)
@@ -90,7 +90,7 @@ VAE-decoder keys that EXERCISE the spatial ops (for the component that wraps spa
 - `<block>.conv1.*`, `<block>.conv2.*` (SparseConv3d — separate `conv` component, reuse your `ggml_conv_3d` channels-last helper), `<block>.skip_connection.weight/bias` (SparseLinear when channels change; lambda/reshape when spatial2channel — no weights), `<block>.norm1.weight/bias`.
 
 ACTION: grep the exact decoder keys files for `to_subdiv`, `skip_connection`, `norm1`, `input_layer`, `out_layer`, `to_latent`, `from_latent` to bind concrete shapes:
-  `grep -E 'to_subdiv|skip_connection|norm1|input_layer|out_layer|to_latent|from_latent' /devel/alt/trellis.cpp/docs/spec/keys/ckpts__*_dec_*.keys.txt /devel/alt/trellis.cpp/docs/spec/keys/ckpts__slat_flow_*.keys.txt`
+  `grep -E 'to_subdiv|skip_connection|norm1|input_layer|out_layer|to_latent|from_latent' docs/spec/keys/ckpts__*_dec_*.keys.txt docs/spec/keys/ckpts__slat_flow_*.keys.txt`
 I did not exhaustively bind every decoder key here because sparse_core itself is mostly weightless; the weighted pieces (Linear, norm affine, conv) belong to the consuming flow/VAE components and reuse existing helpers.
 
 ## GGML plan
@@ -157,7 +157,7 @@ EXPLICITLY SKIP (dead at inference / training-only):
 
 ## Open questions
 
-1. **VAE resample_mode actually loaded**: `SparseResBlock3d` supports `resample_mode in {'nearest','spatial2channel'}`. The `*_next_dc_f16c32` decoder name and `to_subdiv`+spatial2channel pairing strongly suggest spatial2channel, but I did not open the model-construction config that instantiates the decoder. CONFIRM by grepping the decoder config / keys: `grep -E 'to_subdiv|resample|spatial2channel|conv1' /devel/alt/trellis.cpp/docs/spec/keys/ckpts__shape_dec_next_dc_f16c32_fp16.keys.txt` and checking conv1 out-channel ratios (×8 up / ÷8 down indicates spatial2channel). If 'nearest', I must implement SparseDownsample/Upsample instead of Spatial2/Channel2Spatial.
+1. **VAE resample_mode actually loaded**: `SparseResBlock3d` supports `resample_mode in {'nearest','spatial2channel'}`. The `*_next_dc_f16c32` decoder name and `to_subdiv`+spatial2channel pairing strongly suggest spatial2channel, but I did not open the model-construction config that instantiates the decoder. CONFIRM by grepping the decoder config / keys: `grep -E 'to_subdiv|resample|spatial2channel|conv1' docs/spec/keys/ckpts__shape_dec_next_dc_f16c32_fp16.keys.txt` and checking conv1 out-channel ratios (×8 up / ÷8 down indicates spatial2channel). If 'nearest', I must implement SparseDownsample/Upsample instead of Spatial2/Channel2Spatial.
 
 2. **Channel packing order in spatial2channel reshape**: torch does `new_feats[idx*8+subidx]=feats` on a `[Nc*8, C]` buffer then `.reshape(Nc, 8*C)`. I asserted sub-block s occupies output channels `[s*C,(s+1)*C)`. This should be verified against a reference tensor dump (run the Python `SparseSpatial2Channel` on a tiny coords set and dump `out.feats[0]`), because getting it wrong silently corrupts every downstream conv/linear.
 

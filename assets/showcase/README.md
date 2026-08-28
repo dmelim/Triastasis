@@ -1,4 +1,4 @@
-# trellis.cpp showcase gallery
+# Triastasis showcase gallery
 
 Seven image→3D reconstructions produced end-to-end by **trellis.cpp** (this
 repository's C++/GGML reimplementation of Microsoft TRELLIS.2-4B), running on a
@@ -21,20 +21,20 @@ default 300K-face quadric target, 2048² texture atlas.
 Each `<name>/` directory contains:
 
 - `<name>.png` — the source image fed to the pipeline
-- `<name>.glb` — the textured PBR mesh output (not tracked in git; regenerate
-  with `trellis-cli <name>.png <name>.glb -s 42`)
+- `<name>.glb` — the textured PBR mesh output, intentionally excluded from Git;
+  regenerate it with `trellis-cli <name>.png <name>.glb -s 42`
 - `<name>_quad4k.png` — a 4096×4096 four-view render (front / right / back /
   left at 75° elevation, 2048×2048 per view) for detail inspection
 
-| Asset | Description | Faces | GLB |
-|-------|-------------|-------|-----|
-| **axe** | Ornate fantasy battle-axe, engraved steel head on a wooden haft | 284K | 10.5 MB |
-| **chest** | Treasure chest — wood panels, brass corner fittings, steel bands, padlock | 280K | 10.8 MB |
-| **cottage** | Log cabin with shingled roof, dormer, stone chimney and potted plants | 289K | 12.7 MB |
-| **drone** | Sleek chrome hover-drone / concept car | 297K | 12.7 MB |
-| **golem** | Stone golem, cracked-rock surface with moss and a glowing core | 291K | 12.0 MB |
-| **knight** | Plate-armoured knight with blue cape and sword | 289K | 13.9 MB |
-| **racer** | Red futuristic hover-racer | 292K | 12.6 MB |
+| Asset | Description | Faces |
+|-------|-------------|-------|
+| **axe** | Ornate fantasy battle-axe, engraved steel head on a wooden haft | 284K |
+| **chest** | Treasure chest, wood panels, brass corner fittings, steel bands, padlock | 280K |
+| **cottage** | Log cabin with shingled roof, dormer, stone chimney and potted plants | 289K |
+| **drone** | Sleek chrome hover-drone / concept car | 297K |
+| **golem** | Stone golem, cracked-rock surface with moss and a glowing core | 291K |
+| **knight** | Plate-armoured knight with blue cape and sword | 289K |
+| **racer** | Red futuristic hover-racer | 292K |
 
 ### Gallery
 
@@ -46,7 +46,4 @@ Each `<name>/` directory contains:
 ![knight](knight/knight_quad4k.png)
 ![racer](racer/racer_quad4k.png)
 
----
-
-*Rendered with `<model-viewer>` (`tools/mv_preview/render_quad.js`); camera at
-75° elevation, orbiting front → right → back → left.*
+The preview grids show the front, right, back, and left at 75° elevation.

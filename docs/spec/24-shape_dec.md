@@ -213,7 +213,7 @@ These are consumed by the texture decoder. Persist coords+logits per up-block.
 ## Weight key map
 
 
-All keys from /devel/alt/trellis.cpp/docs/spec/keys/ckpts__shape_dec_next_dc_f16c32_fp16.keys.txt (f16).
+All keys from `docs/spec/keys/ckpts__shape_dec_next_dc_f16c32_fp16.keys.txt` (f16).
 Conv weights are stored ALREADY PERMUTED to (Co, Kd, Kh, Kw, Ci) — see conv_flex_gemm.py line 34
 `weight.permute(0,2,3,4,1).contiguous()`. So shape [Co,3,3,3,Ci]. Linear weights are torch [out,in].
 
@@ -443,4 +443,3 @@ DO NOT PORT (training/postprocess only):
    order per axis; triangle winding (front-face normals) depends on it. If exported mesh looks inside-out,
    the offset tables / split index lists may need the documented order preserved exactly (they're quoted
    verbatim in the spec). Verify normals against a reference mesh.
-
