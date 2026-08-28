@@ -75,6 +75,29 @@ export function invoke<T>(cmd: string, args?: Record<string, unknown>): Promise<
   return tauriInvoke<T>(cmd, args);
 }
 
+/** Open a trusted documentation URL in the user's default browser. */
+export async function openExternalUrl(url: string): Promise<void> {
+  if (isTauri()) {
+    const { openUrl } = await import("@tauri-apps/plugin-opener");
+    await openUrl(url);
+    return;
+  }
+  window.open(url, "_blank", "noopener,noreferrer");
+}
+
+/** Route external anchors through the native opener while preserving browser behavior. */
+export function bindExternalLinks(root: ParentNode): void {
+  root.querySelectorAll<HTMLAnchorElement>('a[href^="https://"]').forEach((anchor) => {
+    anchor.onclick = (event) => {
+      if (!isTauri()) return;
+      event.preventDefault();
+      void openExternalUrl(anchor.href).catch((error) => {
+        console.error("Could not open external link", error);
+      });
+    };
+  });
+}
+
 /** Subscribe to a Tauri event; no-op (returns a noop unlisten) in the browser. */
 export async function listen<T>(
   event: string,

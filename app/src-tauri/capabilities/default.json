@@ -7,7 +7,18 @@
     "core:default",
     "core:event:default",
     "dialog:default",
+    {
+      "identifier": "opener:allow-open-url",
+      "allow": [
+        { "url": "https://github.com/pwilkin/trellis.cpp" },
+        { "url": "https://huggingface.co/ilintar/trellis2-gguf" },
+        { "url": "https://huggingface.co/microsoft/TRELLIS.2-4B" },
+        { "url": "https://github.com/facebookresearch/dinov3/blob/main/LICENSE.md" },
+        { "url": "https://github.com/ZhengPeng7/BiRefNet/blob/main/LICENSE" }
+      ]
+    },
     "fs:default",
+    "fs:allow-applocaldata-read-recursive",
     "fs:allow-applocaldata-write-recursive",
     {
       "identifier": "fs:allow-read-file",

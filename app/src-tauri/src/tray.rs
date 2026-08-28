@@ -16,11 +16,16 @@ const QUIT_ID: &str = "quit-studio";
 #[derive(Default)]
 pub struct LifecycleState {
     quitting: AtomicBool,
+    background_notice_shown: AtomicBool,
 }
 
 impl LifecycleState {
     pub fn is_quitting(&self) -> bool {
         self.quitting.load(Ordering::Relaxed)
+    }
+
+    pub fn should_show_background_notice(&self) -> bool {
+        !self.background_notice_shown.swap(true, Ordering::Relaxed)
     }
 
     fn begin_quit(&self) {

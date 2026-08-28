@@ -18,6 +18,7 @@ mod tray;
 use automation::AutomationState;
 use server::ServerState;
 use tauri::{Emitter, Manager};
+use tauri_plugin_notification::NotificationExt;
 use tray::LifecycleState;
 
 #[tauri::command]
@@ -530,6 +531,8 @@ fn main() {
         }))
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())
+        .plugin(tauri_plugin_notification::init())
+        .plugin(tauri_plugin_opener::init())
         .manage(ServerState::default())
         .manage(AutomationState::default())
         .manage(downloader::DownloadControl::default())
@@ -598,6 +601,20 @@ fn main() {
                     api.prevent_close();
                     let _ = window.hide();
                     let _ = window.emit("studio-hidden", ());
+                    if window
+                        .state::<LifecycleState>()
+                        .should_show_background_notice()
+                    {
+                        let _ = window
+                            .app_handle()
+                            .notification()
+                            .builder()
+                            .title("Triastasis is still running")
+                            .body(
+                                "Triastasis will stay open in the background so you can use the API. Quit it from the system tray when you are done.",
+                            )
+                            .show();
+                    }
                 }
             }
         })
