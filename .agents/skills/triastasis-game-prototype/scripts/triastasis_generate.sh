@@ -5,10 +5,17 @@ export PATH="/usr/bin:/bin:$PATH"
 api="http://127.0.0.1:8082"
 image=""
 output=""
+job_json=""
 seed="42"
 resolution="512"
 bg_removal="birefnet"
 uv="xatlas"
+texture=""
+target_faces=""
+atlas_size=""
+texture_resolution=""
+remesh_band=""
+texture_encoding=""
 poll_seconds="2"
 force="0"
 job_id=""
@@ -18,10 +25,17 @@ usage() {
 Usage: triastasis_generate.sh --image PATH --output PATH [options]
 
 Options:
+  --job-json PATH           Save the final API job view as JSON
   --seed N                 Default: 42
   --resolution N           512, 1024, or 1536. Default: 512
   --bg-removal MODE        auto, birefnet, or threshold. Default: birefnet
   --uv MODE                xatlas or box. Default: xatlas
+  --texture MODE           on, off, true, false, 1, or 0
+  --target-faces N         10000 through 1000000
+  --atlas-size N           128 through 4096
+  --texture-resolution N   512 or 1024
+  --remesh-band N          0 through 8
+  --texture-encoding MODE  auto, webp, or png
   --api URL                Default: http://127.0.0.1:8082
   --poll-seconds N         Default: 2
   --force                  Replace an existing output file
@@ -33,10 +47,17 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     --image) image="${2:-}"; shift 2 ;;
     --output) output="${2:-}"; shift 2 ;;
+    --job-json) job_json="${2:-}"; shift 2 ;;
     --seed) seed="${2:-}"; shift 2 ;;
     --resolution) resolution="${2:-}"; shift 2 ;;
     --bg-removal) bg_removal="${2:-}"; shift 2 ;;
     --uv) uv="${2:-}"; shift 2 ;;
+    --texture) texture="${2:-}"; shift 2 ;;
+    --target-faces) target_faces="${2:-}"; shift 2 ;;
+    --atlas-size) atlas_size="${2:-}"; shift 2 ;;
+    --texture-resolution) texture_resolution="${2:-}"; shift 2 ;;
+    --remesh-band) remesh_band="${2:-}"; shift 2 ;;
+    --texture-encoding) texture_encoding="${2:-}"; shift 2 ;;
     --api) api="${2:-}"; shift 2 ;;
     --poll-seconds) poll_seconds="${2:-}"; shift 2 ;;
     --force) force="1"; shift ;;
@@ -51,8 +72,18 @@ done
 [[ "$bg_removal" =~ ^(auto|birefnet|threshold)$ ]] || { echo "Invalid background removal: $bg_removal" >&2; exit 2; }
 [[ "$uv" =~ ^(xatlas|box)$ ]] || { echo "Invalid UV mode: $uv" >&2; exit 2; }
 [[ "$seed" =~ ^[0-9]+$ ]] || { echo "Seed must be a nonnegative integer" >&2; exit 2; }
+(( ${#seed} <= 10 )) && (( 10#$seed <= 4294967295 )) || { echo "Seed must not exceed 4294967295" >&2; exit 2; }
+[[ -z "$texture" || "$texture" =~ ^(on|off|true|false|1|0)$ ]] || { echo "Invalid texture mode: $texture" >&2; exit 2; }
+[[ -z "$target_faces" || "$target_faces" =~ ^[0-9]+$ ]] || { echo "Target faces must be an integer" >&2; exit 2; }
+[[ -z "$target_faces" ]] || { (( ${#target_faces} <= 7 )) && (( 10#$target_faces >= 10000 && 10#$target_faces <= 1000000 )); } || { echo "Target faces must be between 10000 and 1000000" >&2; exit 2; }
+[[ -z "$atlas_size" || "$atlas_size" =~ ^[0-9]+$ ]] || { echo "Atlas size must be an integer" >&2; exit 2; }
+[[ -z "$atlas_size" ]] || { (( ${#atlas_size} <= 4 )) && (( 10#$atlas_size >= 128 && 10#$atlas_size <= 4096 )); } || { echo "Atlas size must be between 128 and 4096" >&2; exit 2; }
+[[ -z "$texture_resolution" || "$texture_resolution" =~ ^(512|1024)$ ]] || { echo "Texture resolution must be 512 or 1024" >&2; exit 2; }
+[[ -z "$remesh_band" || "$remesh_band" =~ ^[0-8]$ ]] || { echo "Remesh band must be between 0 and 8" >&2; exit 2; }
+[[ -z "$texture_encoding" || "$texture_encoding" =~ ^(auto|webp|png)$ ]] || { echo "Invalid texture encoding: $texture_encoding" >&2; exit 2; }
 [[ "$poll_seconds" =~ ^[1-9][0-9]*$ ]] || { echo "Poll interval must be a positive integer" >&2; exit 2; }
 [[ ! -e "$output" || "$force" == "1" ]] || { echo "Output exists; pass --force to replace it: $output" >&2; exit 2; }
+[[ -z "$job_json" || ! -e "$job_json" || "$force" == "1" ]] || { echo "Job JSON exists; pass --force to replace it: $job_json" >&2; exit 2; }
 
 command -v curl >/dev/null || { echo "curl is required" >&2; exit 2; }
 command -v python >/dev/null || { echo "python is required for JSON parsing" >&2; exit 2; }
@@ -76,14 +107,30 @@ curl --fail --silent --show-error "$api/health" >/dev/null || {
 
 capabilities="$(curl --fail --silent --show-error "$api/capabilities")"
 policy="$(printf '%s' "$capabilities" | python -c "import json,sys; d=json.load(sys.stdin); print(d.get('capabilities',{}).get('policy','unknown'))")"
-echo "Triastasis policy: $policy" >&2
+persistence_healthy="$(printf '%s' "$capabilities" | python -c "import json,sys; d=json.load(sys.stdin); print(str(d.get('persistenceHealthy',True)).lower())")"
+max_concurrency="$(printf '%s' "$capabilities" | python -c "import json,sys; d=json.load(sys.stdin); print(d.get('capabilities',{}).get('maxConcurrency','unknown'))")"
+if [[ "$persistence_healthy" != "true" ]]; then
+  persistence_error="$(printf '%s' "$capabilities" | python -c "import json,sys; print(json.load(sys.stdin).get('persistenceError') or 'unknown persistence error')")"
+  echo "Triastasis automation persistence is degraded: $persistence_error" >&2
+  exit 3
+fi
+echo "Triastasis policy: $policy; max concurrency: $max_concurrency" >&2
 
-submission="$(curl --fail --silent --show-error "$api/jobs" \
-  -F "image=@$image" \
-  -F "seed=$seed" \
-  -F "resolution=$resolution" \
-  -F "bg_removal=$bg_removal" \
-  -F "uv=$uv")"
+curl_fields=(
+  -F "image=@$image"
+  -F "seed=$seed"
+  -F "resolution=$resolution"
+  -F "bg_removal=$bg_removal"
+  -F "uv=$uv"
+)
+[[ -z "$texture" ]] || curl_fields+=(-F "texture=$texture")
+[[ -z "$target_faces" ]] || curl_fields+=(-F "targetFaces=$target_faces")
+[[ -z "$atlas_size" ]] || curl_fields+=(-F "atlasSize=$atlas_size")
+[[ -z "$texture_resolution" ]] || curl_fields+=(-F "textureResolution=$texture_resolution")
+[[ -z "$remesh_band" ]] || curl_fields+=(-F "remeshBand=$remesh_band")
+[[ -z "$texture_encoding" ]] || curl_fields+=(-F "textureEncoding=$texture_encoding")
+
+submission="$(curl --fail-with-body --silent --show-error "$api/jobs" "${curl_fields[@]}")"
 
 job_id="$(printf '%s' "$submission" | json_field id)"
 status_url="$(printf '%s' "$submission" | json_field statusUrl)"
@@ -109,10 +156,12 @@ while true; do
   current_ahead="$(printf '%s' "$status_json" | json_field jobsAhead)"
   elapsed="$(( $(date +%s) - started ))"
   queue_label=""
+  progress_label="$(printf '%s' "$status_json" | python -c "import json,sys; p=json.load(sys.stdin).get('progress') or {}; parts=[]; stage=p.get('stageLabel'); percent=p.get('percent'); eta=p.get('etaSeconds'); parts += [str(stage)] if stage else []; parts += [f'{percent:.0f}%'] if isinstance(percent,(int,float)) else []; parts += [f'ETA {eta:.0f}s'] if isinstance(eta,(int,float)) else []; print(' · '.join(parts))")"
   if [[ "$status" == "queued" && "$current_ahead" =~ ^[0-9]+$ ]]; then
     queue_label=" · pos ${current_position:-?}, ${current_ahead} ahead"
   fi
-  printf '\r%-12s%-32s %4ss' "$status" "$queue_label" "$elapsed" >&2
+  [[ -z "$progress_label" ]] || progress_label=" · $progress_label"
+  printf '\r%-12s%-64s %4ss' "$status" "$queue_label$progress_label" "$elapsed" >&2
   case "$status" in
     succeeded) printf '\n' >&2; break ;;
     failed)
@@ -132,6 +181,16 @@ done
 
 mkdir -p "$(dirname "$output")"
 curl --fail --silent --show-error "$model_url" --output "$output"
+if [[ -n "$job_json" ]]; then
+  mkdir -p "$(dirname "$job_json")"
+  printf '%s\n' "$status_json" > "$job_json"
+fi
+
+quality_warning="$(printf '%s' "$status_json" | python -c "import json,sys; w=json.load(sys.stdin).get('qualityWarning') or {}; code=w.get('code'); message=w.get('message'); print(f'[{code}] {message}' if code and message else message or '')")"
+if [[ -n "$quality_warning" ]]; then
+  echo "QUALITY WARNING $quality_warning" >&2
+  echo "Do not integrate this model. Improve the source view to show visible depth; do not automatically retry with BiRefNet." >&2
+fi
 
 python - "$output" <<'PY'
 from pathlib import Path

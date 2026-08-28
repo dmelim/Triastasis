@@ -2,7 +2,7 @@ interface:
   display_name: "Triastasis Game Prototype"
   short_description: "Quickly build playable 3D game prototypes"
   brand_color: "#2DD4BF"
-  default_prompt: "Use $triastasis-game-prototype to turn my idea or reference image into a generated, validated, prototype-ready 3D game character."
+  default_prompt: "Use $triastasis-game-prototype to turn my idea or reference image into a generated, inspected, static 3D asset for a game prototype."
 
 policy:
   allow_implicit_invocation: true

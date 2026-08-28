@@ -121,7 +121,6 @@ def main() -> None:
             if node.type == "TEX_IMAGE" and node.image:
                 images.add(node.image.name)
     image_names = sorted(images)
-    armatures = [obj for obj in bpy.context.scene.objects if obj.type == "ARMATURE"]
     report = {
         "input": str(args.input.resolve()),
         "blenderVersion": bpy.app.version_string,
@@ -133,8 +132,6 @@ def main() -> None:
             "triangles": sum(len(obj.data.loop_triangles) for obj in meshes),
             "materials": len(bpy.data.materials),
             "images": len(image_names),
-            "armatures": len(armatures),
-            "bones": sum(len(obj.data.bones) for obj in armatures),
         },
         "meshes": [
             {
