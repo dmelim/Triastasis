@@ -1,4 +1,5 @@
 import { invoke, isTauri } from "./tauri";
+import { readMigratedPreference } from "./storage-migration";
 
 export type GenerationResolution = 512 | 1024 | 1536;
 
@@ -13,7 +14,8 @@ export interface GenerationHardwareProfile extends NativeHardwareInfo {
   recommendedMaxResolution: GenerationResolution;
 }
 
-export const HARDWARE_OVERRIDE_KEY = "polyloom.allow-generation-above-recommendation";
+export const HARDWARE_OVERRIDE_KEY = "triastasis.allow-generation-above-recommendation";
+const LEGACY_HARDWARE_OVERRIDE_KEY = "polyloom.allow-generation-above-recommendation";
 
 export function recommendedMaxResolution(
   vramMb: number | null,
@@ -27,7 +29,8 @@ export function recommendedMaxResolution(
 }
 
 export function allowsGenerationAboveRecommendation(): boolean {
-  return typeof localStorage !== "undefined" && localStorage.getItem(HARDWARE_OVERRIDE_KEY) === "1";
+  return typeof localStorage !== "undefined" &&
+    readMigratedPreference(HARDWARE_OVERRIDE_KEY, LEGACY_HARDWARE_OVERRIDE_KEY) === "1";
 }
 
 export function setAllowsGenerationAboveRecommendation(allowed: boolean): void {

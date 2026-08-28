@@ -1,20 +1,21 @@
-import {
-  BaseDirectory,
-  exists,
-  mkdir,
-  readDir,
-  readFile,
-  readTextFile,
-  remove,
-  writeFile,
-  writeTextFile,
-} from "@tauri-apps/plugin-fs";
 import type { GenRecord, VersionRecord } from "./types";
 import { createTransactionalGallery, type GalleryFs } from "./gallery-storage";
 
-const ROOT = "polyloom/gallery-v1";
+const ROOT = "triastasis/gallery-v1";
 const MIGRATION_MARKER = `${ROOT}/indexeddb-migrated`;
-const OPTIONS = { baseDir: BaseDirectory.AppLocalData } as const;
+
+type FsPlugin = typeof import("@tauri-apps/plugin-fs");
+
+let fsPluginPromise: Promise<FsPlugin> | undefined;
+
+function loadFsPlugin(): Promise<FsPlugin> {
+  fsPluginPromise ??= import("@tauri-apps/plugin-fs");
+  return fsPluginPromise;
+}
+
+function appLocalOptions(fs: FsPlugin) {
+  return { baseDir: fs.BaseDirectory.AppLocalData } as const;
+}
 
 function recordDirectory(id: string): string {
   const bytes = new TextEncoder().encode(id);
@@ -24,35 +25,44 @@ function recordDirectory(id: string): string {
 }
 
 async function ensureRoot(): Promise<void> {
-  await mkdir(ROOT, { ...OPTIONS, recursive: true });
+  const fs = await loadFsPlugin();
+  await fs.mkdir(ROOT, { ...appLocalOptions(fs), recursive: true });
 }
 
 /** Adapter from Tauri's plugin-fs to the injectable gallery filesystem. */
 const tauriFs: GalleryFs = {
   async mkdir(path, recursive) {
-    await mkdir(path, { ...OPTIONS, recursive });
+    const fs = await loadFsPlugin();
+    await fs.mkdir(path, { ...appLocalOptions(fs), recursive });
   },
-  writeFile(path, data) {
-    return writeFile(path, data, OPTIONS);
+  async writeFile(path, data) {
+    const fs = await loadFsPlugin();
+    await fs.writeFile(path, data, appLocalOptions(fs));
   },
-  writeTextFile(path, text) {
-    return writeTextFile(path, text, OPTIONS);
+  async writeTextFile(path, text) {
+    const fs = await loadFsPlugin();
+    await fs.writeTextFile(path, text, appLocalOptions(fs));
   },
-  readFile(path) {
-    return readFile(path, OPTIONS);
+  async readFile(path) {
+    const fs = await loadFsPlugin();
+    return fs.readFile(path, appLocalOptions(fs));
   },
-  readTextFile(path) {
-    return readTextFile(path, OPTIONS);
+  async readTextFile(path) {
+    const fs = await loadFsPlugin();
+    return fs.readTextFile(path, appLocalOptions(fs));
   },
-  exists(path) {
-    return exists(path, OPTIONS);
+  async exists(path) {
+    const fs = await loadFsPlugin();
+    return fs.exists(path, appLocalOptions(fs));
   },
-  remove(path, recursive) {
-    return remove(path, { ...OPTIONS, recursive });
+  async remove(path, recursive) {
+    const fs = await loadFsPlugin();
+    await fs.remove(path, { ...appLocalOptions(fs), recursive });
   },
   async listDirectories(path) {
+    const fs = await loadFsPlugin();
     try {
-      const entries = await readDir(path, OPTIONS);
+      const entries = await fs.readDir(path, appLocalOptions(fs));
       return entries.filter((entry) => entry.isDirectory && entry.name).map((entry) => entry.name!);
     } catch {
       return [];
@@ -91,26 +101,36 @@ function encodedIdOf(id: string): string {
 }
 
 export async function deleteNativeRecords(ids: string[]): Promise<void> {
+  const fs = await loadFsPlugin();
+  const options = appLocalOptions(fs);
   for (const id of ids) {
     const dir = recordDirectory(id);
-    if (await exists(dir, OPTIONS)) await remove(dir, { ...OPTIONS, recursive: true });
+    if (await fs.exists(dir, options)) await fs.remove(dir, { ...options, recursive: true });
   }
 }
 
 export async function clearNativeGallery(): Promise<void> {
   await ensureRoot();
-  const entries = await readDir(ROOT, OPTIONS);
+  const fs = await loadFsPlugin();
+  const options = appLocalOptions(fs);
+  const entries = await fs.readDir(ROOT, options);
   for (const entry of entries) {
     if (!entry.isDirectory || !entry.name) continue;
-    await remove(`${ROOT}/${entry.name}`, { ...OPTIONS, recursive: true });
+    await fs.remove(`${ROOT}/${entry.name}`, { ...options, recursive: true });
   }
 }
 
-export function nativeMigrationWasCompleted(): Promise<boolean> {
-  return exists(MIGRATION_MARKER, OPTIONS);
+export async function nativeMigrationWasCompleted(): Promise<boolean> {
+  const fs = await loadFsPlugin();
+  return fs.exists(MIGRATION_MARKER, appLocalOptions(fs));
 }
 
 export async function markNativeMigrationCompleted(): Promise<void> {
   await ensureRoot();
-  await writeTextFile(MIGRATION_MARKER, "IndexedDB gallery migrated to app-local storage.\n", OPTIONS);
+  const fs = await loadFsPlugin();
+  await fs.writeTextFile(
+    MIGRATION_MARKER,
+    "IndexedDB gallery migrated to app-local storage.\n",
+    appLocalOptions(fs),
+  );
 }

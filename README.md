@@ -1,50 +1,53 @@
-# trellis.cpp
+# Triastasis
 
-A standalone, **GGML-based C++** implementation of Microsoft's
-[TRELLIS.2-4B](https://huggingface.co/microsoft/TRELLIS.2-4B) image-to-3D pipeline:
-background removal, image conditioning, the three flow transformers, the VAE decoders,
-mesh extraction and UV-textured GLB export — all in native C++/GGML with no Python at
-runtime. Optionally driven end-to-end from a text prompt with
-[stable-diffusion.cpp](https://github.com/leejet/stable-diffusion.cpp) producing the
-input image.
+<img src="app/public/brand/triastasis-wordmark.png" width="420" alt="Triastasis">
 
-It ports the reference implementation at
-[microsoft/TRELLIS.2](https://github.com/microsoft/TRELLIS.2).
+**A local workspace for turning images into textured 3D assets.**
 
-```
-./build/trellis-cli assets/goblin.png out/goblin.glb      # image -> UV-textured GLB (atlas + PBR)
-python tools/render_glb.py out/goblin.glb out/view.png    # quick multi-view render
-```
+Triastasis generates a 3D model from a single image, lets you inspect and
+correct the result, preserves its generation history, and exports a portable
+GLB. Generation runs locally through a native C++/GGML implementation of
+Microsoft TRELLIS.2. No Python environment, hosted generation service, or
+ComfyUI workflow is required at runtime.
 
-Prebuilt binaries for Linux and Windows (Vulkan, ROCm, CUDA) are published on the
-[releases page](../../releases). Serves as the `trellis` backend of
-[Lemonade](https://github.com/lemonade-sdk/lemonade).
+Triastasis is currently alpha software.
+
+## Highlights
+
+- Local image-to-3D generation on CUDA, Vulkan, or ROCm.
+- Verified, resumable model downloads with hardware-aware recommendations.
+- Quality presets, advanced generation controls, and seed sweeps.
+- Textured, clay, wireframe, topology, UV, normal, and PBR channel inspection.
+- Practical non-destructive corrections for static models.
+- A searchable local asset library with favorites and version lineage.
+- Reproducible `.triastasis.json` manifests and interrupted-job recovery.
+- A loopback-only queued automation API for local tools and agents.
+- An optional Codex workflow for generating, inspecting, and integrating static game assets.
 
 ## Quick start
 
-New here? **Triastasis** is a one-command install that auto-detects your GPU
-runtime (CUDA / ROCm / Vulkan), installs the app, and gives you a
-drag-an-image → 3D desktop app with an interactive preview and a saved gallery.
+The one-command installer auto-detects your GPU runtime, installs the native
+server and desktop app, and guides you through downloading a verified model
+bundle on first launch.
 
 ```bash
 # Linux (x86-64)
-curl -fsSL https://raw.githubusercontent.com/pwilkin/trellis.cpp/main/install/install.sh | bash
-```
-```powershell
-# Windows (x64), in PowerShell
-irm https://raw.githubusercontent.com/pwilkin/trellis.cpp/main/install/install.ps1 | iex
+curl -fsSL https://raw.githubusercontent.com/dmelim/Triastasis/main/install/install.sh | bash
 ```
 
-See [**Triastasis (desktop app)**](#triastasis-desktop-app) below for what it
-does and how to use it, or [`docs/getting-started.md`](docs/getting-started.md) for the
-full walkthrough and installer options.
+```powershell
+# Windows (x64), in PowerShell
+irm https://raw.githubusercontent.com/dmelim/Triastasis/main/install/install.ps1 | iex
+```
+
+See [Getting started](docs/getting-started.md) for portable installations,
+storage locations, backend selection, installer options, and troubleshooting.
 
 ## Showcase
 
 Seven image→3D reconstructions produced end-to-end by trellis.cpp **v0.4.3** on a
-single Radeon 8060S (all res-1024 cascade, seed 42, ~300K faces, 2048² atlas; the
-GLBs and their Z-Image-Turbo source images live in
-[`assets/showcase/`](assets/showcase/)):
+single Radeon 8060S (all res-1024 cascade, seed 42, ~300K faces, 2048² atlas).
+The source images and preview grids live in [`assets/showcase/`](assets/showcase/):
 
 <p>
 <a href="assets/showcase/axe/axe_quad4k.png"><img src="assets/showcase/axe/axe_quad4k.png" width="49%"></a>
@@ -56,19 +59,12 @@ GLBs and their Z-Image-Turbo source images live in
 <a href="assets/showcase/racer/racer_quad4k.png"><img src="assets/showcase/racer/racer_quad4k.png" width="49%"></a>
 </p>
 
-Each grid is a 4096×4096 four-view capture — front / right / back / left at 75°
-elevation, 2048² per view — made with
-[`tools/mv_preview/render_quad.js`](tools/mv_preview/render_quad.js), a headless
-Playwright driver around Google's `<model-viewer>`: it serves
-`tools/mv_preview/quad.html`, loads the GLB into a 2×2 grid of viewers, waits for
-auto-framing to settle, captures each view via `toBlob`, and
-[`stitch_quad.py`](tools/mv_preview/stitch_quad.py) assembles the final grid.
+Each grid is a 4096×4096 four-view capture showing the front, right, back, and
+left of the generated asset at 75° elevation.
 
-## Triastasis (desktop app)
+## Desktop workspace
 
-<img src="app/public/brand/triastasis-mark.png" width="88" alt="Triastasis logo">
-
-**Triastasis** is the standalone desktop app (built with [Tauri](https://tauri.app))
+Triastasis is a standalone desktop app built with [Tauri](https://tauri.app)
 for anyone who wants image→3D without touching the command line. The one-command
 installer above auto-detects your GPU runtime, downloads the matching
 `trellis-server` build and installs the app; on first launch it offers verified
@@ -85,9 +81,8 @@ click → rotate the result.
    seed, background removal (auto / birefnet / threshold), and UV unwrap
    (xatlas / box). Defaults match the CLI.
 3. **Generate 3D** — this takes a few minutes; a live stage line shows progress.
-4. **Inspect** — rotate and zoom in the interactive preview (Google's three.js-based
-   `<model-viewer>`); **Reset view** re-frames the camera and **Save GLB…** exports
-   the model.
+4. **Inspect** — rotate and zoom in the direct Three.js preview; **Reset view**
+   re-frames the camera and **Save GLB…** exports the model.
 5. **Reuse** — every result is kept in a local **gallery** (native app storage): click a
    thumbnail to reload its model, input image, and settings — even after restarting
    the app.
@@ -99,13 +94,52 @@ skip the app entirely and open it in a browser against a `trellis-server` you st
 yourself — see [`docs/getting-started.md`](docs/getting-started.md) for that, the full
 installer options, and troubleshooting. The app source lives in [`app/`](app/).
 
+### Model download verification and recovery
+
+Triastasis downloads curated model bundles from URLs pinned to an exact Hugging Face
+repository revision. Every file is checked against its expected size and SHA-256 from
+the model catalog before it is installed.
+
+If a catalog hash is stale, Triastasis performs a second, independent check against
+the LFS SHA-256 published by Hugging Face for the same repository, revision, path,
+and size. A file is accepted only when its downloaded SHA-256 matches one of these
+trusted records. It is never accepted merely because the download completed or its
+filename looks correct.
+
+When neither check can verify a file, the app keeps the partial download and shows
+the source URL, expected hash, downloaded hash, and upstream verification result.
+**Retry verification** checks the preserved file again without downloading it from
+scratch. **Stop and remove partial** removes only that unfinished download. Triastasis
+does not run an unverified model bundle.
+
+### Models from other sources
+
+The desktop app provides **Use your own model files** during onboarding and
+**Add custom model folder** in Settings. Advanced users can download a compatible
+GGUF set from any source, select its local directory, accept the explicit warning,
+and use the files at their own risk. Triastasis does not establish the publisher,
+require published checksums, or guarantee that a custom bundle is safe, compatible,
+complete, or supported.
+
+Custom sources must always be labelled **Unverified custom bundle** and must never be
+presented as curated or publisher-verified. The app performs only a minimum
+operational check that the selected directory contains a readable GGUF file. A custom
+bundle that the server cannot load reports the server error without implying that
+Triastasis supports that bundle.
+
+Custom model files remain in their original user-owned directory. Triastasis does not
+copy, rename, overwrite, or delete them. Forgetting a custom folder removes only the
+saved reference. These boundaries protect the user's computer, not the provenance or
+quality of the models they chose.
+
 ### Quickly prototype a 3D game with Codex
 
 The repository includes the project skill
 [`$triastasis-game-prototype`](.agents/skills/triastasis-game-prototype/SKILL.md).
-It uses Triastasis to turn a prompt or reference image into a GLB, inspects and rigs
-characters in Blender, validates deformation, and can place the result into an
-existing Three.js, Godot, Unity, Unreal, or other game project.
+It uses Triastasis to turn a prompt or reference image into a static GLB, inspects
+the result in Blender, and can place it into an existing Three.js, Godot, Unity,
+Unreal, or other game project. It does not claim that generated assets are rigged,
+skinned, or animation-ready.
 
 Open this repository in Codex, start Triastasis, and ask:
 
@@ -113,30 +147,37 @@ Open this repository in Codex, start Triastasis, and ask:
 Use $triastasis-game-prototype to turn this character idea into a playable 3D game prototype.
 ```
 
-The skill defaults to one fast 512 generation and preserves the static model when a
-generated mesh is unsuitable for animation. Its scripts use the loopback-only queued
-automation API documented in [`app/AUTOMATION.md`](app/AUTOMATION.md).
+The skill defaults to one fast 512 generation and applies a static-asset quality
+gate before integration. Its scripts use the loopback-only queued automation API
+documented in [`app/AUTOMATION.md`](app/AUTOMATION.md).
 
 The sections below document the **CLI and HTTP server** directly, for advanced and
 scripted use.
 
-## Usage
+## Native runtime
+
+Triastasis includes a modified C++/GGML runtime derived from
+[Piotr Wilkin's `trellis.cpp`](https://github.com/pwilkin/trellis.cpp). The
+desktop app supervises its resident `trellis-server`; advanced users can also
+use the CLI and HTTP server directly.
+
+### CLI usage
 
 The default is the **1024 cascade** (LR `flow_512` → upsample → HR `flow_1024` →
 res-1024 decode, sharper geometry); `--res 512` selects the lighter res-512 path.
 All behavior is driven by CLI flags — run `trellis-cli --help` for the full list.
 The most useful ones:
 
-| flag | effect |
-|------|--------|
-| `--res 512\|1024\|1536` | geometry resolution (512 = light path, no cascade) |
+| flag                               | effect                                                                                                                                                                                                                            |
+| ---------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `--res 512\|1024\|1536`            | geometry resolution (512 = light path, no cascade)                                                                                                                                                                                |
 | `--bg-removal threshold\|birefnet` | default **auto**: pre-matted images keep their alpha, otherwise the BiRefNet matte (~13s on GPU). The plain white-bg keyer cuts specular highlights out of the alpha — the flow then generates holes there — so it is opt-in only |
-| `--no-texture` | geometry only |
-| `--decim GRID` | legacy cluster-grid decimation (default: quadric simplify to 300K faces @1024 / 150K @512; `0` = keep the full-res mesh) |
-| `--atlas PX` | UV atlas size (default 2048 @1024 / 1024 @512) |
-| `--box-uv` | voxel-native 6-way box projection instead of the default xatlas unwrap (O(faces), faster, looser packing) |
-| `--seed N` | RNG seed |
-| `--require-gpu` | fail instead of falling back to the (very slow, RAM-hungry) CPU path |
+| `--no-texture`                     | geometry only                                                                                                                                                                                                                     |
+| `--decim GRID`                     | legacy cluster-grid decimation (default: quadric simplify to 300K faces @1024 / 150K @512; `0` = keep the full-res mesh)                                                                                                          |
+| `--atlas PX`                       | UV atlas size (default 2048 @1024 / 1024 @512)                                                                                                                                                                                    |
+| `--box-uv`                         | voxel-native 6-way box projection instead of the default xatlas unwrap (O(faces), faster, looser packing)                                                                                                                         |
+| `--seed N`                         | RNG seed                                                                                                                                                                                                                          |
+| `--require-gpu`                    | fail instead of falling back to the (very slow, RAM-hungry) CPU path                                                                                                                                                              |
 
 The postprocess matches the reference pipeline op for op (see
 `docs/spec/27-reference-postprocess.md` / `28-divergence-matrix.md`): the raw
@@ -167,7 +208,7 @@ POST /generate      multipart/form-data with an "image" file part; optional text
 Launch-time flags (including `--res`) set the per-request defaults; each request can
 override them with its own fields.
 
-## Pipeline
+### Pipeline
 
 ```
 text prompt
@@ -217,36 +258,36 @@ Every neural component is validated against PyTorch (the `trellis-test-*` binari
 `tools/ref_*.py`): SS sampler matches torch to rel 4.3e-3 (exact voxel match), DiT
 2.8e-3, DINOv3 1.8e-2, sparse conv 1e-3, BiRefNet 4e-4, C2S exact.
 
-## Models
+### Models
 
 **Pre-built GGUFs:** [`ilintar/trellis2-gguf`](https://huggingface.co/ilintar/trellis2-gguf) —
 download the full set and point `trellis-cli` / `trellis-server` (`--models DIR`) at that
 folder. Or convert your own from the source checkpoints below (see `docs/spec/` and
 `tools/` for the safetensors→GGUF conversion).
 
-| role | source | notes |
-|------|--------|-------|
-| SS flow DiT | `microsoft/TRELLIS.2-4B` `ss_flow_img_dit_1_3B_64` | 1.3B, bf16 |
-| Shape SLAT flow | `…/slat_flow_img2shape_dit_1_3B_{512,1024}` | 1.3B, bf16; `_1024` drives the cascade's HR pass |
-| Tex SLAT flow | `…/slat_flow_imgshape2tex_dit_1_3B_{512,1024}` | 1.3B, bf16; `_1024` drives the cascade's HR pass |
-| Shape decoder | `…/shape_dec_next_dc_f16c32` | FlexiDualGrid VAE |
-| Tex decoder | `…/tex_dec_next_dc_f16c32` | Sparse U-Net VAE, 6-ch |
-| SS decoder | `microsoft/TRELLIS-image-large` `ss_dec_conv3d_16l8` | reused from v1 |
-| Image cond | `timm/vit_large_patch16_dinov3.lvd1689m` | ungated mirror of DINOv3 ViT-L (same weights) |
-| BG removal | `ZhengPeng7/BiRefNet` | ungated BiRefNet (RMBG-2.0 substitute) |
+| role            | source                                               | notes                                            |
+| --------------- | ---------------------------------------------------- | ------------------------------------------------ |
+| SS flow DiT     | `microsoft/TRELLIS.2-4B` `ss_flow_img_dit_1_3B_64`   | 1.3B, bf16                                       |
+| Shape SLAT flow | `…/slat_flow_img2shape_dit_1_3B_{512,1024}`          | 1.3B, bf16; `_1024` drives the cascade's HR pass |
+| Tex SLAT flow   | `…/slat_flow_imgshape2tex_dit_1_3B_{512,1024}`       | 1.3B, bf16; `_1024` drives the cascade's HR pass |
+| Shape decoder   | `…/shape_dec_next_dc_f16c32`                         | FlexiDualGrid VAE                                |
+| Tex decoder     | `…/tex_dec_next_dc_f16c32`                           | Sparse U-Net VAE, 6-ch                           |
+| SS decoder      | `microsoft/TRELLIS-image-large` `ss_dec_conv3d_16l8` | reused from v1                                   |
+| Image cond      | `timm/vit_large_patch16_dinov3.lvd1689m`             | ungated mirror of DINOv3 ViT-L (same weights)    |
+| BG removal      | `ZhengPeng7/BiRefNet`                                | ungated BiRefNet (RMBG-2.0 substitute)           |
 
 The two helper models are HF-gated upstream; the ungated equivalents above avoid needing
 a token.
 
-## Performance
+### Performance
 
 Measured end-to-end (image → GLB, res 1024, 12-step flows, includes model load;
 `docs/spec/29-perf-profile.md` has the per-flow breakdown and methodology):
 
-| input class | Strix Halo iGPU (Vulkan) | RTX 5060 Ti (CUDA) | reference Python, same GPU (cold) |
-|---|---|---|---|
-| light (goblin, 17k HR tokens) | 6:09 | **3:16** | 3:37 |
-| heavy (turret, ~45k HR tokens) | 12:39 | **7:23** | 5:20 |
+| input class                    | Strix Halo iGPU (Vulkan) | RTX 5060 Ti (CUDA) | reference Python, same GPU (cold) |
+| ------------------------------ | ------------------------ | ------------------ | --------------------------------- |
+| light (goblin, 17k HR tokens)  | 6:09                     | **3:16**           | 3:37                              |
+| heavy (turret, ~45k HR tokens) | 12:39                    | **7:23**           | 5:20                              |
 
 The postprocess (weld → remesh → decimate → unwrap → bake → WebP) uses the faithful
 CuMesh QEM decimation described above. With a GPU backend it decimates a 5.4M→300k-face
@@ -256,16 +297,15 @@ On Strix Halo, Vulkan is the fastest backend: ROCm requires
 `GGML_CUDA_DISABLE_GRAPHS=1` (ggml's HIP graph capture stalls on these graphs)
 and still trails Vulkan by 10–40 %.
 
-## Tools
+### Tools
 
-| tool | purpose |
-|------|---------|
-| `post-replay <dump.bin> <out.glb>` | re-run the whole postprocess from a `TRELLIS_DUMP_POST` dump in seconds (flags: `--no-remesh`, `--band`, `--no-snap`, `--box-uv`, `--faces`, `--atlas`, …) |
-| `tools/glb_metrics.py` | CPU geometry/UV/material metrics (components, boundary edges, winding, texel density, doubleSided/WebP flags) for ours-vs-reference GLB comparison |
-| `tools/render_glb.py` / `render_glb_fast.py` | quick multi-view flat renders |
-| `tools/mv_preview/` | PBR-correct GLB previews via the `<model-viewer>` web component (see its README) |
+| tool                                         | purpose                                                                                                                                                    |
+| -------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `post-replay <dump.bin> <out.glb>`           | re-run the whole postprocess from a `TRELLIS_DUMP_POST` dump in seconds (flags: `--no-remesh`, `--band`, `--no-snap`, `--box-uv`, `--faces`, `--atlas`, …) |
+| `tools/glb_metrics.py`                       | CPU geometry/UV/material metrics (components, boundary edges, winding, texel density, doubleSided/WebP flags) for ours-vs-reference GLB comparison         |
+| `tools/render_glb.py` / `render_glb_fast.py` | quick multi-view flat renders                                                                                                                              |
 
-## Building
+### Building
 
 GGML is vendored in `thirdparty/ggml`. Pick a backend:
 
@@ -282,7 +322,7 @@ See `.github/workflows/release.yml` for the exact flags the release binaries use
 6.0/6.1/7.0); the standalone installers select it automatically for devices such
 as the Tesla P100.
 
-## Layout
+### Layout
 
 ```
 src/            C++ implementation (models, ops, pipeline, drivers)
@@ -295,7 +335,15 @@ thirdparty/     vendored ggml (gitignored), plus stb + xatlas
 
 ## Open-source lineage and license
 
-This repository is a modified version of [Piotr Wilkin's `trellis.cpp`](https://github.com/pwilkin/trellis.cpp), which ports Microsoft's [TRELLIS.2](https://github.com/microsoft/TRELLIS) image-to-3D pipeline to a native C++/GGML runtime. Triastasis is the desktop product built around that runtime.
+Triastasis is an independent downstream project based on
+[Piotr Wilkin's `trellis.cpp` and Trellis Studio](https://github.com/pwilkin/trellis.cpp).
+That project ports Microsoft's
+[TRELLIS.2](https://github.com/microsoft/TRELLIS) image-to-3D pipeline to a
+native C++/GGML runtime. Triastasis retains and modifies that runtime while
+developing its desktop workspace, model management, asset library, editing,
+recovery, manifests, and automation around it.
+
+Triastasis is not affiliated with or endorsed by Microsoft.
 
 The software in this repository remains available under the MIT License. Keep the root [`LICENSE`](LICENSE) file and its original copyright notice with copies or substantial portions of the software. Modifications and new contributions can be documented without removing upstream attribution.
 

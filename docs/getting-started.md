@@ -21,13 +21,13 @@ hardware-based recommendation. To pre-download weights in the installer instead
 ### Linux (x86-64)
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/pwilkin/trellis.cpp/main/install/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/dmelim/Triastasis/main/install/install.sh | bash
 ```
 
 ### Windows (x64), in PowerShell
 
 ```powershell
-irm https://raw.githubusercontent.com/pwilkin/trellis.cpp/main/install/install.ps1 | iex
+irm https://raw.githubusercontent.com/dmelim/Triastasis/main/install/install.ps1 | iex
 ```
 
 That's it. Launch **Triastasis**, drop in an image, and click **Generate 3D**.

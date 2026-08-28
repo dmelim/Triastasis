@@ -1,13 +1,13 @@
-# Polyloom Agent Notes
+# Triastasis Agent Notes
 
 ## Product focus and maintenance boundary
 
-Polyloom's primary maintained product surface is the desktop application: its
+Triastasis's primary maintained product surface is the desktop application: its
 frontend, 3D viewer, generation controls, editing workflows, usability, and the
 clear communication of what the underlying model can and cannot do.
 
 Treat the following areas as upstream-aligned infrastructure rather than places
-for speculative Polyloom development:
+for speculative Triastasis development:
 
 - The native inference and mesh pipeline under `src/` and `include/`.
 - The resident `trellis-server` protocol and command-line pipeline.
@@ -29,17 +29,17 @@ exploring a requested feature, distinguish among:
 - What would require a new backend capability or ongoing native maintenance.
 
 The third category should be called out explicitly before implementation so the
-user can decide whether its maintenance cost fits Polyloom's scope.
+user can decide whether its maintenance cost fits Triastasis's scope.
 
 ## Optional upstream synchronization reminder
 
-Polyloom is a standalone derivative of `pwilkin/trellis.cpp`. The complete source
+Triastasis is a standalone derivative of `pwilkin/trellis.cpp`. The complete source
 needed by the application lives in this repository; the upstream repository is
 not a runtime dependency.
 
 The Git remotes should be:
 
-- `origin`: `https://github.com/dmelim/Polyloom.git`
+- `origin`: `https://github.com/dmelim/Triastasis.git`
 - `upstream`: `https://github.com/pwilkin/trellis.cpp.git`
 
 Do not fetch, merge, rebase, cherry-pick, commit, or push upstream changes as a
@@ -55,7 +55,7 @@ git merge upstream/main
 
 For isolated fixes, prefer reviewing and cherry-picking the specific upstream
 commit instead of merging unrelated changes. After either approach, resolve
-conflicts without discarding Polyloom changes and validate the backend, desktop
+conflicts without discarding Triastasis changes and validate the backend, desktop
 integration, generation workflow, and packaging before merging into `main`.
 
 Record the upstream commit or release integrated by the sync. Security fixes and

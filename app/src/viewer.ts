@@ -58,7 +58,7 @@ const EMPTY_STATS: ViewerStats = {
 };
 
 const DEFAULT_BACKGROUND = 0x0d1016;
-const TOPOLOGY_LINE_NAME = "polyloom-topology-lines";
+const TOPOLOGY_LINE_NAME = "triastasis-topology-lines";
 const CHECKER_SIZE = 128;
 
 type ViewerCamera = THREE.PerspectiveCamera | THREE.OrthographicCamera;
@@ -638,7 +638,7 @@ export class Viewer {
     };
     if (!this.selectionHelper) {
       this.selectionHelper = new THREE.BoxHelper(mesh, 0xffc857);
-      this.selectionHelper.name = "polyloom-selection-helper";
+      this.selectionHelper.name = "triastasis-selection-helper";
       this.selectionHelper.material.depthTest = false;
       this.selectionHelper.material.depthWrite = false;
       this.scene.add(this.selectionHelper);

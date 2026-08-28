@@ -63,6 +63,7 @@ import {
 } from "./hardware-profile";
 import type { ComponentAnalysis, EditHistory } from "./editing";
 import { progressDisplayMode, renderSettings, type ProgressDisplayMode } from "./settings";
+import { readMigratedPreference } from "./storage-migration";
 import type {
   EditableScene,
   MaterialSnapshot,
@@ -257,7 +258,7 @@ function applyProgressDisplayMode(mode: ProgressDisplayMode): void {
 }
 
 applyProgressDisplayMode(progressDisplayMode());
-window.addEventListener("polyloom-progress-display", (event) => {
+window.addEventListener("triastasis-progress-display", (event) => {
   applyProgressDisplayMode((event as CustomEvent<ProgressDisplayMode>).detail);
 });
 
@@ -1485,7 +1486,7 @@ function hardwareRestriction(params: GenParams): string | null {
   return `${normalized.resolution} is above the ${generationHardware.recommendedMaxResolution} hardware recommendation. Enable the override in Settings to continue.`;
 }
 
-window.addEventListener("polyloom-hardware-policy", () => applyHardwareGuardrails());
+window.addEventListener("triastasis-hardware-policy", () => applyHardwareGuardrails());
 $<HTMLButtonElement>("hardware-quality-settings").addEventListener("click", () => void openSettings());
 $<HTMLButtonElement>("hardware-resolution-settings").addEventListener("click", () => void openSettings());
 
@@ -1907,7 +1908,8 @@ function updateQueueStatus(): void {
 }
 
 // ---- job card minimized state ----
-const JOB_CARD_COLLAPSED_KEY = "polyloom.job-card.collapsed";
+const JOB_CARD_COLLAPSED_KEY = "triastasis.job-card.collapsed";
+const LEGACY_JOB_CARD_COLLAPSED_KEY = "polyloom.job-card.collapsed";
 let jobCardCollapsed = false;
 let tempExpandTimer: number | null = null;
 
@@ -1939,7 +1941,7 @@ function revealJobCardTemporarily(): void {
   if (tempExpandTimer !== null) window.clearTimeout(tempExpandTimer);
   tempExpandTimer = window.setTimeout(() => {
     tempExpandTimer = null;
-    if (generating && localStorage.getItem(JOB_CARD_COLLAPSED_KEY) === "1") {
+    if (generating && readMigratedPreference(JOB_CARD_COLLAPSED_KEY, LEGACY_JOB_CARD_COLLAPSED_KEY) === "1") {
       setJobCardCollapsed(true, false);
     }
   }, 6000);
@@ -1985,7 +1987,10 @@ function monitorExternalJob(apiUrl: string, initial: AutomationJob): void {
   progressTitle.textContent = initial.sourceName || "Queued model";
   progressChipTitle.textContent = progressTitle.textContent;
   progress.classList.remove("hidden");
-  setJobCardCollapsed(localStorage.getItem(JOB_CARD_COLLAPSED_KEY) === "1", false);
+  setJobCardCollapsed(
+    readMigratedPreference(JOB_CARD_COLLAPSED_KEY, LEGACY_JOB_CARD_COLLAPSED_KEY) === "1",
+    false,
+  );
   renderJobProgress();
   const startedAt = initial.startedAt ?? initial.submittedAt;
   if (elapsedTimer) window.clearInterval(elapsedTimer);
@@ -2040,7 +2045,10 @@ function startRun(job: GenerationJob): void {
   viewerReferenceToggle.setAttribute("aria-expanded", "false");
   progress.classList.remove("hidden");
   progressActions.classList.remove("hidden");
-  setJobCardCollapsed(localStorage.getItem(JOB_CARD_COLLAPSED_KEY) === "1", false);
+  setJobCardCollapsed(
+    readMigratedPreference(JOB_CARD_COLLAPSED_KEY, LEGACY_JOB_CARD_COLLAPSED_KEY) === "1",
+    false,
+  );
   renderJobProgress();
   updateQueueStatus();
   const started = Date.now();
@@ -2506,8 +2514,10 @@ viewerReferenceToggle.addEventListener("click", () => {
 });
 
 // ---- gallery ----
-const ASSETS_COLLAPSED_KEY = "polyloom.assets-level.collapsed";
-const VERSIONS_COLLAPSED_KEY = "polyloom.versions-level.collapsed";
+const ASSETS_COLLAPSED_KEY = "triastasis.assets-level.collapsed";
+const LEGACY_ASSETS_COLLAPSED_KEY = "polyloom.assets-level.collapsed";
+const VERSIONS_COLLAPSED_KEY = "triastasis.versions-level.collapsed";
+const LEGACY_VERSIONS_COLLAPSED_KEY = "polyloom.versions-level.collapsed";
 let userCollapsedAssetsThisSession = false;
 let userCollapsedVersionsThisSession = false;
 
@@ -2520,8 +2530,16 @@ function applyLevelCollapsed(level: HTMLElement, toggle: HTMLButtonElement, coll
 }
 
 function initDockPreference(): void {
-  applyLevelCollapsed(assetLevel, dockToggle, localStorage.getItem(ASSETS_COLLAPSED_KEY) === "1");
-  applyLevelCollapsed(versionLevel, versionDockToggle, localStorage.getItem(VERSIONS_COLLAPSED_KEY) === "1");
+  applyLevelCollapsed(
+    assetLevel,
+    dockToggle,
+    readMigratedPreference(ASSETS_COLLAPSED_KEY, LEGACY_ASSETS_COLLAPSED_KEY) === "1",
+  );
+  applyLevelCollapsed(
+    versionLevel,
+    versionDockToggle,
+    readMigratedPreference(VERSIONS_COLLAPSED_KEY, LEGACY_VERSIONS_COLLAPSED_KEY) === "1",
+  );
 }
 
 function revealAssetDock(): void {

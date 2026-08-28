@@ -13,12 +13,16 @@ import {
 } from "./hardware-profile";
 import { appVersion, invoke, isTauri, logsDir, openLogsDir, openOutputDir, pickDirectory } from "./tauri";
 import { renderModelStorage } from "./model-settings";
+import { readMigratedPreference } from "./storage-migration";
 
 export type ProgressDisplayMode = "notification" | "sidebar";
-export const PROGRESS_DISPLAY_MODE_KEY = "polyloom.progress-display-mode";
+export const PROGRESS_DISPLAY_MODE_KEY = "triastasis.progress-display-mode";
+const LEGACY_PROGRESS_DISPLAY_MODE_KEY = "polyloom.progress-display-mode";
 
 export function progressDisplayMode(): ProgressDisplayMode {
-  return localStorage.getItem(PROGRESS_DISPLAY_MODE_KEY) === "sidebar" ? "sidebar" : "notification";
+  return readMigratedPreference(PROGRESS_DISPLAY_MODE_KEY, LEGACY_PROGRESS_DISPLAY_MODE_KEY) === "sidebar"
+    ? "sidebar"
+    : "notification";
 }
 
 function escapeHtml(value: string): string {
@@ -97,7 +101,7 @@ function bindProgressDisplay(body: HTMLElement): void {
   select.onchange = () => {
     const mode: ProgressDisplayMode = select.value === "sidebar" ? "sidebar" : "notification";
     localStorage.setItem(PROGRESS_DISPLAY_MODE_KEY, mode);
-    window.dispatchEvent(new CustomEvent("polyloom-progress-display", { detail: mode }));
+    window.dispatchEvent(new CustomEvent("triastasis-progress-display", { detail: mode }));
   };
 }
 
@@ -122,7 +126,7 @@ function bindHardwareRecommendation(body: HTMLElement): void {
   if (!checkbox) return;
   checkbox.onchange = () => {
     setAllowsGenerationAboveRecommendation(checkbox.checked);
-    window.dispatchEvent(new CustomEvent("polyloom-hardware-policy"));
+    window.dispatchEvent(new CustomEvent("triastasis-hardware-policy"));
   };
 }
 

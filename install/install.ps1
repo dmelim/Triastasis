@@ -13,7 +13,7 @@
   release only).
 
 .EXAMPLE
-  irm https://raw.githubusercontent.com/pwilkin/trellis.cpp/main/install/install.ps1 | iex
+  irm https://raw.githubusercontent.com/dmelim/Triastasis/main/install/install.ps1 | iex
   # or, with options:
   ./install.ps1 -Backend vulkan -IncludeModels -Quant q8
 #>
@@ -36,7 +36,7 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
-$Repo = "pwilkin/trellis.cpp"
+$Repo = "dmelim/Triastasis"
 $RelBase = "https://github.com/$Repo/releases/latest/download"
 $HfBase = "https://huggingface.co/ilintar/trellis2-gguf/resolve/main"
 $Models = @("birefnet.gguf", "dinov3.gguf", "ss_flow.gguf", "ss_dec.gguf",

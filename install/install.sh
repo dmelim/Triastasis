@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Triastasis: one-command setup for Linux (x86-64).
 #
-#   curl -fsSL https://raw.githubusercontent.com/pwilkin/trellis.cpp/main/install/install.sh | bash
+#   curl -fsSL https://raw.githubusercontent.com/dmelim/Triastasis/main/install/install.sh | bash
 #
 # Detects the GPU runtime (CUDA / ROCm / Vulkan), downloads the matching
 # trellis-server bundle, installs the Triastasis desktop app, and writes the
@@ -13,7 +13,7 @@
 # release only).
 set -euo pipefail
 
-REPO="pwilkin/trellis.cpp"
+REPO="dmelim/Triastasis"
 REL_BASE="https://github.com/${REPO}/releases/latest/download"
 HF_BASE="https://huggingface.co/ilintar/trellis2-gguf/resolve/main"
 MODELS=(birefnet.gguf dinov3.gguf ss_flow.gguf ss_dec.gguf \
