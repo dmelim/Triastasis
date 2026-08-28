@@ -31,6 +31,7 @@ param(
   [string]$Quant = "",
   # Legacy opt-in: download weights in the installer instead of the app.
   [switch]$IncludeModels,
+  [switch]$AcceptModelTerms,
   [switch]$SkipApp,
   [switch]$Yes
 )
@@ -106,6 +107,16 @@ if ($IncludeModels) {
 }
 Info "backend/gpu : $Backend / $Gpu     port: $Port"
 Write-Host ""
+if ($IncludeModels -and -not $AcceptModelTerms) {
+  Warn "the legacy model download combines files governed by separate upstream terms."
+  Info "bundle source : https://huggingface.co/ilintar/trellis2-gguf"
+  Info "TRELLIS.2     : https://huggingface.co/microsoft/TRELLIS.2-4B"
+  Info "DINOv3 terms  : https://github.com/facebookresearch/dinov3/blob/main/LICENSE.md"
+  Info "BiRefNet      : https://github.com/ZhengPeng7/BiRefNet/blob/main/LICENSE"
+  if ($Yes) { Die "review the model terms, then re-run with -AcceptModelTerms" }
+  $terms = Read-Host "Type ACCEPT to confirm that you reviewed and accept the applicable model terms"
+  if ($terms -cne "ACCEPT") { Die "model terms were not accepted; no model files were downloaded" }
+}
 if (-not $Yes) {
   $ans = Read-Host "Proceed? [Y/n]"
   if ($ans -match "^[nN]") { exit 0 }

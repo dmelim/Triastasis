@@ -18,12 +18,14 @@ First-time setup
        trellis-cuda12-<os>-x64    (NVIDIA Pascal/Volta, e.g. Tesla P100)
        trellis-rocm-<os>-x64      (AMD; needs the matching ROCm runtime on PATH)
        trellis-vulkan-<os>-x64    (AMD / Intel / universal fallback)
-  2. Put the 10 GGUF files from huggingface.co/ilintar/trellis2-gguf into a
-     "models" folder next to this app.
-  3. Launch the app (triastasis / triastasis.exe) and generate.
+  2. Launch the app (triastasis / triastasis.exe). On first launch, review the
+     upstream model terms and choose a verified, resumable model download. The
+     app stores it in the portable "models" folder.
+  3. Add an image and generate.
 
-Or just launch the app and point it at an existing server binary + models
-directory in Settings.
+You can instead put an existing runtime and compatible model folder next to the
+app, or select a custom model folder in Settings. Custom model files are
+unverified and remain under their upstream terms.
 
 To uninstall: delete this folder.
 

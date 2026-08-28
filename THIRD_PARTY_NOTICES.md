@@ -19,12 +19,12 @@ Modifications made in this repository do not remove or replace upstream copyrigh
 | Component | Copyright or project | License | Location or source |
 |---|---|---|---|
 | ggml | The ggml authors | MIT | `thirdparty/ggml`, <https://github.com/ggml-org/ggml> |
-| xatlas | Jonathan Young; Thekla, Inc.; NVIDIA Corporation | MIT | `thirdparty/xatlas/xatlas.h` |
+| xatlas | Jonathan Young; Thekla, Inc.; NVIDIA Corporation | MIT | `thirdparty/xatlas/xatlas.h`, packaged text at `thirdparty/xatlas-LICENSE.txt` |
 | meshoptimizer | Arseny Kapoulkine | MIT | `thirdparty/meshoptimizer/LICENSE.md` |
 | Fast Quadric Mesh Simplification | Spacerat and contributors | MIT | `thirdparty/fqms/LICENSE.md` |
-| stb image libraries | Sean Barrett and contributors | Public domain or MIT, at the user's option | `thirdparty/stb` source headers |
-| cpp-httplib | Yuji Hirose | MIT | `thirdparty/cpp-httplib/httplib.h` |
-| libwebp | Google LLC and contributors | BSD 3-Clause | Retrieved during configured builds from <https://github.com/webmproject/libwebp> |
+| stb image libraries | Sean Barrett and contributors | Public domain or MIT, at the user's option | `thirdparty/stb` source headers, packaged text at `thirdparty/stb-LICENSE.txt` |
+| cpp-httplib | Yuji Hirose | MIT | `thirdparty/cpp-httplib/httplib.h`, packaged text at `thirdparty/cpp-httplib-LICENSE.txt` |
+| libwebp 1.5.0 | Google LLC and contributors | BSD 3-Clause | Retrieved during configured builds from <https://github.com/webmproject/libwebp>; packaged text at `thirdparty/libwebp-COPYING.txt` |
 
 The ggml submodule is not populated in every source checkout. Release packaging must include its license from the exact checked-out revision.
 
@@ -42,13 +42,22 @@ The ggml submodule is not populated in every source checkout. Release packaging 
 
 Rust and npm dependencies have transitive dependencies with their own terms. A release build must generate or verify a lockfile-based license inventory rather than relying only on this direct-dependency list.
 
-## Model files downloaded by the installer
+## Separately downloaded model files
 
-The application does not store the approximately 16.5 GB model set in this Git repository. The installers currently download converted GGUF files from:
+The application does not store the model bundles in this Git repository or package them with a release. The desktop app downloads curated GGUF bundles from the following repository only after the user reviews and accepts the applicable upstream terms. The legacy installer can perform the same separate download when explicitly requested.
 
 - <https://huggingface.co/ilintar/trellis2-gguf>
 
-That repository's Hugging Face license metadata currently reports `other`. The files are conversions of several upstream models, including Microsoft TRELLIS.2, DINOv3 image conditioning, and BiRefNet background removal. Each upstream model may carry its own license or acceptable-use terms.
+The embedded catalog pins repository revision `a57397bd3d351599d9729fc144b3f87c3f87d65b`. The converted repository's Hugging Face license metadata reports `other`. Its bundle combines material from multiple sources with separate terms:
+
+| Model component | Upstream source | Terms |
+|---|---|---|
+| TRELLIS.2 generation checkpoints | <https://huggingface.co/microsoft/TRELLIS.2-4B> | MIT according to the upstream model metadata |
+| TRELLIS decoder checkpoint reused by TRELLIS.2 | <https://huggingface.co/microsoft/TRELLIS-image-large> | MIT according to the upstream model metadata |
+| DINOv3 image conditioning | <https://github.com/facebookresearch/dinov3> | DINOv3 License Agreement, not the Triastasis MIT License |
+| BiRefNet background removal | <https://github.com/ZhengPeng7/BiRefNet> | MIT |
+
+The DINOv3 License Agreement applies to the DINOv3 model material and requires acceptance by its users. Triastasis records only the local acknowledgement needed to enable its curated download buttons. That acknowledgement does not make Triastasis the licensor, replace the upstream terms, or certify that the converted repository has a complete redistribution chain.
 
 Until the converted repository provides an explicit, verified license chain:
 
@@ -56,7 +65,7 @@ Until the converted repository provides an explicit, verified license chain:
 - Do not describe the downloaded GGUF collection as covered by this repository's MIT License.
 - Do not mirror or bundle the GGUF files in a release without verifying redistribution rights for every source model.
 - Record the exact repository revision and upstream model sources used by the installer.
-- Present model terms separately from the application's software license where appropriate.
+- Continue presenting and requiring acknowledgement of model terms separately from the application's software license.
 
 ## User inputs and generated assets
 
@@ -72,3 +81,4 @@ Before publishing a packaged release:
 4. Generate a dependency report from `package-lock.json`, `Cargo.lock`, the CMake dependency revisions, and the populated ggml submodule.
 5. Verify the model-download license chain separately from the source-code license.
 6. Keep contributor copyright notices for original modifications without removing upstream notices.
+7. After release assets are final, publish a `SHA256SUMS.txt` file and add artifact attestations before announcing the download links.

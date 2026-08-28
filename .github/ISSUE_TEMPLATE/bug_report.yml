@@ -1,0 +1,96 @@
+name: Bug report
+description: Report a reproducible problem in Triastasis
+title: "[Bug]: "
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for testing Triastasis. Please remove private paths, filenames, and image content from logs before attaching them.
+  - type: input
+    id: version
+    attributes:
+      label: Triastasis version
+      description: Find this in Settings.
+      placeholder: 0.0.1-alpha.1
+    validations:
+      required: true
+  - type: dropdown
+    id: operating-system
+    attributes:
+      label: Operating system
+      options:
+        - Windows 11
+        - Windows 10
+        - Linux
+        - Other
+    validations:
+      required: true
+  - type: input
+    id: gpu
+    attributes:
+      label: GPU
+      placeholder: NVIDIA RTX 4070, AMD Radeon 8060S, Intel Arc A770
+    validations:
+      required: true
+  - type: dropdown
+    id: backend
+    attributes:
+      label: Backend
+      options:
+        - CUDA
+        - CUDA 12 legacy
+        - Vulkan
+        - ROCm
+        - CPU
+        - Unknown
+    validations:
+      required: true
+  - type: dropdown
+    id: installation
+    attributes:
+      label: Installation type
+      options:
+        - One-command installer
+        - Windows installer
+        - Linux AppImage
+        - Linux deb package
+        - Portable archive
+        - Built from source
+    validations:
+      required: true
+  - type: textarea
+    id: problem
+    attributes:
+      label: What happened?
+      description: Include the expected result and the actual result.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Launch Triastasis
+        2. Select ...
+        3. Click ...
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant server log
+      description: Open Settings, then Server logs. Remove private paths and content before pasting or attaching the newest relevant log.
+      render: shell
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Final checks
+      options:
+        - label: I checked that this issue is not already reported.
+          required: true
+        - label: I removed private paths, filenames, tokens, and sensitive image content from the report and logs.
+          required: true
+        - label: This is not a security vulnerability. Security reports follow SECURITY.md.
+          required: true

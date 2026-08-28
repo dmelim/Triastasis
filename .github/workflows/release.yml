@@ -169,6 +169,16 @@ jobs:
         run: |
           set -e
           mkdir -p dist
+          mkdir -p dist/licenses
+          cp LICENSE dist/LICENSE.txt
+          cp THIRD_PARTY_NOTICES.md dist/
+          cp thirdparty/ggml/LICENSE dist/licenses/ggml-LICENSE.txt
+          cp thirdparty/meshoptimizer/LICENSE.md dist/licenses/meshoptimizer-LICENSE.md
+          cp thirdparty/fqms/LICENSE.md dist/licenses/fqms-LICENSE.md
+          cp thirdparty/xatlas-LICENSE.txt dist/licenses/xatlas-LICENSE.txt
+          cp thirdparty/cpp-httplib-LICENSE.txt dist/licenses/cpp-httplib-LICENSE.txt
+          cp thirdparty/stb-LICENSE.txt dist/licenses/stb-LICENSE.txt
+          cp thirdparty/libwebp-COPYING.txt dist/licenses/libwebp-COPYING.txt
           if [ "${{ matrix.os }}" = "windows" ]; then
             cp build/trellis-server.exe dist/
             cp build/trellis-cli.exe dist/
@@ -302,6 +312,14 @@ jobs:
           rm -rf portable && mkdir -p portable
           cp app/src-tauri/target/release/triastasis portable/
           cp install/portable-readme.txt portable/README.txt
+          cp LICENSE portable/LICENSE.txt
+          cp THIRD_PARTY_NOTICES.md portable/
+          mkdir -p portable/licenses
+          cp app/node_modules/three/LICENSE portable/licenses/three-LICENSE.txt
+          cp app/node_modules/@tauri-apps/api/LICENSE_MIT portable/licenses/Tauri-LICENSE-MIT.txt
+          cp app/node_modules/@tauri-apps/api/LICENSE_APACHE-2.0 portable/licenses/Tauri-LICENSE-APACHE-2.0.txt
+          cp app/public/fonts/LICENSE.txt portable/licenses/Inter-LICENSE.txt
+          cp app/public/icons/LICENSE-lucide.txt portable/licenses/Lucide-LICENSE.txt
           : > portable/portable.dat
           tar -C portable -czf triastasis-linux-x86_64-portable.tar.gz .
           gh release upload "${{ steps.tag.outputs.value }}" \
@@ -328,6 +346,14 @@ jobs:
           cp app/src-tauri/target/release/triastasis.exe portable/
           cp app/src-tauri/target/release/*.dll portable/ 2>/dev/null || true
           cp install/portable-readme.txt portable/README.txt
+          cp LICENSE portable/LICENSE.txt
+          cp THIRD_PARTY_NOTICES.md portable/
+          mkdir -p portable/licenses
+          cp app/node_modules/three/LICENSE portable/licenses/three-LICENSE.txt
+          cp app/node_modules/@tauri-apps/api/LICENSE_MIT portable/licenses/Tauri-LICENSE-MIT.txt
+          cp app/node_modules/@tauri-apps/api/LICENSE_APACHE-2.0 portable/licenses/Tauri-LICENSE-APACHE-2.0.txt
+          cp app/public/fonts/LICENSE.txt portable/licenses/Inter-LICENSE.txt
+          cp app/public/icons/LICENSE-lucide.txt portable/licenses/Lucide-LICENSE.txt
           : > portable/portable.dat
           (cd portable && 7z a -y ../triastasis-windows-x64-portable.zip ./* >/dev/null)
           gh release upload "${{ steps.tag.outputs.value }}" \

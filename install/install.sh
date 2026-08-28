@@ -25,7 +25,7 @@ ROCM_GFX="gfx1030 gfx1031 gfx1032 gfx1100 gfx1101 gfx1102 gfx1103 gfx1150 gfx115
 # ---- defaults / args -------------------------------------------------------
 DEST="${XDG_DATA_HOME:-$HOME/.local/share}/triastasis"
 CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/triastasis"
-BACKEND=""; GPU=0; PORT=8080; MODELS_DIR=""; INCLUDE_MODELS=0; SKIP_APP=0; ASSUME_YES=0; QUANT=""
+BACKEND=""; GPU=0; PORT=8080; MODELS_DIR=""; INCLUDE_MODELS=0; ACCEPT_MODEL_TERMS=0; SKIP_APP=0; ASSUME_YES=0; QUANT=""
 
 usage() {
   cat <<EOF
@@ -43,7 +43,9 @@ Triastasis installer (Linux)
                                  q8 ~10 GB (near-lossless), q4 ~6.5 GB.
                                  Default: f16 (~16.5 GB).
   --include-models             LEGACY: download the weights in this installer
-                               instead of in-app on first launch
+                              instead of in-app on first launch
+  --accept-model-terms         confirm that you reviewed and accept the
+                              applicable upstream model terms
   --skip-app                   don't download the desktop app
   -y, --yes                    don't prompt for confirmation
   -h, --help                   this help
@@ -58,6 +60,7 @@ while [ $# -gt 0 ]; do
     --models-dir) MODELS_DIR="$2"; shift 2;;
     --quant) QUANT="$2"; shift 2;;
     --include-models) INCLUDE_MODELS=1; shift;;
+    --accept-model-terms) ACCEPT_MODEL_TERMS=1; shift;;
     --skip-app) SKIP_APP=1; shift;;
     -y|--yes) ASSUME_YES=1; shift;;
     -h|--help) usage; exit 0;;
@@ -129,6 +132,18 @@ else
 fi
 info "backend/gpu : $BACKEND / $GPU     port: $PORT"
 echo
+if [ "$INCLUDE_MODELS" = 1 ] && [ "$ACCEPT_MODEL_TERMS" != 1 ]; then
+  warn "the legacy model download combines files governed by separate upstream terms."
+  info "bundle source : https://huggingface.co/ilintar/trellis2-gguf"
+  info "TRELLIS.2     : https://huggingface.co/microsoft/TRELLIS.2-4B"
+  info "DINOv3 terms  : https://github.com/facebookresearch/dinov3/blob/main/LICENSE.md"
+  info "BiRefNet      : https://github.com/ZhengPeng7/BiRefNet/blob/main/LICENSE"
+  if [ "$ASSUME_YES" = 1 ] || [ ! -t 0 ]; then
+    die "review the model terms, then re-run with --accept-model-terms"
+  fi
+  read -r -p "Type ACCEPT to confirm that you reviewed and accept the applicable model terms: " terms
+  [ "$terms" = "ACCEPT" ] || die "model terms were not accepted; no model files were downloaded"
+fi
 if [ "$ASSUME_YES" != 1 ] && [ -t 0 ]; then
   read -r -p "Proceed? [Y/n] " ans; case "${ans:-y}" in [nN]*) exit 0;; esac
 fi

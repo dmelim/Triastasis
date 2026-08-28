@@ -7,9 +7,11 @@ generated `.glb`.
 
 ## One-command install
 
-The installer auto-detects your GPU runtime (**CUDA → ROCm → Vulkan** fallback),
-downloads the matching `trellis-server` build, installs the desktop app, and
-writes the config the app reads on launch.
+The installer selects **CUDA** for supported NVIDIA GPUs and **Vulkan** for AMD,
+Intel, and other GPUs. ROCm remains an explicit opt-in because it needs a
+matching external runtime. The installer then downloads the matching
+`trellis-server` build, installs the desktop app, and writes the config the app
+reads on launch.
 
 **Model weights are not part of the installer.** The app is a small initial
 download; on first launch, Triastasis offers a choice of model bundles between
@@ -51,13 +53,14 @@ Windows):
 
 | flag | effect |
 |------|--------|
-| `--backend cuda\|rocm\|vulkan` | force a runtime instead of auto-detecting |
+| `--backend cuda\|cuda12\|rocm\|vulkan` | force a runtime instead of auto-detecting; `cuda12` supports NVIDIA Pascal and Volta GPUs |
 | `--gpu N` | GPU index (default `0`; `<0` = CPU) |
 | `--port P` | server port (default `8080`) |
 | `--dest DIR` | install location |
 | `--models-dir DIR` | where to store weights when using `--include-models` (e.g. a bigger drive) |
 | `--quant q8\|q4` | quantized weights for `--include-models`: `q8` ~10 GB (near-lossless), `q4` ~6.5 GB. Default is f16 (~16.5 GB). |
 | `--include-models` / `-IncludeModels` | LEGACY: download weights in the installer instead of in-app on first launch (one transition release) |
+| `--accept-model-terms` / `-AcceptModelTerms` | confirm that you reviewed and accept the applicable upstream terms when using the legacy installer-side model download |
 | `--skip-app` / `-SkipApp` | don't download the desktop app |
 | `-y` / `-Yes` | don't prompt for confirmation |
 
