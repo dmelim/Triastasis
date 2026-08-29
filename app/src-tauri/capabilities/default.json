@@ -20,8 +20,10 @@
     "fs:default",
     "fs:allow-applocaldata-read-recursive",
     "fs:allow-applocaldata-write-recursive",
+    "fs:allow-read-file",
+    "fs:allow-read-text-file",
     {
-      "identifier": "fs:allow-read-file",
+      "identifier": "fs:scope",
       "allow": [
         { "path": "**/*.png" },
         { "path": "**/*.PNG" },
@@ -36,7 +38,9 @@
         { "path": "**/*.gif" },
         { "path": "**/*.GIF" },
         { "path": "**/*.glb" },
-        { "path": "**/*.GLB" }
+        { "path": "**/*.GLB" },
+        { "path": "$APPLOCALDATA/triastasis/gallery-v1" },
+        { "path": "$APPLOCALDATA/triastasis/gallery-v1/**" }
       ]
     },
     {
