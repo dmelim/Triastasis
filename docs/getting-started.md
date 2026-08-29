@@ -58,6 +58,7 @@ Windows):
 | `--port P` | server port (default `8080`) |
 | `--dest DIR` | install location |
 | `--models-dir DIR` | where to store weights when using `--include-models` (e.g. a bigger drive) |
+| `--release-tag TAG` / `-ReleaseTag TAG` | download app and runtime artifacts from a specific Triastasis release; defaults to `triastasis-v0.0.1-alpha.1` |
 | `--quant q8\|q4` | quantized weights for `--include-models`: `q8` ~10 GB (near-lossless), `q4` ~6.5 GB. Default is f16 (~16.5 GB). |
 | `--include-models` / `-IncludeModels` | LEGACY: download weights in the installer instead of in-app on first launch (one transition release) |
 | `--accept-model-terms` / `-AcceptModelTerms` | confirm that you reviewed and accept the applicable upstream terms when using the legacy installer-side model download |

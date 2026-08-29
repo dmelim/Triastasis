@@ -39,7 +39,7 @@ same format.
   "startedAtUtc": "2026-08-21T12:00:01Z",
   "finishedAtUtc": null,
   "durationSeconds": null,
-  "triastasisVersion": "0.5.4",
+  "triastasisVersion": "0.0.1-alpha.1",
   "serverVersion": null,
   "metrics": {
     "dimensions": { "x": 0.61, "y": 0.92, "z": 1.0 },

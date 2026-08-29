@@ -14,7 +14,7 @@
 set -euo pipefail
 
 REPO="dmelim/Triastasis"
-REL_BASE="https://github.com/${REPO}/releases/latest/download"
+RELEASE_TAG="${TRIASTASIS_RELEASE_TAG:-triastasis-v0.0.1-alpha.1}"
 HF_BASE="https://huggingface.co/ilintar/trellis2-gguf/resolve/main"
 MODELS=(birefnet.gguf dinov3.gguf ss_flow.gguf ss_dec.gguf \
         shape_flow_512.gguf shape_flow_1024.gguf shape_dec.gguf \
@@ -39,6 +39,8 @@ Triastasis installer (Linux)
   --dest DIR                   install location (default $DEST)
   --models-dir DIR             where to put weights with --include-models
                                (default <dest>/models)
+  --release-tag TAG            release containing the app and runtime artifacts
+                               (default $RELEASE_TAG)
   --quant q8|q4                quantized weights for --include-models:
                                  q8 ~10 GB (near-lossless), q4 ~6.5 GB.
                                  Default: f16 (~16.5 GB).
@@ -58,6 +60,7 @@ while [ $# -gt 0 ]; do
     --port) PORT="$2"; shift 2;;
     --dest) DEST="$2"; shift 2;;
     --models-dir) MODELS_DIR="$2"; shift 2;;
+    --release-tag) RELEASE_TAG="$2"; shift 2;;
     --quant) QUANT="$2"; shift 2;;
     --include-models) INCLUDE_MODELS=1; shift;;
     --accept-model-terms) ACCEPT_MODEL_TERMS=1; shift;;
@@ -88,6 +91,9 @@ log()  { echo "${c_g}==>${c_0} $*" >&2; }
 info() { echo "${c_b} - ${c_0} $*" >&2; }
 warn() { echo "${c_y}warn:${c_0} $*" >&2; }
 die()  { echo "${c_r}error:${c_0} $*" >&2; exit 1; }
+
+[[ "$RELEASE_TAG" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || die "invalid release tag: $RELEASE_TAG"
+REL_BASE="https://github.com/${REPO}/releases/download/${RELEASE_TAG}"
 
 for t in curl tar; do command -v "$t" >/dev/null || die "'$t' is required"; done
 

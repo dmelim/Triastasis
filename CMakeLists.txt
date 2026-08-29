@@ -37,7 +37,7 @@ if(GIT_FOUND AND EXISTS "${CMAKE_SOURCE_DIR}/.git")
   endif()
 
   execute_process(
-    COMMAND "${GIT_EXECUTABLE}" tag --sort=-v:refname
+    COMMAND "${GIT_EXECUTABLE}" tag --list "v[0-9]*" --sort=-v:refname
     WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
     OUTPUT_VARIABLE TRELLIS_GIT_TAGS
     OUTPUT_STRIP_TRAILING_WHITESPACE

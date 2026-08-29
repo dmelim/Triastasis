@@ -27,6 +27,8 @@ param(
   [int]$Port = 8080,
   [string]$Dest = "$env:LOCALAPPDATA\triastasis",
   [string]$ModelsDir = "",
+  [ValidatePattern('^[A-Za-z0-9][A-Za-z0-9._-]*$')]
+  [string]$ReleaseTag = "triastasis-v0.0.1-alpha.1",
   # Legacy opt-in: quantized weights "q8" (~10 GB) or "q4" (~6.5 GB). Default f16.
   [string]$Quant = "",
   # Legacy opt-in: download weights in the installer instead of the app.
@@ -38,7 +40,7 @@ param(
 
 $ErrorActionPreference = "Stop"
 $Repo = "dmelim/Triastasis"
-$RelBase = "https://github.com/$Repo/releases/latest/download"
+$RelBase = "https://github.com/$Repo/releases/download/$ReleaseTag"
 $HfBase = "https://huggingface.co/ilintar/trellis2-gguf/resolve/main"
 $Models = @("birefnet.gguf", "dinov3.gguf", "ss_flow.gguf", "ss_dec.gguf",
   "shape_flow_512.gguf", "shape_flow_1024.gguf", "shape_dec.gguf",

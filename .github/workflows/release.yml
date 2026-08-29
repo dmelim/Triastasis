@@ -6,9 +6,9 @@ on:
   workflow_dispatch:
     inputs:
       release_tag:
-        description: "Release tag to attach binaries to (e.g. v0.1.0)"
+        description: "Release tag to attach binaries to"
         required: true
-        default: "v0.1.0"
+        default: "triastasis-v0.0.1-alpha.1"
 
 permissions:
   contents: write
