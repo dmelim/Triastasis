@@ -1,5 +1,27 @@
 cmake_minimum_required(VERSION 3.18)
+
+# This project builds the modified native runtime used by Triastasis. The
+# Triastasis desktop frontend is built separately by Tauri from app/; the
+# original Trellis Studio frontend is not part of this build.
 project(trellis_cpp VERSION 0.6.0 LANGUAGES CXX C)
+set(TRELLIS_UPSTREAM_VERSION "${PROJECT_VERSION}")
+
+set(TRIASTASIS_VERSION "" CACHE STRING "Triastasis product version override")
+if(NOT TRIASTASIS_VERSION)
+  set(TRIASTASIS_TAURI_CONFIG "${CMAKE_SOURCE_DIR}/app/src-tauri/tauri.conf.json")
+  if(NOT EXISTS "${TRIASTASIS_TAURI_CONFIG}")
+    message(FATAL_ERROR "Triastasis version source is missing: ${TRIASTASIS_TAURI_CONFIG}")
+  endif()
+  file(READ "${TRIASTASIS_TAURI_CONFIG}" TRIASTASIS_TAURI_CONFIG_JSON)
+  string(REGEX MATCH "\"version\"[ \t\r\n]*:[ \t\r\n]*\"([^\"]+)\""
+    TRIASTASIS_VERSION_MATCH "${TRIASTASIS_TAURI_CONFIG_JSON}")
+  if(NOT TRIASTASIS_VERSION_MATCH)
+    message(FATAL_ERROR "Could not read the Triastasis version from ${TRIASTASIS_TAURI_CONFIG}")
+  endif()
+  set(TRIASTASIS_VERSION "${CMAKE_MATCH_1}")
+endif()
+message(STATUS "Triastasis version: ${TRIASTASIS_VERSION}")
+message(STATUS "Upstream trellis.cpp basis: ${TRELLIS_UPSTREAM_VERSION}")
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -12,7 +34,6 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 find_package(Git QUIET)
 set(TRELLIS_GIT_COMMIT "")
 set(TRELLIS_GIT_DIRTY 0)
-set(TRELLIS_APP_VERSION "v${PROJECT_VERSION}")
 string(TIMESTAMP TRELLIS_BUILD_TIMESTAMP_UTC "%Y-%m-%dT%H:%M:%SZ" UTC)
 if(GIT_FOUND AND EXISTS "${CMAKE_SOURCE_DIR}/.git")
   execute_process(
@@ -36,23 +57,6 @@ if(GIT_FOUND AND EXISTS "${CMAKE_SOURCE_DIR}/.git")
     set(TRELLIS_GIT_COMMIT "")
   endif()
 
-  execute_process(
-    COMMAND "${GIT_EXECUTABLE}" tag --list "v[0-9]*" --sort=-v:refname
-    WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
-    OUTPUT_VARIABLE TRELLIS_GIT_TAGS
-    OUTPUT_STRIP_TRAILING_WHITESPACE
-    ERROR_QUIET)
-  if(NOT "${TRELLIS_GIT_TAGS}" STREQUAL "")
-    string(REPLACE "\n" ";" TRELLIS_GIT_TAG_LIST "${TRELLIS_GIT_TAGS}")
-    list(GET TRELLIS_GIT_TAG_LIST 0 TRELLIS_LATEST_TAG)
-    if(NOT "${TRELLIS_LATEST_TAG}" STREQUAL "")
-      set(TRELLIS_APP_VERSION "${TRELLIS_LATEST_TAG}")
-    endif()
-  endif()
-endif()
-
-if(NOT TRELLIS_APP_VERSION MATCHES "^v")
-  set(TRELLIS_APP_VERSION "v${TRELLIS_APP_VERSION}")
 endif()
 
 set(TRELLIS_BUILD_BACKEND "cpu")
@@ -108,7 +112,12 @@ add_library(trellis_core STATIC
   src/decimate_qem.cpp
 )
 target_include_directories(trellis_core PUBLIC include ${GGML_DIR}/include ${CMAKE_SOURCE_DIR}/thirdparty/stb ${CMAKE_SOURCE_DIR}/thirdparty/xatlas ${CMAKE_SOURCE_DIR}/thirdparty/meshoptimizer ${CMAKE_SOURCE_DIR}/thirdparty/fqms)
-target_compile_definitions(trellis_core PRIVATE TRELLIS_GIT_COMMIT="${TRELLIS_GIT_COMMIT}" TRELLIS_GIT_DIRTY=${TRELLIS_GIT_DIRTY} TRELLIS_BUILD_TIMESTAMP="${TRELLIS_BUILD_TIMESTAMP_UTC}" TRELLIS_APP_VERSION="${TRELLIS_APP_VERSION}")
+target_compile_definitions(trellis_core PRIVATE
+  TRELLIS_GIT_COMMIT="${TRELLIS_GIT_COMMIT}"
+  TRELLIS_GIT_DIRTY=${TRELLIS_GIT_DIRTY}
+  TRELLIS_BUILD_TIMESTAMP="${TRELLIS_BUILD_TIMESTAMP_UTC}"
+  TRIASTASIS_VERSION="${TRIASTASIS_VERSION}"
+  TRELLIS_UPSTREAM_VERSION="${TRELLIS_UPSTREAM_VERSION}")
 target_link_libraries(trellis_core PUBLIC ggml ggml-base ggml-cpu)
 
 # --- WebP textures (reference-parity GLB export) ---------------------------

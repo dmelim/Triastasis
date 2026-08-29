@@ -40,8 +40,11 @@
 #define TRELLIS_BUILD_TIMESTAMP ""
 #endif
 
-#ifndef TRELLIS_APP_VERSION
-#define TRELLIS_APP_VERSION ""
+#ifndef TRIASTASIS_VERSION
+#define TRIASTASIS_VERSION ""
+#endif
+#ifndef TRELLIS_UPSTREAM_VERSION
+#define TRELLIS_UPSTREAM_VERSION ""
 #endif
 
 namespace trellis {
@@ -132,12 +135,17 @@ static std::string asset_extras_json(int64_t seed) {
 }
 
 static std::string generator_label() {
-    if (TRELLIS_APP_VERSION[0] == 0) {
-        return "trellis.cpp";
+    std::string label = "Triastasis";
+    if (TRIASTASIS_VERSION[0] != 0) {
+        label += " ";
+        label += TRIASTASIS_VERSION;
     }
-    std::string g = "trellis.cpp ";
-    g += TRELLIS_APP_VERSION;
-    return g;
+    if (TRELLIS_UPSTREAM_VERSION[0] != 0) {
+        label += " (based on trellis.cpp ";
+        label += TRELLIS_UPSTREAM_VERSION;
+        label += ")";
+    }
+    return label;
 }
 
 static std::string json_escape(const std::string& s) {
