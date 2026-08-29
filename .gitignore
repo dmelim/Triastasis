@@ -27,3 +27,14 @@ __pycache__/
 *.glb
 *.tmp
 dumps/
+
+# local gallery data and migration diagnostics
+**/gallery-v1/
+gallery-export*/
+gallery-acl-*.json
+gallery-child-acls-*.json
+gallery-root-acl-*.txt
+gallery-load-errors.log
+*.log
+triastasis-pilot-*.png
+triastasis-pilot-*.jpg

@@ -62,28 +62,24 @@ Record the upstream commit or release integrated by the sync. Security fixes and
 critical backend corrections should be prioritized; unrelated upstream UI work
 may be left out.
 
-## Filesystem copy and ACL safety
+## Windows application-data migrations
 
-Treat Windows ACLs and other filesystem security metadata as part of any copy,
-move, restore, or migration involving paths outside the repository workspace,
-especially `%LOCALAPPDATA%`, other application-data directories, packaged-app
-storage, and backups. Codex's sandboxed or brokered execution context can cause
-destination objects to inherit capability ACLs that the consuming application
-cannot use, even when file contents and SHA-256 hashes remain correct.
+Codex runs in a packaged Windows context. Writes to `%LOCALAPPDATA%` can be
+redirected into Codex's package `LocalCache` even when commands report the
+requested application path. Counts and hashes checked from the same context can
+therefore validate the redirected copy instead of the real destination.
 
-- Prefer an application-native import or a normal user process outside the Codex
-  sandbox for runtime-data migration. Do not bulk-copy application data through
-  the Codex sandbox without first proving that the destination ACLs are correct.
-- Resolve and report the exact source, destination, copy-versus-move behavior,
-  execution context, and whether security descriptors will be inherited or
-  preserved before changing data.
-- Preserve an untouched backup and capture the original SDDL for every target
-  whose ACL may change.
-- Test one record first. Compare content hashes and ACLs, then verify that the
-  consuming application can enumerate and read it before expanding the scope.
-- Never change a parent ACL that contains inheritable rules, or run recursive ACL
-  normalization, without separate explicit approval. Windows may propagate a
-  parent ACL change into child objects even when the command targets only the
-  parent.
-- If an ACL result differs from the plan, stop immediately. Restore only from the
-  saved ACL snapshot, revalidate content hashes, and leave the backup untouched.
+- Do not migrate another application's runtime data through a Codex-managed
+  process. Use the application's import flow or a normal user-launched Explorer
+  or terminal.
+- Before reporting success, compare the final canonical paths of the destination
+  root and one copied file, then verify the result in the consuming application.
+- If a broad Tauri scope fails while an exact record scope works, compare
+  canonical paths before changing scopes or ACLs. An exact scope can accidentally
+  match a virtualized path. Keep production capabilities symbolic and general.
+- Preserve an untouched backup, copy rather than move, stop on overwrite prompts,
+  and verify a pilot plus hashes before expanding the copy.
+- Treat ACL changes as a separate, explicitly approved repair. Snapshot original
+  SDDL first and never use a generic recursive reset for this diagnosis.
+- Keep gallery data, real record IDs, user paths, ACL audits, diagnostics, logs,
+  and exports out of Git and release resources. Use synthetic test fixtures.
