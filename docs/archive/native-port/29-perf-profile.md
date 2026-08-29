@@ -1,5 +1,7 @@
 # 29 — E2E performance profile and optimization findings (res 1024, Strix Halo)
 
+> Status: dated benchmark snapshot for the named hardware, backend, inputs, and 2026-07-12 build. It is not a current performance promise for other systems.
+
 Measured on the goblin benchmark (`goblin_ref.png`, seed 42, res 1024,
 Vulkan backend, 2026-07-12). E2E wall: **6:09–6:40** (goblin-class),
 **12:39** (turret-class). `perf record -g --call-graph dwarf` over the full

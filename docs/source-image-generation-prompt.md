@@ -5,6 +5,10 @@ therefore not necessarily the most dramatic image. It is the image that explains
 the subject's shape clearly, keeps every important part visible, and gives the
 reconstruction model few reasons to guess incorrectly.
 
+Triastasis produces a static GLB. References to riggable characters below describe
+source-image preparation for a separate downstream rigging workflow; Triastasis
+does not create a rig, skin weights, or animation-ready output.
+
 Use the templates below with an image-generation model when no suitable source
 image already exists. Replace the bracketed fields, remove instructions that do
 not apply, and preserve the geometry and composition clauses.

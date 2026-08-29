@@ -5,6 +5,7 @@ This is the first public alpha of Triastasis, a local desktop workspace for turn
 ## Highlights
 
 - Generate textured static GLB assets locally from one image.
+- Complete first-run onboarding for credits, model terms, storage, and a hardware-recommended bundle.
 - Choose verified, resumable model bundles based on available hardware and storage.
 - Inspect geometry, topology, UVs, normals, and PBR channels in the desktop viewer.
 - Keep local assets with favorites, version lineage, and reproducible generation manifests.

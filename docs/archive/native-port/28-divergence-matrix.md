@@ -1,5 +1,7 @@
 # 28 — Divergence matrix: PyTorch reference vs trellis.cpp
 
+> Status: historical parity investigation. The original matrix records an earlier implementation state. Read all addenda at the end of this file before treating any row as current.
+
 Stage-by-stage comparison of the reference pipeline (space `app.py` `extract_glb`
 path — the ground truth users compare against, see 27 §2.3) and this port.
 Reference cites are `file:line` into the read-only clones listed in 27 §1

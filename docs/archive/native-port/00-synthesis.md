@@ -1,5 +1,7 @@
 # Consolidated implementation plan (synthesis)
 
+> Status: historical implementation plan. Most phases were subsequently implemented. Use the current source and tests for present behavior.
+
 ## Implementation order
 
 Build bottom-up so each layer is independently testable against dumped PyTorch references. Dependency-aware order:

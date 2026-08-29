@@ -1,6 +1,6 @@
 // Narrow-band UDF dual-contouring remesh, ported from the reference
-// (CuMesh remeshing.py::remesh_narrow_band_dc + simple_dual_contour.cu; see
-// docs/spec/27-reference-postprocess.md §4). Rebuilds a noisy voxel-derived
+// CuMesh remesh_narrow_band_dc and simple_dual_contour implementations.
+// Rebuilds a noisy voxel-derived
 // mesh as the closed, consistently-oriented offset surface at distance
 // eps = band·scale/res around it — one watertight manifold that downstream
 // simplification and UV unwrapping can digest.

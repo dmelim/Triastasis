@@ -25,11 +25,22 @@ Triastasis is currently alpha software.
 - A loopback-only queued automation API for local tools and agents.
 - An optional Codex workflow for generating, inspecting, and integrating static game assets.
 
+## Examples
+
+These are direct source-to-result pairs from local generations at 1024
+resolution with seed 42. The after images are renders of the exported GLBs.
+
+| Example | Before: source image | After: generated GLB |
+| --- | --- | --- |
+| Dragon | [![Source image of a red dragon](./docs/images/examples/dragon-before-thumb.png)](./docs/images/examples/dragon-before.png) | [![Rendered textured GLB generated from the dragon source image](./docs/images/examples/dragon-after-thumb.png)](./docs/images/examples/dragon-after.png) |
+| Robot | [![Source image of a stylized robot](./docs/images/examples/robot-before-thumb.png)](./docs/images/examples/robot-before.png) | [![Rendered textured GLB generated from the robot source image](./docs/images/examples/robot-after-thumb.png)](./docs/images/examples/robot-after.png) |
+| Rocket | [![Source image of a stylized rocket](./docs/images/examples/rocket-before-thumb.png)](./docs/images/examples/rocket-before.png) | [![Rendered textured GLB generated from the rocket source image](./docs/images/examples/rocket-after-thumb.png)](./docs/images/examples/rocket-after.png) |
+
 ## Quick start
 
-The one-command installer auto-detects your GPU runtime, installs the native
-server and desktop app, and guides you through downloading a verified model
-bundle on first launch.
+The one-command installer auto-detects your GPU runtime and installs the native
+server and desktop app. On first launch, the app onboarding guides you through
+credits, model terms, storage, and a verified model-bundle download.
 
 ```bash
 # Linux (x86-64)
@@ -47,34 +58,32 @@ storage locations, backend selection, installer options, and troubleshooting.
 ## Desktop workspace
 
 Triastasis is a standalone desktop app built with [Tauri](https://tauri.app)
-for anyone who wants image→3D without touching the command line. The one-command
-installer above auto-detects your GPU runtime, downloads the matching
-`trellis-server` build and installs the app; on first launch it offers verified
-in-app downloads of a model bundle (about 6.5–16.5 GB, recommended for your
-hardware), then starts and supervises the server for you, so the whole flow is
-drag-image →
-click → rotate the result.
+for anyone who wants image-to-3D without managing a Python environment. The
+one-command installer adds the matching native runtime and desktop app. On first
+launch, onboarding explains the project credits and model terms, recommends a
+model bundle for the detected hardware, and provides a verified, resumable
+in-app download.
 
 **Using it:**
 
-1. **Add an image** — drag-and-drop onto the drop zone, click to browse, or paste
-   from the clipboard.
-2. **Set options** (optional) — resolution (512 light / 1024 cascade / 1536 high),
-   seed, background removal (auto / birefnet / threshold), and UV unwrap
-   (xatlas / box). Defaults match the CLI.
-3. **Generate 3D** — this takes a few minutes; a live stage line shows progress.
-4. **Inspect** — rotate and zoom in the direct Three.js preview; **Reset view**
-   re-frames the camera and **Save GLB…** exports the model.
-5. **Reuse** — every result is kept in a local **gallery** (native app storage): click a
-   thumbnail to reload its model, input image, and settings — even after restarting
-   the app.
+1. **Complete onboarding** by reviewing Credits, choosing model storage, and
+   activating a curated or custom model bundle.
+2. **Add an image** by dropping it onto the source area, browsing for one, or
+   pasting from the clipboard.
+3. **Choose a preset.** Medium is the recommended default, Low is faster, and
+   High uses the stable 1024 path with denser geometry and textures. The 1536
+   geometry option remains experimental under Advanced settings.
+4. **Generate 3D.** A live stage line shows progress, and additional requests can
+   be added to the queue.
+5. **Inspect** the result in View using textured, clay, wireframe, topology, UV,
+   normal, and PBR modes.
+6. **Export or reuse** the model from Assets or Library. Triastasis preserves the
+   source image, settings, versions, and lineage across restarts.
 
-The **Settings** panel (gear icon) points the app at a different models directory,
-GPU index, or port; the models directory, backend, and server binary come from the
-`config.json` the installer writes. Because the UI is a plain web bundle you can also
-skip the app entirely and open it in a browser against a `trellis-server` you started
-yourself — see [`docs/getting-started.md`](docs/getting-started.md) for that, the full
-installer options, and troubleshooting. The app source lives in [`app/`](app/).
+Settings controls model storage, the output folder, GPU index, runtime port, and
+server diagnostics. See [`docs/getting-started.md`](docs/getting-started.md) for
+the full onboarding flow, portable setup, storage locations, and troubleshooting.
+Browser-only development is documented in [`app/README.md`](app/README.md).
 
 ### Model download verification and recovery
 
@@ -161,8 +170,8 @@ The most useful ones:
 | `--seed N`                         | RNG seed                                                                                                                                                                                                                          |
 | `--require-gpu`                    | fail instead of falling back to the (very slow, RAM-hungry) CPU path                                                                                                                                                              |
 
-The postprocess matches the reference pipeline op for op (see
-`docs/spec/27-reference-postprocess.md` / `28-divergence-matrix.md`): the raw
+The native postprocess in `src/remesh_dc.cpp`, `src/uv_bake.cpp`, and
+`src/mesh_glb.cpp` follows the reference pipeline operation order: the raw
 dual-grid mesh is welded and hole-filled, **remeshed with narrow-band UDF dual
 contouring** into a single clean manifold, quadric-simplified to the face budget,
 coarse-clustered with the reference's bottom-up normal-cone merge, unwrapped with
@@ -244,8 +253,8 @@ Every neural component is validated against PyTorch (the `trellis-test-*` binari
 
 **Pre-built GGUFs:** [`ilintar/trellis2-gguf`](https://huggingface.co/ilintar/trellis2-gguf) —
 download the full set and point `trellis-cli` / `trellis-server` (`--models DIR`) at that
-folder. Or convert your own from the source checkpoints below (see `docs/spec/` and
-`tools/` for the safetensors→GGUF conversion).
+folder. To convert source checkpoints yourself, use `tools/convert.py`; use
+`tools/quantize_gguf.py` to create quantized variants.
 
 | role            | source                                               | notes                                            |
 | --------------- | ---------------------------------------------------- | ------------------------------------------------ |

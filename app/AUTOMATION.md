@@ -1,8 +1,8 @@
 # Triastasis automation API
 
 The desktop app starts a local queued API on the port immediately after the
-configured TRELLIS server port. With the Lab defaults, the native server is on
-`127.0.0.1:8081` and automation is on `127.0.0.1:8082`.
+configured TRELLIS server port. With the default installer configuration, the
+native server is on 127.0.0.1:8080 and automation is on 127.0.0.1:8081.
 
 The API binds to loopback only. It accepts multiple jobs, but deliberately runs
 one generation at a time. `GET /capabilities` reports the detected GPU, VRAM,
@@ -58,7 +58,7 @@ Notes:
 ## Submit a job
 
 ```powershell
-$response = curl.exe http://127.0.0.1:8082/jobs `
+$response = curl.exe http://127.0.0.1:8081/jobs `
   -F "image=@C:\images\character.png" `
   -F "seed=42" `
   -F "resolution=1024" `
@@ -89,7 +89,7 @@ Poll the status URL until the job is `succeeded`, then download the GLB:
 curl.exe $response.modelUrl --output "C:\models\character-seed42.glb"
 ```
 
-Every successful job is also saved automatically in the Studio output folder as
+Every successful job is also saved automatically in the configured Triastasis output folder as
 `automation_<job-id>.glb`.
 
 After generation, the API checks the GLB bounding dimensions. If the thinnest
@@ -106,7 +106,7 @@ GPU time without changing the relevant input geometry cues.
 source URLs, and live queue metadata. The original source image is saved as
 `automation_<job-id>_source.<ext>` and remains available through `imageUrl`.
 
-The API is resident while the Studio window is hidden. Use the tray menu to
+The API is resident while the Triastasis window is hidden. Use the tray menu to
 open the UI, inspect the live server/queue status, open the output folder, or
 quit. Restart and quit atomically pause new submissions only after confirming
 the queue is idle. They remain blocked while a job is running or queued; queued
@@ -117,7 +117,7 @@ must finish safely before the app can quit.
 
 ```powershell
 42..45 | ForEach-Object {
-  curl.exe http://127.0.0.1:8082/jobs `
+  curl.exe http://127.0.0.1:8081/jobs `
     -F "image=@C:\images\character.png" `
     -F "seed=$_" `
     -F "resolution=512" `

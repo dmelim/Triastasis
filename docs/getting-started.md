@@ -1,161 +1,188 @@
 # Getting started with Triastasis
 
-**Triastasis** is a desktop app that runs Microsoft TRELLIS.2 image→3D
-reconstruction locally (via `trellis.cpp`) and previews the result in an
-interactive 3D viewer. This guide gets a brand-new machine from zero to a
-generated `.glb`.
+Triastasis is a desktop app for turning one image into a textured static GLB on
+your own computer. The installer adds the desktop app and matching native
+runtime. The app then guides you through model setup on first launch.
 
-## One-command install
+Triastasis currently ships for Windows x64 and Linux x86-64.
 
-The installer selects **CUDA** for supported NVIDIA GPUs and **Vulkan** for AMD,
-Intel, and other GPUs. ROCm remains an explicit opt-in because it needs a
-matching external runtime. The installer then downloads the matching
-`trellis-server` build, installs the desktop app, and writes the config the app
-reads on launch.
+## Install the app and native runtime
 
-**Model weights are not part of the installer.** The app is a small initial
-download; on first launch, Triastasis offers a choice of model bundles between
-approximately 6.5 GB and 16.5 GB with verified, resumable downloads and a
-hardware-based recommendation. To pre-download weights in the installer instead
-(legacy behavior, kept for one transition release), pass `-IncludeModels` /
-`--include-models`.
+The installer detects the GPU backend, downloads the matching
+`trellis-server` runtime, installs the desktop app, and writes the local runtime
+configuration.
 
-### Linux (x86-64)
+### Linux
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/dmelim/Triastasis/main/install/install.sh | bash
 ```
 
-### Windows (x64), in PowerShell
+### Windows
+
+Run this in PowerShell:
 
 ```powershell
 irm https://raw.githubusercontent.com/dmelim/Triastasis/main/install/install.ps1 | iex
 ```
 
-That's it. Launch **Triastasis**, drop in an image, and click **Generate 3D**.
+Model weights are intentionally not part of the initial installation. The app
+downloads and verifies the selected model bundle during onboarding.
 
-## What gets installed where
+## Complete first-run onboarding
 
-| what | Linux | Windows |
-|------|-------|---------|
-| server + runtime libs | `~/.local/share/triastasis/runtime/` | `%LOCALAPPDATA%\triastasis\runtime\` |
-| model bundles (in-app download) | `~/.local/share/triastasis/models/installed/…` (configurable in-app) | `%LOCALAPPDATA%\triastasis\models\installed\…` |
-| app config | `~/.config/triastasis/config.json` | `%APPDATA%\triastasis\config.json` |
-| desktop app | `.AppImage` in the install dir | installed via the setup .exe (Start menu) |
+Launch Triastasis after installation. First-run setup has three stages:
 
-Upgrades still read the former `trellis-studio` config location when the new
-Triastasis config does not exist, so existing model and output paths carry over.
+1. **Welcome** explains that generation runs locally.
+2. **Credits** identifies the upstream projects and asks you to review and
+   accept the terms needed for curated model downloads.
+3. **Models** shows the available storage location and model bundles. Triastasis
+   recommends a bundle for the detected hardware and reports its download size.
 
-## Installer options
+You can change the model storage location before downloading. Curated downloads
+are resumable and every file is verified before activation. If compatible GGUF
+files are already installed, activate the detected bundle or choose **Verify
+and register**.
+You can also choose a local custom model folder, which is explicitly marked as
+an unverified custom bundle.
 
-Both scripts accept the same flags (`--flag value` on Linux, `-Flag value` on
-Windows):
+Select **Start Triastasis** after a model bundle is active. If a download is
+interrupted, launch the app again and use **Verify and resume**. The Models step
+reopens automatically whenever the active bundle is missing or unavailable.
 
-| flag | effect |
-|------|--------|
-| `--backend cuda\|cuda12\|rocm\|vulkan` | force a runtime instead of auto-detecting; `cuda12` supports NVIDIA Pascal and Volta GPUs |
-| `--gpu N` | GPU index (default `0`; `<0` = CPU) |
-| `--port P` | server port (default `8080`) |
-| `--dest DIR` | install location |
-| `--models-dir DIR` | where to store weights when using `--include-models` (e.g. a bigger drive) |
-| `--release-tag TAG` / `-ReleaseTag TAG` | download app and runtime artifacts from a specific Triastasis release; defaults to `triastasis-v0.0.1-alpha.1` |
-| `--quant q8\|q4` | quantized weights for `--include-models`: `q8` ~10 GB (near-lossless), `q4` ~6.5 GB. Default is f16 (~16.5 GB). |
-| `--include-models` / `-IncludeModels` | LEGACY: download weights in the installer instead of in-app on first launch (one transition release) |
-| `--accept-model-terms` / `-AcceptModelTerms` | confirm that you reviewed and accept the applicable upstream terms when using the legacy installer-side model download |
-| `--skip-app` / `-SkipApp` | don't download the desktop app |
-| `-y` / `-Yes` | don't prompt for confirmation |
+## Generate your first asset
 
-Examples:
+1. In **Generate**, drop an image onto the source area, browse for one, or paste
+   one from the clipboard.
+2. Start with the **Medium** preset. **Low** is faster and lighter. **High** uses
+   the stable 1024 reconstruction path with denser geometry and a larger atlas.
+   The 1536 geometry option is experimental and lives under Advanced settings.
+3. Select **Generate 3D**. Additional requests can be added to the queue while a
+   generation is running.
+4. In **View**, rotate or zoom the model and use the texture, clay, wireframe,
+   topology, UV, normal, and PBR inspection modes.
+5. Use the export action in **Assets** or **Library** to save a portable GLB.
+   Generated GLBs are also written automatically to the configured output
+   folder.
+
+Every completed generation is retained in the local Assets library with its
+source image, settings, versions, and lineage. The Library view provides search,
+filters, favourites, and version browsing.
+
+Triastasis exports static GLBs. It does not currently rig, skin, or animate the
+generated model.
+
+## What gets stored where
+
+| Data | Linux | Windows |
+| --- | --- | --- |
+| Native runtime | `~/.local/share/triastasis/runtime/` | `%LOCALAPPDATA%\triastasis\runtime\` |
+| Managed model bundles | `~/.local/share/triastasis/models/installed/<revision>/<tier>/` | `%LOCALAPPDATA%\triastasis\models\installed\<revision>\<tier>\` |
+| Runtime configuration | `~/.config/triastasis/config.json` | `%APPDATA%\triastasis\config.json` |
+| Generated GLB output | `~/.local/share/triastasis/output/` | `%LOCALAPPDATA%\triastasis\output\` |
+| Server logs | `~/.local/share/triastasis/logs/` | `%LOCALAPPDATA%\triastasis\logs\` |
+| Assets library | Tauri app-local data, managed by Triastasis | Tauri app-local data, managed by Triastasis |
+| Desktop app | `Triastasis.AppImage` in the install directory | Per-user Start menu installation |
+
+The installer can set a different install or output location. The onboarding
+Models step can move the managed model root before a download. Use the app's
+export actions for assets instead of editing its internal library files.
+
+For upgrades, Triastasis reads the former `trellis-studio` configuration only
+when the new configuration does not exist. Existing model and output paths can
+therefore carry forward without making the old directory the active location.
+
+## Backend selection
+
+- Supported NVIDIA GPUs use **CUDA**.
+- NVIDIA Pascal and Volta devices use the separate **CUDA 12 legacy** runtime.
+- AMD, Intel, and other GPUs use **Vulkan** by default.
+- **ROCm** is experimental and must be selected explicitly. Its runtime requires
+  a compatible, architecture-matched TheRock ROCm installation.
+
+Vulkan is the safest fallback if automatic detection chooses an unsuitable
+backend or ROCm cannot start.
+
+## Portable installation
+
+Download the portable application archive from the release page:
+
+- `triastasis-windows-x64-portable.zip`
+- `triastasis-linux-x86_64-portable.tar.gz`
+
+Extract it to a writable directory. Download the matching
+`trellis-<backend>-<os>-x64` runtime archive from the same release and extract
+its server and libraries into the portable `runtime/` directory. Keep the
+included `portable.dat` marker beside the executable.
+
+Launch the app and complete the same first-run onboarding. Curated model bundles
+are downloaded into the portable `models/` directory by default. Configuration,
+output, logs, and app-managed data remain under the portable folder. Linux still
+requires the system WebKitGTK 4.1 libraries.
+
+## Advanced installer options
+
+The normal installation needs no options. Use these only to override detected
+hardware or storage:
+
+| Linux flag / Windows parameter | Effect |
+| --- | --- |
+| `--backend` / `-Backend` | Force `cuda`, `cuda12`, `rocm`, or `vulkan` |
+| `--gpu` / `-Gpu` | Choose the GPU index; a negative value requests CPU |
+| `--port` / `-Port` | Set the native server port; default `8080` |
+| `--dest` / `-Dest` | Change the runtime and output installation root |
+| `--release-tag` / `-ReleaseTag` | Install artifacts from a specific Triastasis release |
+| `--skip-app` / `-SkipApp` | Install only the native runtime and configuration |
+| `--yes` / `-Yes` | Skip the installer confirmation prompt |
+
+The alpha installer temporarily retains `--include-models` / `-IncludeModels`
+for compatibility with the former installer-side model download. That path also
+uses `--models-dir`, `--quant`, and explicit model-term acceptance. New
+installations should use the in-app onboarding flow instead.
+
+Example backend override:
 
 ```bash
-# force Vulkan; pick the model bundle inside the app on first launch
 ./install/install.sh --backend vulkan
-
-# legacy: pre-download Q8 weights on a fast drive during install
-./install/install.sh --backend vulkan --include-models --models-dir /mnt/ssd/trellis --quant q8
 ```
 
-## Backend detection
+## Browser-only development
 
-- **NVIDIA** → CUDA (the bundle ships the CUDA runtime; nothing else needed).
-- **AMD / Intel / everything else** → **Vulkan**, which is self-contained and, on
-  the validated Strix Halo iGPU, actually the fastest backend. The installer
-  notes when an AMD card is ROCm-capable.
-- **ROCm** is opt-in with `--backend rocm`. The published ROCm bundle needs a
-  matching TheRock ROCm 7.x runtime on your library path (`LD_LIBRARY_PATH` /
-  `PATH`); if the server won't start, re-run with `--backend vulkan`.
+Browser mode is an advanced development workflow, not the normal installation
+path. It requires a manually started `trellis-server` and an active model-bundle
+directory. See the development instructions in [`app/README.md`](../app/README.md)
+instead of using browser mode for first-run setup.
 
-## Using the app
+## Logs and diagnostics
 
-1. **Drop or pick an image** (or paste from the clipboard).
-2. Adjust **Resolution** (512 light / 1024 cascade / 1536 high), **seed**,
-   **background removal**, and **UV unwrap** if you like.
-3. **Generate 3D** — this takes a few minutes; the live stage line shows progress.
-4. **Rotate/zoom** in the preview; **Reset view** re-frames; **Save GLB…** exports.
-5. Every result is saved to a local **gallery** (native app storage) — click a thumbnail to
-   reload it, even after restarting the app.
-
-## No app? Use it in a browser
-
-The UI is a plain web bundle, so you can skip the desktop app entirely:
-
-```bash
-# start the server the installer downloaded
-~/.local/share/triastasis/runtime/trellis-server \
-  --models ~/.local/share/triastasis/models --port 8080
-```
-
-then open the built UI (or `npm run dev` in `app/`) and point it at
-`127.0.0.1:8080` in **Settings**.
-
-## Portable (no-install)
-
-Prefer not to install anything? Grab the portable archive from the releases page
-instead of running an installer:
-
-- Windows: `triastasis-windows-x64-portable.zip`
-- Linux: `triastasis-linux-x86_64-portable.tar.gz`
-
-Unzip it anywhere and run the app in place — it keeps **everything inside that
-folder** (config and generated GLBs go to `./data/`, and it auto-detects a
-`./runtime/` server and `./models/` weights next to it), so nothing is written to
-your system. Drop the `trellis-<backend>-<os>-x64` runtime into a `runtime/`
-folder and the GGUFs into `models/` (or point it at existing ones in Settings),
-and you're set. Delete the folder to uninstall. (Linux still needs system
-`webkit2gtk-4.1`.)
-
-## Where are the logs?
-
-Every server launch is written to a timestamped log file (the last 20 are kept):
-
-| | Linux | Windows |
-|--|-------|---------|
-| installed | `~/.local/share/triastasis/logs/` | `%LOCALAPPDATA%\triastasis\logs\` |
-| portable | `./data/logs/` next to the app | `.\data\logs\` next to the app |
-
-Open the folder straight from **Settings → Server logs → Open**. The log records
-the exact `--models` path, GPU index and backend the server was launched with,
-plus its full stdout/stderr — attach the newest file to a bug report.
+Open **Settings**, select **Storage**, and use **Open** next to **Server logs**.
+The newest timestamped file contains the server command, model directory, GPU,
+backend, and full output. Triastasis keeps the most recent 20 server logs.
 
 ## Troubleshooting
 
-- **"Server is offline"** right after generating — the pipeline is still loading
-  the models; large weights take a moment on the first request.
-- **Blank white window / the desktop flickers on launch** (common on NVIDIA and
-  some Wayland setups) — the app now disables WebKit's DMA-BUF renderer on Linux
-  automatically. If you still hit it, launch with
-  `WEBKIT_DISABLE_DMABUF_RENDERER=1`; to opt back in, set it to `0`.
-- **Legacy gallery is empty immediately after a development update** — launch
-  the packaged app once. Triastasis copies the old origin-bound IndexedDB gallery
-  into app-local storage; later packaged and development builds share it.
-- **Settings changes (e.g. models directory) seem ignored** — an older build
-  could reuse a server left running by a previous crash. Fully quit the app (or
-  reboot) once after updating; the current build kills the server with the app
-  and no longer reuses a stale one when you hit **Save & restart**.
-- **The app can't read the server response / a CORS error appears** — the app
-  needs a `trellis-server` build that sends CORS headers (v0.4.4+). The installer
-  pulls the *latest* release, so update if you're on an older server bundle.
-- **"setup needed" banner** — no `config.json` was found. Re-run the installer, or
-  open **Settings** and point it at your models directory.
-- **ROCm server won't start** — install the gfx-matched TheRock ROCm runtime, or
-  switch to Vulkan (`--backend vulkan`).
+- **Onboarding cannot read model storage:** confirm the selected folder exists,
+  is writable, and has enough free space. Choose another location in Models if
+  necessary.
+- **A model download stopped:** use **Try resume again** or **Verify and resume**.
+  If verification continues to fail, choose **Delete incomplete files** and
+  start that bundle again. Completed bundles are not removed.
+- **The model server is offline after launch:** allow the native runtime time to
+  start, then check the active bundle under **Settings > Storage** and the server
+  state under **Settings > Runtime**. Install the app and runtime from the same
+  release.
+- **The Models step appears again:** the configured model bundle is missing or
+  unavailable. Activate an installed bundle, resume its download, or choose a
+  custom folder. Reinstalling the app is not normally required.
+- **Settings changes seem ignored:** use **Save & restart** under
+  **Settings > Runtime**. If an older development build left a server process
+  behind, fully quit Triastasis once before retrying.
+- **Blank or flickering Linux window:** Triastasis disables WebKit's DMA-BUF
+  renderer by default. If the problem remains, launch with
+  `WEBKIT_DISABLE_DMABUF_RENDERER=1`.
+- **Legacy development gallery appears empty:** launch the packaged app once so
+  the old origin-bound IndexedDB data can be copied into app-local storage.
+- **Browser development reports CORS errors:** use the `trellis-server` from the
+  same Triastasis release as the UI and connect to its configured loopback port.
+- **ROCm cannot start:** install the compatible TheRock runtime or switch to
+  Vulkan.
