@@ -2927,7 +2927,10 @@ mod tests {
         assert!(!reconciled[0].interrupted);
 
         // Valid records keep their normal recovery path.
-        let dir = std::env::temp_dir().join(format!("trellis-jobs-test-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!(
+            "trellis-invalid-params-test-{}",
+            std::process::id()
+        ));
         std::fs::create_dir_all(&dir).unwrap();
         let mut good = durable("good", JobStatus::Queued, 20);
         good.source_image_path = dir.join("img.png").to_string_lossy().into_owned();
@@ -3101,7 +3104,10 @@ mod tests {
             durable("done", JobStatus::Succeeded, 10),
         ];
         // Every record points at an existing file so validation passes.
-        let dir = std::env::temp_dir().join(format!("trellis-jobs-test-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!(
+            "trellis-recovery-order-test-{}",
+            std::process::id()
+        ));
         std::fs::create_dir_all(&dir).unwrap();
         let image = dir.join("img.png");
         std::fs::write(&image, b"png").unwrap();
