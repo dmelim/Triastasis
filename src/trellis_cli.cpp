@@ -97,7 +97,7 @@ int trellis_run(const trellis::TrellisParams& cfg) {
         // as-is). Otherwise prefer the neural matte: the white-threshold rule reads specular
         // highlights (min(RGB)>=232) as background, and conditioning the flow on an object
         // with punched-out highlights makes it generate HOLES right there (issue #1
-        // follow-ups: helmet-crest and axe-edge highlights on assets/goblin.png).
+        // follow-ups: small detached details and thin edge highlights).
         if (trellis::image_has_alpha(img)) {
             birefnet = false;
         } else {

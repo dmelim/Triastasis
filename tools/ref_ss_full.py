@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Ground-truth SS stage for the goblin: real DINOv3 cond -> SS sampler -> ss_decode.
+"""Ground-truth SS stage from saved DINOv3 conditioning features.
 Dumps the sampled z (torch [1,8,16,16,16]) + voxel count, and the per-step z trace.
     python tools/ref_ss_full.py
 """

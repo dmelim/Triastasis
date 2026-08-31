@@ -15,10 +15,29 @@ import json
 import shutil
 import struct
 import sys
+import zlib
 from pathlib import Path
 
-REPO_ROOT = Path(__file__).resolve().parent.parent
-SAMPLE_INPUT = REPO_ROOT / "assets" / "goblin.png"
+def synthetic_sample_png() -> bytes:
+    """Creates a deterministic valid PNG without depending on repository artwork."""
+    width = height = 16
+    raw = bytearray()
+    for y in range(height):
+        raw.append(0)
+        for x in range(width):
+            raw.extend((32 + x * 8, 96 + y * 6, 144 + (x + y) * 3, 255))
+
+    def chunk(kind: bytes, data: bytes) -> bytes:
+        checksum = zlib.crc32(kind + data) & 0xFFFFFFFF
+        return struct.pack(">I", len(data)) + kind + data + struct.pack(">I", checksum)
+
+    header = struct.pack(">IIBBBBB", width, height, 8, 6, 0, 0, 0)
+    return (
+        b"\x89PNG\r\n\x1a\n"
+        + chunk(b"IHDR", header)
+        + chunk(b"IDAT", zlib.compress(bytes(raw), level=9))
+        + chunk(b"IEND", b"")
+    )
 
 
 def sha256_file(path: Path) -> str:
@@ -111,8 +130,8 @@ def main() -> int:
         shutil.rmtree(out)
     out.mkdir(parents=True)
 
-    input_source = SAMPLE_INPUT
-    assert input_source.is_file(), f"sample input not found: {input_source}"
+    input_source = out / ".fixture-source.png"
+    input_source.write_bytes(synthetic_sample_png())
 
     def case(name: str) -> Path:
         d = out / name
@@ -254,6 +273,8 @@ def main() -> int:
     m = base_manifest()
     m["metrics"]["fileSizeBytes"] = (d / "model.glb").stat().st_size
     finalize(d, m)
+
+    input_source.unlink()
 
     index = ["# Runtime validation fixtures", "", "Point Import/Open GLB at these directories.", ""]
     descriptions = {
