@@ -60,15 +60,16 @@ older versions. Gallery data then lives under Tauri's app-local data directory,
 outside the webview origin; the old IndexedDB remains untouched as a rollback
 copy.
 
-Requires Node 20+, a Rust toolchain, and the Tauri v2 Linux deps
-(`libwebkit2gtk-4.1-dev` etc.; see `.github/workflows/release.yml`).
+Requires Node 20+ and a Rust toolchain. Development builds on Linux additionally
+need the Tauri v2 Linux dependencies (`libwebkit2gtk-4.1-dev` etc.). Linux
+support and packaging remain work in progress and are not a supported release
+target yet.
 
 ## Build
 
 ```bash
-npm run tauri build    # produces .deb + .AppImage (Linux) / NSIS setup .exe (Windows)
+npm run tauri build    # produces the platform's configured Tauri packages
 ```
 
-CI (`.github/workflows/release.yml`, `studio` job) publishes these to each release
-as `triastasis-linux-x86_64.AppImage`, `triastasis-linux-amd64.deb`, and
-`triastasis-windows-x64-setup.exe`, which the installers fetch by name.
+The supported alpha package is `triastasis-windows-x64-setup.exe`. Linux build
+outputs are development artifacts while Linux support is in progress.

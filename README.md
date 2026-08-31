@@ -38,14 +38,11 @@ resolution with seed 42. The after images are renders of the exported GLBs.
 
 ## Quick start
 
-The one-command installer auto-detects your GPU runtime and installs the native
-server and desktop app. On first launch, the app onboarding guides you through
-credits, model terms, storage, and a verified model-bundle download.
-
-```bash
-# Linux (x86-64)
-curl -fsSL https://raw.githubusercontent.com/dmelim/Triastasis/main/install/install.sh | bash
-```
+The current alpha release supports Windows x64. Linux support is still work in
+progress and is not part of the supported release yet. The Windows installer
+auto-detects your GPU runtime and installs the native server and desktop app.
+On first launch, the app onboarding guides you through credits, model terms,
+storage, and a verified model-bundle download.
 
 ```powershell
 # Windows (x64), in PowerShell
@@ -299,7 +296,7 @@ as the Tesla P100.
 
 ```text
 app/            Triastasis desktop application and Tauri host
-install/        Windows and Linux setup scripts
+install/        Windows setup and work-in-progress Linux setup scripts
 src/            Modified C++/GGML native runtime derived from trellis.cpp
 include/        Native runtime public headers
 tools/          Runtime conversion, validation, rendering, and inspection tools

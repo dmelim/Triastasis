@@ -4,19 +4,14 @@ Triastasis is a desktop app for turning one image into a textured static GLB on
 your own computer. The installer adds the desktop app and matching native
 runtime. The app then guides you through model setup on first launch.
 
-Triastasis currently ships for Windows x64 and Linux x86-64.
+The current alpha release supports Windows x64. Linux support is still work in
+progress and is not part of the supported release yet.
 
 ## Install the app and native runtime
 
 The installer detects the GPU backend, downloads the matching
 `trellis-server` runtime, installs the desktop app, and writes the local runtime
 configuration.
-
-### Linux
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/dmelim/Triastasis/main/install/install.sh | bash
-```
 
 ### Windows
 
@@ -74,15 +69,15 @@ generated model.
 
 ## What gets stored where
 
-| Data | Linux | Windows |
-| --- | --- | --- |
-| Native runtime | `~/.local/share/triastasis/runtime/` | `%LOCALAPPDATA%\triastasis\runtime\` |
-| Managed model bundles | `~/.local/share/triastasis/models/installed/<revision>/<tier>/` | `%LOCALAPPDATA%\triastasis\models\installed\<revision>\<tier>\` |
-| Runtime configuration | `~/.config/triastasis/config.json` | `%APPDATA%\triastasis\config.json` |
-| Generated GLB output | `~/.local/share/triastasis/output/` | `%LOCALAPPDATA%\triastasis\output\` |
-| Server logs | `~/.local/share/triastasis/logs/` | `%LOCALAPPDATA%\triastasis\logs\` |
-| Assets library | Tauri app-local data, managed by Triastasis | Tauri app-local data, managed by Triastasis |
-| Desktop app | `Triastasis.AppImage` in the install directory | Per-user Start menu installation |
+| Data | Windows |
+| --- | --- |
+| Native runtime | `%LOCALAPPDATA%\triastasis\runtime\` |
+| Managed model bundles | `%LOCALAPPDATA%\triastasis\models\installed\<revision>\<tier>\` |
+| Runtime configuration | `%APPDATA%\triastasis\config.json` |
+| Generated GLB output | `%LOCALAPPDATA%\triastasis\output\` |
+| Server logs | `%LOCALAPPDATA%\triastasis\logs\` |
+| Assets library | Tauri app-local data, managed by Triastasis |
+| Desktop app | Per-user Start menu installation |
 
 The installer can set a different install or output location. The onboarding
 Models step can move the managed model root before a download. Use the app's
@@ -108,42 +103,40 @@ backend or ROCm cannot start.
 Download the portable application archive from the release page:
 
 - `triastasis-windows-x64-portable.zip`
-- `triastasis-linux-x86_64-portable.tar.gz`
 
 Extract it to a writable directory. Download the matching
-`trellis-<backend>-<os>-x64` runtime archive from the same release and extract
+`trellis-<backend>-windows-x64` runtime archive from the same release and extract
 its server and libraries into the portable `runtime/` directory. Keep the
 included `portable.dat` marker beside the executable.
 
 Launch the app and complete the same first-run onboarding. Curated model bundles
 are downloaded into the portable `models/` directory by default. Configuration,
-output, logs, and app-managed data remain under the portable folder. Linux still
-requires the system WebKitGTK 4.1 libraries.
+output, logs, and app-managed data remain under the portable folder.
 
 ## Advanced installer options
 
 The normal installation needs no options. Use these only to override detected
 hardware or storage:
 
-| Linux flag / Windows parameter | Effect |
+| Windows parameter | Effect |
 | --- | --- |
-| `--backend` / `-Backend` | Force `cuda`, `cuda12`, `rocm`, or `vulkan` |
-| `--gpu` / `-Gpu` | Choose the GPU index; a negative value requests CPU |
-| `--port` / `-Port` | Set the native server port; default `8080` |
-| `--dest` / `-Dest` | Change the runtime and output installation root |
-| `--release-tag` / `-ReleaseTag` | Install artifacts from a specific Triastasis release |
-| `--skip-app` / `-SkipApp` | Install only the native runtime and configuration |
-| `--yes` / `-Yes` | Skip the installer confirmation prompt |
+| `-Backend` | Force `cuda`, `cuda12`, `rocm`, or `vulkan` |
+| `-Gpu` | Choose the GPU index; a negative value requests CPU |
+| `-Port` | Set the native server port; default `8080` |
+| `-Dest` | Change the runtime and output installation root |
+| `-ReleaseTag` | Install artifacts from a specific Triastasis release |
+| `-SkipApp` | Install only the native runtime and configuration |
+| `-Yes` | Skip the installer confirmation prompt |
 
-The alpha installer temporarily retains `--include-models` / `-IncludeModels`
+The alpha installer temporarily retains `-IncludeModels`
 for compatibility with the former installer-side model download. That path also
-uses `--models-dir`, `--quant`, and explicit model-term acceptance. New
+uses `-ModelsDir`, `-Quant`, and `-AcceptModelTerms`. New
 installations should use the in-app onboarding flow instead.
 
 Example backend override:
 
-```bash
-./install/install.sh --backend vulkan
+```powershell
+.\install\install.ps1 -Backend vulkan
 ```
 
 ## Browser-only development
@@ -177,9 +170,6 @@ backend, and full output. Triastasis keeps the most recent 20 server logs.
 - **Settings changes seem ignored:** use **Save & restart** under
   **Settings > Runtime**. If an older development build left a server process
   behind, fully quit Triastasis once before retrying.
-- **Blank or flickering Linux window:** Triastasis disables WebKit's DMA-BUF
-  renderer by default. If the problem remains, launch with
-  `WEBKIT_DISABLE_DMABUF_RENDERER=1`.
 - **Legacy development gallery appears empty:** launch the packaged app once so
   the old origin-bound IndexedDB data can be copied into app-local storage.
 - **Browser development reports CORS errors:** use the `trellis-server` from the

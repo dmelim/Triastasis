@@ -23,7 +23,7 @@ body:
       options:
         - Windows 11
         - Windows 10
-        - Linux
+        - Linux (work in progress)
         - Other
     validations:
       required: true
@@ -52,10 +52,10 @@ body:
     attributes:
       label: Installation type
       options:
-        - One-command installer
+        - Windows one-command installer
         - Windows installer
-        - Linux AppImage
-        - Linux deb package
+        - Linux AppImage (work in progress)
+        - Linux deb package (work in progress)
         - Portable archive
         - Built from source
     validations:

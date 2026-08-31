@@ -14,11 +14,12 @@ This is the first public alpha of Triastasis, a local desktop workspace for turn
 
 ## Downloads
 
-The release workflow prepares these application packages:
+This alpha release provides:
 
 - Windows x64 installer and portable ZIP.
-- Linux x86-64 AppImage, Debian package, and portable archive.
-- Native runtime bundles for the supported CUDA, CUDA 12 legacy, Vulkan, and experimental ROCm configurations.
+- Windows native runtime bundles for CUDA, CUDA 12 legacy, Vulkan, and experimental ROCm configurations.
+
+Linux support remains work in progress and is not supported by this release.
 
 Model weights are not included in the application packages. Triastasis offers separate curated downloads after the applicable upstream terms are reviewed and accepted.
 
