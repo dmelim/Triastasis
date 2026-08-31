@@ -2330,6 +2330,21 @@ fn apply_import_completion(
     Ok(())
 }
 
+fn make_room_for_import(imports: &mut HashMap<String, ImportRequest>) -> bool {
+    if imports.len() < MAX_IMPORT_REQUESTS {
+        return true;
+    }
+    let oldest_completed = imports
+        .values()
+        .filter(|import| import.status == ImportRequestStatus::Completed)
+        .min_by_key(|import| import.submitted_at)
+        .map(|import| import.id.clone());
+    if let Some(id) = oldest_completed {
+        imports.remove(&id);
+    }
+    imports.len() < MAX_IMPORT_REQUESTS
+}
+
 fn submit_import(
     mut request: Request,
     queue: &JobQueue,
@@ -2374,10 +2389,10 @@ fn submit_import(
     let id = import.id.clone();
     {
         let mut imports = queue.imports.lock().unwrap();
-        if imports.len() >= MAX_IMPORT_REQUESTS {
+        if !make_room_for_import(&mut imports) {
             let _ = request.respond(error_response(
                 429,
-                "too many import requests are retained; restart Triastasis to clear completed request history",
+                "too many import requests are currently active; wait for one to complete",
             ));
             return;
         }
@@ -3332,6 +3347,40 @@ mod tests {
         assert_eq!(request.imported, 1);
         assert_eq!(request.failures.len(), 1);
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn completed_import_history_makes_room_without_discarding_active_requests() {
+        let request = |index: usize, status: ImportRequestStatus| ImportRequest {
+            id: format!("import-{index}"),
+            status_url: String::new(),
+            source_path: String::new(),
+            status,
+            submitted_at: index as u64,
+            manifest_paths: Vec::new(),
+            warnings: Vec::new(),
+            imported: 0,
+            skipped: 0,
+            failures: Vec::new(),
+        };
+        let mut completed = (0..MAX_IMPORT_REQUESTS)
+            .map(|index| {
+                let item = request(index, ImportRequestStatus::Completed);
+                (item.id.clone(), item)
+            })
+            .collect::<HashMap<_, _>>();
+        assert!(make_room_for_import(&mut completed));
+        assert_eq!(completed.len(), MAX_IMPORT_REQUESTS - 1);
+        assert!(!completed.contains_key("import-0"));
+
+        let mut active = (0..MAX_IMPORT_REQUESTS)
+            .map(|index| {
+                let item = request(index, ImportRequestStatus::Pending);
+                (item.id.clone(), item)
+            })
+            .collect::<HashMap<_, _>>();
+        assert!(!make_room_for_import(&mut active));
+        assert_eq!(active.len(), MAX_IMPORT_REQUESTS);
     }
 
     #[test]

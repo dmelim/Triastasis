@@ -22,6 +22,12 @@ used by the skill.
 - `GET /jobs/{id}/model`
 - `GET /jobs/{id}/image` for the original source image after success
 - `DELETE /jobs/{id}` to cancel a queued job
+- `POST /jobs/{id}/export` to copy a completed portable package to a new directory
+- `POST /imports` to request recursive `.triastasis.json` discovery and Library import
+- `GET /imports`
+- `GET /imports/{id}`
+- `POST /imports/{id}/claim` for the desktop app import worker
+- `POST /imports/{id}/complete` for the desktop app import worker
 
 ## `POST /jobs` fields
 
@@ -112,6 +118,47 @@ quit. Restart and quit atomically pause new submissions only after confirming
 the queue is idle. They remain blocked while a job is running or queued; queued
 jobs can be cancelled with `DELETE /jobs/{id}`, while a running native GPU job
 must finish safely before the app can quit.
+
+## Export a completed package
+
+`POST /jobs/{id}/export` accepts JSON with an absolute `destinationPath`:
+
+```powershell
+$body = @{ destinationPath = "C:\assets\character" } | ConvertTo-Json
+Invoke-RestMethod -Method Post -ContentType "application/json" -Body $body `
+  -Uri "http://127.0.0.1:8081/jobs/$($response.id)/export"
+```
+
+The job must have succeeded and the destination must not already exist. Triastasis
+copies the source image, GLB, portable job record, and generation manifest into
+a staging directory, verifies the copied SHA-256 hashes, and then publishes the
+new directory. It never moves or modifies the original job files. The response
+contains `jobId`, `destinationPath`, `manifestPath`, and a `files` array with
+the role, path, byte count, and SHA-256 of each exported file.
+
+## Import packages into the Library
+
+`POST /imports` accepts an absolute path to either one `.triastasis.json` file
+or a directory. Directory requests recursively discover every current manifest
+below that root:
+
+```powershell
+$body = @{ sourcePath = "C:\assets" } | ConvertTo-Json
+$request = Invoke-RestMethod -Method Post -ContentType "application/json" `
+  -Body $body -Uri "http://127.0.0.1:8081/imports"
+$request
+```
+
+The API returns `202` with an import request containing `id`, `statusUrl`,
+`manifestPaths`, and discovery warnings. The running desktop app claims pending
+requests, validates and copies each package through the normal Library storage
+path, and reports `imported`, `skipped`, and per-file `failures`. Poll
+`GET /imports/{id}` until `status` is `completed`. `GET /imports` lists the
+retained request history. Old completed requests are pruned automatically when
+the bounded history is full; active requests are never discarded.
+
+The `claim` and `complete` endpoints are the desktop app worker protocol. Normal
+automation clients submit and poll requests and must not call those endpoints.
 
 ## Queue a seed range
 
