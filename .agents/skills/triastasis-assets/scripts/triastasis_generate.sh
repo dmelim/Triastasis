@@ -5,6 +5,7 @@ export PATH="/usr/bin:/bin:$PATH"
 api="http://127.0.0.1:8082"
 image=""
 output=""
+export_dir=""
 job_json=""
 seed="42"
 resolution="512"
@@ -22,9 +23,10 @@ job_id=""
 
 usage() {
   cat <<'EOF'
-Usage: triastasis_generate.sh --image PATH --output PATH [options]
+Usage: triastasis_generate.sh --image PATH (--export-dir DIR | --output PATH) [options]
 
 Options:
+  --export-dir DIR          Native verified package export (recommended)
   --job-json PATH           Save the final API job view as JSON
   --seed N                 Default: 42
   --resolution N           512, 1024, or 1536. Default: 512
@@ -47,6 +49,7 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     --image) image="${2:-}"; shift 2 ;;
     --output) output="${2:-}"; shift 2 ;;
+    --export-dir) export_dir="${2:-}"; shift 2 ;;
     --job-json) job_json="${2:-}"; shift 2 ;;
     --seed) seed="${2:-}"; shift 2 ;;
     --resolution) resolution="${2:-}"; shift 2 ;;
@@ -66,7 +69,11 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-[[ -n "$image" && -n "$output" ]] || { usage >&2; exit 2; }
+[[ -n "$image" ]] || { usage >&2; exit 2; }
+[[ -n "$export_dir" || -n "$output" ]] || { usage >&2; exit 2; }
+[[ -z "$export_dir" || -z "$output" ]] || { echo "Choose --export-dir or --output, not both" >&2; exit 2; }
+[[ -z "$export_dir" || -z "$job_json" ]] || { echo "--export-dir already creates job.json" >&2; exit 2; }
+[[ -z "$export_dir" || "$force" == "0" ]] || { echo "--force is not allowed with non-overwriting native exports" >&2; exit 2; }
 [[ -f "$image" ]] || { echo "Input image not found: $image" >&2; exit 2; }
 [[ "$resolution" =~ ^(512|1024|1536)$ ]] || { echo "Invalid resolution: $resolution" >&2; exit 2; }
 [[ "$bg_removal" =~ ^(auto|birefnet|threshold)$ ]] || { echo "Invalid background removal: $bg_removal" >&2; exit 2; }
@@ -82,7 +89,9 @@ done
 [[ -z "$remesh_band" || "$remesh_band" =~ ^[0-8]$ ]] || { echo "Remesh band must be between 0 and 8" >&2; exit 2; }
 [[ -z "$texture_encoding" || "$texture_encoding" =~ ^(auto|webp|png)$ ]] || { echo "Invalid texture encoding: $texture_encoding" >&2; exit 2; }
 [[ "$poll_seconds" =~ ^[1-9][0-9]*$ ]] || { echo "Poll interval must be a positive integer" >&2; exit 2; }
-[[ ! -e "$output" || "$force" == "1" ]] || { echo "Output exists; pass --force to replace it: $output" >&2; exit 2; }
+[[ -z "$output" || ! -e "$output" || "$force" == "1" ]] || { echo "Output exists; pass --force to replace it: $output" >&2; exit 2; }
+[[ -z "$export_dir" || ! -e "$export_dir" ]] || { echo "Export directory already exists; native exports never overwrite: $export_dir" >&2; exit 2; }
+[[ -z "$export_dir" || -d "$(dirname "$export_dir")" ]] || { echo "Export parent directory does not exist: $(dirname "$export_dir")" >&2; exit 2; }
 [[ -z "$job_json" || ! -e "$job_json" || "$force" == "1" ]] || { echo "Job JSON exists; pass --force to replace it: $job_json" >&2; exit 2; }
 
 command -v curl >/dev/null || { echo "curl is required" >&2; exit 2; }
@@ -179,11 +188,23 @@ while true; do
   esac
 done
 
-mkdir -p "$(dirname "$output")"
-curl --fail --silent --show-error "$model_url" --output "$output"
-if [[ -n "$job_json" ]]; then
-  mkdir -p "$(dirname "$job_json")"
-  printf '%s\n' "$status_json" > "$job_json"
+if [[ -n "$export_dir" ]]; then
+  command -v cygpath >/dev/null || { echo "cygpath is required for native Windows exports" >&2; exit 2; }
+  export_path="$(cygpath -aw "$export_dir")"
+  export_payload="$(python -c 'import json,sys; print(json.dumps({"destinationPath": sys.argv[1]}))' "$export_path")"
+  export_json="$(curl --fail-with-body --silent --show-error \
+    --header "Content-Type: application/json" \
+    --data "$export_payload" \
+    "$api/jobs/$job_id/export")"
+  output="$export_dir/asset-static.glb"
+  printf '%s\n' "$export_json"
+else
+  mkdir -p "$(dirname "$output")"
+  curl --fail --silent --show-error "$model_url" --output "$output"
+  if [[ -n "$job_json" ]]; then
+    mkdir -p "$(dirname "$job_json")"
+    printf '%s\n' "$status_json" > "$job_json"
+  fi
 fi
 
 quality_warning="$(printf '%s' "$status_json" | python -c "import json,sys; w=json.load(sys.stdin).get('qualityWarning') or {}; code=w.get('code'); message=w.get('message'); print(f'[{code}] {message}' if code and message else message or '')")"

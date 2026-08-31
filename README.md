@@ -120,22 +120,22 @@ copy, rename, overwrite, or delete them. Forgetting a custom folder removes only
 saved reference. These boundaries protect the user's computer, not the provenance or
 quality of the models they chose.
 
-### Quickly prototype a 3D game with Codex
+### Manage 3D assets with Codex
 
 The repository includes the project skill
-[`$triastasis-game-prototype`](.agents/skills/triastasis-game-prototype/SKILL.md).
-It uses Triastasis to turn a prompt or reference image into a static GLB, inspects
-the result in Blender, and can place it into an existing Three.js, Godot, Unity,
-Unreal, or other game project. It does not claim that generated assets are rigged,
-skinned, or animation-ready.
+[`$triastasis-assets`](.agents/skills/triastasis-assets/SKILL.md).
+It manages static 3D assets across generation, Blender inspection, portable
+export, safe recursive library import, recovery, and integration into Three.js,
+Godot, Unity, Unreal, or other game projects. It does not claim that generated
+assets are rigged, skinned, or animation-ready.
 
 Open this repository in Codex, start Triastasis, and ask:
 
 ```text
-Use $triastasis-game-prototype to turn this character idea into a playable 3D game prototype.
+Use $triastasis-assets to turn this reference image into an inspected, portable 3D asset and integrate it into my game.
 ```
 
-The skill defaults to one fast 512 generation and applies a static-asset quality
+For generation, the skill defaults to one fast 512 result and applies a static-asset quality
 gate before integration. Its scripts use the loopback-only queued automation API
 documented in [`app/AUTOMATION.md`](app/AUTOMATION.md).
 

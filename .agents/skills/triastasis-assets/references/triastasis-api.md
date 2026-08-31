@@ -15,7 +15,13 @@ The API is loopback-only and queues jobs serially. Multiple submissions do not m
 | GET | `/jobs/{id}` | Poll status |
 | GET | `/jobs/{id}/model` | Download a successful GLB |
 | GET | `/jobs/{id}/image` | Download the original source image after success |
+| POST | `/jobs/{id}/export` | Create a new verified, portable package directory |
 | DELETE | `/jobs/{id}` | Cancel a queued job |
+| POST | `/imports` | Request recursive app-owned import from an absolute directory |
+| GET | `/imports` | List import requests and their state |
+| GET | `/imports/{id}` | Poll one import request |
+| POST | `/imports/{id}/claim` | Internal desktop handoff or recovery for an unfinished request |
+| POST | `/imports/{id}/complete` | Internal desktop completion report |
 
 ## Multipart fields
 
@@ -43,7 +49,50 @@ Jobs are `queued`, `running`, `succeeded`, `failed`, or `cancelled`.
 
 A running native GPU job cannot be interrupted safely. Cancellation is reliable only while queued.
 
-The submission response contains a stable `id`, `statusUrl`, `modelUrl`, and `imageUrl`, plus `queuePosition` and `jobsAhead`. If another generation is active or queued, report the wait and retain the job ID for polling. `GET /jobs` and `GET /jobs/{id}` return the same URLs and live queue metadata. Job views also echo accepted parameters and expose `progress` with stage, percentage, and ETA when the native server supplies them. Download successful output through `modelUrl` rather than depending on its server-side path.
+The submission response contains a stable `id`, `statusUrl`, `modelUrl`, and `imageUrl`, plus `queuePosition` and `jobsAhead`. If another generation is active or queued, report the wait and retain the job ID for polling. `GET /jobs` and `GET /jobs/{id}` return the same URLs and live queue metadata. Job views also echo accepted parameters and expose `progress` with stage, percentage, and ETA when the native server supplies them.
+
+For a durable package, prefer `POST /jobs/{id}/export` over downloading and copying files by hand:
+
+```json
+{ "destinationPath": "C:\\absolute\\path\\to\\new-package" }
+```
+
+The destination must be an absolute path whose parent already exists. The destination itself must not exist. Triastasis copies the durable source and model, verifies SHA-256 before and after the copy, writes portable `job.json` and `asset-static.triastasis.json` records, validates the manifest, and only then publishes the package directory. It never moves or deletes the job originals and never overwrites a destination. The successful `201` response lists all exported files, byte counts, and hashes.
+
+Use `modelUrl` only when a standalone GLB download is explicitly needed.
+
+## App-owned imports
+
+To import existing packages into the desktop Library, submit an absolute source
+directory or one exact `.triastasis.json` manifest:
+
+```json
+{ "sourcePath": "C:\\absolute\\path\\to\\packages" }
+```
+
+For a directory, `POST /imports` recursively discovers current
+`.triastasis.json` files without following directory symlinks or junctions. For
+a file, it selects only that current manifest. It returns `202`, a stable import
+request ID, `statusUrl`, selected manifest paths, and scan warnings. The desktop
+app claims the request, validates each manifest and referenced file,
+persists valid completed generations through its own gallery storage, skips
+records already identified by manifest path or automation job ID, and publishes
+exact results back to the request. Poll `statusUrl` until `status` is
+`completed`.
+
+An unfinished `running` request can be claimed again after a frontend refresh.
+The repeated pass remains safe because already persisted paths and job IDs are
+skipped before another gallery record is written.
+
+Use `scripts/triastasis_import.sh --source-dir` for a tree or `--source` for one
+manifest instead of calling these endpoints manually. A completed request may
+contain per-manifest failures; treat those as a partial failure and report them.
+Import requests are process-local, so resubmit after an app restart. Re-importing
+is safe because the app deduplicates stable paths and job IDs.
+
+The import path exists specifically to avoid direct writes from packaged tools
+into the app's Windows local-data directory. It never modifies or deletes source
+packages.
 
 During an atomic tray restart or quit, `POST /jobs` returns `503`; retry after the service is ready. It also returns `503` when durable persistence is degraded. Check `persistenceHealthy` and surface `persistenceError` from `/capabilities` before submitting. A successful `/health` response alone does not prove that new work can be accepted or generated.
 

@@ -1,0 +1,8 @@
+interface:
+  display_name: "Triastasis Assets"
+  short_description: "Manage static 3D assets with Triastasis"
+  brand_color: "#2DD4BF"
+  default_prompt: "Use $triastasis-assets to generate, inspect, package, import, or integrate my static 3D assets."
+
+policy:
+  allow_implicit_invocation: true
