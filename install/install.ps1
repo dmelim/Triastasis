@@ -127,6 +127,7 @@ if (-not $Yes) {
 # ---- download helper (resumable via BITS, IWR fallback) --------------------
 function Download($url, $dest) {
   New-Item -ItemType Directory -Force -Path (Split-Path $dest) | Out-Null
+  if (Test-Path -LiteralPath $dest) { Remove-Item -LiteralPath $dest -Force }
   Info "down $(Split-Path $dest -Leaf)"
   try {
     Start-BitsTransfer -Source $url -Destination $dest -DisplayName (Split-Path $dest -Leaf)
@@ -136,12 +137,34 @@ function Download($url, $dest) {
   }
 }
 
+function Verify-ReleaseChecksum($file, $checksumUrl) {
+  $checksumFile = "$file.sha256"
+  try {
+    Download $checksumUrl $checksumFile
+  } catch {
+    Warn "release checksum is unavailable; continuing for compatibility with older releases."
+    return
+  }
+  try {
+    $line = (Get-Content -LiteralPath $checksumFile -Raw).Trim()
+    $match = [regex]::Match($line, '^([A-Fa-f0-9]{64})\s+[*]?.+$')
+    if (-not $match.Success) { Die "invalid checksum file for $(Split-Path $file -Leaf)" }
+    $expected = $match.Groups[1].Value.ToLowerInvariant()
+    $actual = (Get-FileHash -LiteralPath $file -Algorithm SHA256).Hash.ToLowerInvariant()
+    if ($actual -ne $expected) { Die "SHA-256 mismatch for $(Split-Path $file -Leaf); the download was not used" }
+    Info "verified SHA-256: $(Split-Path $file -Leaf)"
+  } finally {
+    Remove-Item -LiteralPath $checksumFile -Force -ErrorAction SilentlyContinue
+  }
+}
+
 # ---- 1. server runtime bundle ---------------------------------------------
 Log "downloading trellis-server ($Backend) runtime"
 New-Item -ItemType Directory -Force -Path $RuntimeDir | Out-Null
 $bundle = "trellis-$Backend-windows-x64.zip"
 $tmp = Join-Path $env:TEMP $bundle
 Download "$RelBase/$bundle" $tmp
+Verify-ReleaseChecksum $tmp "$RelBase/$bundle.sha256"
 Expand-Archive -Path $tmp -DestinationPath $RuntimeDir -Force
 Remove-Item $tmp -Force
 $ServerBin = Join-Path $RuntimeDir "trellis-server.exe"
@@ -167,14 +190,11 @@ if ($SkipApp) {
 } else {
   Log "downloading Triastasis desktop app"
   $setup = Join-Path $env:TEMP "triastasis-windows-x64-setup.exe"
-  try {
-    Download "$RelBase/triastasis-windows-x64-setup.exe" $setup
-    Info "launching installer (silent, per-user)"
-    Start-Process $setup -ArgumentList "/S" -Wait
-  } catch {
-    Warn "app installer not available on the latest release yet — skipping."
-    Warn "You can still run the UI in a browser against trellis-server (see docs)."
-  }
+  Download "$RelBase/triastasis-windows-x64-setup.exe" $setup
+  Verify-ReleaseChecksum $setup "$RelBase/triastasis-windows-x64-setup.exe.sha256"
+  Info "launching installer (silent, per-user)"
+  $installer = Start-Process $setup -ArgumentList "/S" -Wait -PassThru
+  if ($installer.ExitCode -ne 0) { Die "Triastasis installer exited with code $($installer.ExitCode)" }
 }
 
 # ---- 4. config -------------------------------------------------------------
@@ -200,4 +220,8 @@ $cfg = [ordered]@{
 Info "config: $(Join-Path $ConfigDir 'config.json')"
 
 Write-Host ""
-Log "done: launch Triastasis from the Start menu."
+if ($SkipApp) {
+  Log "done: native runtime and configuration installed."
+} else {
+  Log "done: Triastasis and its native runtime are installed. Launch Triastasis from the Start menu."
+}

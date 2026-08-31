@@ -9,9 +9,10 @@ progress and is not part of the supported release yet.
 
 ## Install the app and native runtime
 
-The installer detects the GPU backend, downloads the matching
-`trellis-server` runtime, installs the desktop app, and writes the local runtime
-configuration.
+The current one-command setup detects the GPU backend, downloads the matching
+`trellis-server` runtime, runs the normal Windows desktop installer, and writes
+the local runtime configuration. The standalone `.exe` in the release is a
+normal NSIS installer, but it does not yet download the GPU runtime by itself.
 
 ### Windows
 
@@ -23,6 +24,10 @@ irm https://raw.githubusercontent.com/dmelim/Triastasis/main/install/install.ps1
 
 Model weights are intentionally not part of the initial installation. The app
 downloads and verifies the selected model bundle during onboarding.
+
+New releases include SHA-256 files for the runtime and desktop downloads. The
+setup verifies them when available and stops on a mismatch. Older releases that
+predate checksum publication remain installable with an explicit warning.
 
 ## Complete first-run onboarding
 

@@ -54,8 +54,6 @@ body:
       options:
         - Windows one-command installer
         - Windows installer
-        - Linux AppImage (work in progress)
-        - Linux deb package (work in progress)
         - Portable archive
         - Built from source
     validations:

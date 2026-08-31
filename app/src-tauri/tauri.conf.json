@@ -34,7 +34,7 @@
       "../public/fonts/LICENSE.txt": "licenses/Inter-LICENSE.txt",
       "../public/icons/LICENSE-lucide.txt": "licenses/Lucide-LICENSE.txt"
     },
-    "targets": ["deb", "appimage", "nsis"],
+    "targets": ["nsis"],
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",

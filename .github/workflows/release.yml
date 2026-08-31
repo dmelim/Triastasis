@@ -26,10 +26,6 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { os: linux,   backend: vulkan, runner: ubuntu-22.04 }
-          - { os: linux,   backend: cuda,   release_backend: cuda,   cuda_version: "13.1.0", cuda_archs: "75;80;86;89;90;120", runner: ubuntu-22.04 }
-          - { os: linux,   backend: cuda,   release_backend: cuda12, cuda_version: "12.9.1", cuda_archs: "60;61;70",          runner: ubuntu-22.04 }
-          - { os: linux,   backend: rocm,   runner: ubuntu-22.04,  experimental: true }
           - { os: windows, backend: vulkan, runner: windows-2022 }
           - { os: windows, backend: cuda,   release_backend: cuda,   cuda_version: "13.1.0", cuda_archs: "75;80;86;89;90;120", runner: windows-2022 }
           - { os: windows, backend: cuda,   release_backend: cuda12, cuda_version: "12.9.1", cuda_archs: "60;61;70",          runner: windows-2022 }
@@ -52,13 +48,6 @@ jobs:
         with:
           key: ${{ matrix.os }}-${{ matrix.release_backend || matrix.backend }}
 
-      # Linux: the minimal SDK is enough (runner provides spirv-headers).
-      - name: Vulkan SDK (Linux)
-        if: matrix.backend == 'vulkan' && matrix.os == 'linux'
-        uses: humbletim/install-vulkan-sdk@v1.2
-        with:
-          version: 1.4.309.0
-          cache: true
       # Windows: ggml-vulkan + the deform_conv shader need the full SDK
       # (SPIRV-Headers/-Tools CMake configs), which the minimal install lacks.
       - name: Vulkan SDK (Windows)
@@ -85,34 +74,6 @@ jobs:
         with:
           cuda: ${{ matrix.cuda_version }}
           method: network
-
-      # Best-effort ROCm 7.12 (TheRock), matching the validated runtime.
-      # Marked experimental: this leg is allowed to fail.
-      # ROCm via TheRock (gfx1151, Strix Halo, the validated target).
-      # Best-effort: allow-failure (no AMD GPU in CI to run-test).
-      - name: ROCm TheRock (Linux, gfx1151)
-        if: matrix.backend == 'rocm' && matrix.os == 'linux'
-        shell: bash
-        run: |
-          set -e
-          base="https://rocm.nightlies.amd.com/tarball-multi-arch"
-          prefix="therock-dist-linux-gfx1151-"
-          files=$(curl -s "$base/" | tr '\n' ' ' | grep -oP 'const files = \K\[.*?\](?=\s*;)')
-          latest=$(echo "$files" | jq -r --arg p "$prefix" \
-            '[.[]|select(.name|startswith($p))|select(.name|test("[0-9]{8}\\.tar\\.gz$"))]|sort_by(.name|capture("(?<d>[0-9]{8})\\.tar\\.gz$").d)|last|.name // empty')
-          test -n "$latest"
-          echo "TheRock tarball: $latest"
-          sudo mkdir -p /opt/rocm
-          curl -sL "$base/$latest" | sudo tar --use-compress-program=gzip -xf - -C /opt/rocm --strip-components=1
-          {
-            echo "ROCM_PATH=/opt/rocm"
-            echo "HIP_PATH=/opt/rocm"
-            echo "HIP_PLATFORM=amd"
-            echo "LD_LIBRARY_PATH=/opt/rocm/lib:/opt/rocm/lib64:/opt/rocm/llvm/lib"
-            echo "ROCM_CC=/opt/rocm/llvm/bin/clang"
-            echo "ROCM_CXX=/opt/rocm/llvm/bin/clang++"
-          } >> "$GITHUB_ENV"
-          echo "/opt/rocm/bin:/opt/rocm/llvm/bin" >> "$GITHUB_PATH"
 
       - name: ROCm TheRock (Windows, gfx1151)
         if: matrix.backend == 'rocm' && matrix.os == 'windows'
@@ -157,9 +118,7 @@ jobs:
           # pool for exactly this case; use it instead of chasing the DLL.
           # (trellis.cpp's own deform_conv_cpu.cpp no longer uses OpenMP
           # either -- see CMakeLists.txt / src/deform_conv_cpu.cpp.)
-          if [ "${{ matrix.os }}" = "windows" ]; then
-            FLAGS="$FLAGS -DGGML_OPENMP=OFF"
-          fi
+          FLAGS="$FLAGS -DGGML_OPENMP=OFF"
           cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release $FLAGS ${SPIRV_HEADERS_ROOT:+-DCMAKE_PREFIX_PATH=$SPIRV_HEADERS_ROOT}
           # Ship both the resident HTTP server and the one-shot CLI (issue #15).
           cmake --build build --target trellis-server trellis-cli -j
@@ -179,48 +138,27 @@ jobs:
           cp thirdparty/cpp-httplib-LICENSE.txt dist/licenses/cpp-httplib-LICENSE.txt
           cp thirdparty/stb-LICENSE.txt dist/licenses/stb-LICENSE.txt
           cp thirdparty/libwebp-COPYING.txt dist/licenses/libwebp-COPYING.txt
-          if [ "${{ matrix.os }}" = "windows" ]; then
-            cp build/trellis-server.exe dist/
-            cp build/trellis-cli.exe dist/
-            cp build/*.dll dist/ 2>/dev/null || true
-            if [ "${{ matrix.backend }}" = "cuda" ]; then
-              # $CUDA_PATH is a Windows path (backslashes/spaces) that breaks bash
-              # globbing. CUDA 13 also relocated the Windows runtime DLLs out of
-              # bin/ (into bin/x64), so locate each wherever it lives under the
-              # toolkit and fail loudly (set -e) rather than shipping a zip with
-              # no CUDA runtime.
-              cuda_root="$(cygpath -u "$CUDA_PATH")"
-              echo "== CUDA runtime DLLs found under $cuda_root =="
-              find "$cuda_root" -type f \( -name 'cudart64_*.dll' -o -name 'cublas64_*.dll' -o -name 'cublasLt64_*.dll' \) -print
-              for dll in cudart64 cublas64 cublasLt64; do
-                src="$(find "$cuda_root" -type f -name "${dll}_*.dll" -print -quit)"
-                if [ -z "$src" ]; then echo "ERROR: ${dll}_*.dll not found under CUDA toolkit"; exit 1; fi
-                cp "$src" dist/
-              done
-              ls -la dist/*.dll
-            fi
-            ASSET="trellis-${{ matrix.release_backend || matrix.backend }}-windows-x64.zip"
-            (cd dist && 7z a -y "../$ASSET" ./* >/dev/null)
-          else
-            cp build/trellis-server dist/
-            cp build/trellis-cli dist/
-            cp -P build/libggml*.so* dist/ 2>/dev/null || true
-            # The ROCm runtime comes from the shared TheRock SDK that the build
-            # installs per the user's gfx arch (via LD_LIBRARY_PATH), not bundled
-            # here. CUDA has no such shared SDK, so bundle its runtime next to the
-            # binary (mirrors sd-cpp / llama.cpp); the $ORIGIN rpath below then
-            # resolves it with no system CUDA toolkit required.
-            if [ "${{ matrix.backend }}" = "cuda" ]; then
-              cuda_lib="${CUDA_PATH:-/usr/local/cuda}/lib64"
-              for l in libcudart libcublas libcublasLt; do
-                cp -P "$cuda_lib"/$l.so* dist/ 2>/dev/null || true
-              done
-            fi
-            sudo apt-get install -y -qq patchelf
-            for f in $(find dist -type f); do patchelf --set-rpath '$ORIGIN' "$f" 2>/dev/null || true; done
-            ASSET="trellis-${{ matrix.release_backend || matrix.backend }}-linux-x64.tar.gz"
-            tar -C dist -czf "$ASSET" .
+          cp build/trellis-server.exe dist/
+          cp build/trellis-cli.exe dist/
+          cp build/*.dll dist/ 2>/dev/null || true
+          if [ "${{ matrix.backend }}" = "cuda" ]; then
+            # $CUDA_PATH is a Windows path (backslashes/spaces) that breaks bash
+            # globbing. CUDA 13 also relocated the Windows runtime DLLs out of
+            # bin/ (into bin/x64), so locate each wherever it lives under the
+            # toolkit and fail loudly (set -e) rather than shipping a zip with
+            # no CUDA runtime.
+            cuda_root="$(cygpath -u "$CUDA_PATH")"
+            echo "== CUDA runtime DLLs found under $cuda_root =="
+            find "$cuda_root" -type f \( -name 'cudart64_*.dll' -o -name 'cublas64_*.dll' -o -name 'cublasLt64_*.dll' \) -print
+            for dll in cudart64 cublas64 cublasLt64; do
+              src="$(find "$cuda_root" -type f -name "${dll}_*.dll" -print -quit)"
+              if [ -z "$src" ]; then echo "ERROR: ${dll}_*.dll not found under CUDA toolkit"; exit 1; fi
+              cp "$src" dist/
+            done
+            ls -la dist/*.dll
           fi
+          ASSET="trellis-${{ matrix.release_backend || matrix.backend }}-windows-x64.zip"
+          (cd dist && 7z a -y "../$ASSET" ./* >/dev/null)
           echo "ASSET=$ASSET" >> "$GITHUB_ENV"
 
       - name: Resolve release tag
@@ -238,11 +176,12 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         shell: bash
         run: |
-          gh release upload "${{ steps.tag.outputs.value }}" "$ASSET" --clobber --repo "${{ github.repository }}"
+          set -e
+          sha256sum "$ASSET" > "$ASSET.sha256"
+          gh release upload "${{ steps.tag.outputs.value }}" "$ASSET" "$ASSET.sha256" --clobber --repo "${{ github.repository }}"
 
   # Triastasis desktop app (Tauri). Small, backend-agnostic installers that
   # the install/ scripts fetch by these stable, version-less names:
-  #   triastasis-linux-x86_64.AppImage / triastasis-linux-amd64.deb
   #   triastasis-windows-x64-setup.exe
   studio:
     name: ${{ matrix.os }} · Triastasis app
@@ -251,7 +190,6 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { os: linux,   runner: ubuntu-22.04 }
           - { os: windows, runner: windows-2022 }
 
     steps:
@@ -270,14 +208,6 @@ jobs:
         with:
           workspaces: app/src-tauri
 
-      # Tauri v2 Linux system dependencies (webkit2gtk 4.1 stack).
-      - name: Linux system deps
-        if: matrix.os == 'linux'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.1-dev libjavascriptcoregtk-4.1-dev \
-            libsoup-3.0-dev libgtk-3-dev librsvg2-dev patchelf libappindicator3-dev file
-
       - name: Build Triastasis
         working-directory: app
         run: |
@@ -293,39 +223,6 @@ jobs:
           else
             echo "value=${{ inputs.release_tag }}" >> "$GITHUB_OUTPUT"
           fi
-
-      - name: Package & upload (Linux)
-        if: matrix.os == 'linux'
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        shell: bash
-        run: |
-          set -e
-          base=app/src-tauri/target/release/bundle
-          appimage=$(find "$base/appimage" -name '*.AppImage' | head -1)
-          deb=$(find "$base/deb" -name '*.deb' | head -1)
-          cp "$appimage" triastasis-linux-x86_64.AppImage
-          cp "$deb" triastasis-linux-amd64.deb
-          # Portable, no-install tarball: the raw binary + a portable.dat marker
-          # (which makes the app keep config/data next to itself). Relies on the
-          # system webkit2gtk-4.1, like the .deb.
-          rm -rf portable && mkdir -p portable
-          cp app/src-tauri/target/release/triastasis portable/
-          cp install/portable-readme.txt portable/README.txt
-          cp LICENSE portable/LICENSE.txt
-          cp THIRD_PARTY_NOTICES.md portable/
-          mkdir -p portable/licenses
-          cp app/node_modules/three/LICENSE portable/licenses/three-LICENSE.txt
-          cp app/node_modules/@tauri-apps/api/LICENSE_MIT portable/licenses/Tauri-LICENSE-MIT.txt
-          cp app/node_modules/@tauri-apps/api/LICENSE_APACHE-2.0 portable/licenses/Tauri-LICENSE-APACHE-2.0.txt
-          cp app/public/fonts/LICENSE.txt portable/licenses/Inter-LICENSE.txt
-          cp app/public/icons/LICENSE-lucide.txt portable/licenses/Lucide-LICENSE.txt
-          : > portable/portable.dat
-          tar -C portable -czf triastasis-linux-x86_64-portable.tar.gz .
-          gh release upload "${{ steps.tag.outputs.value }}" \
-            triastasis-linux-x86_64.AppImage triastasis-linux-amd64.deb \
-            triastasis-linux-x86_64-portable.tar.gz \
-            --clobber --repo "${{ github.repository }}"
 
       - name: Package & upload (Windows)
         if: matrix.os == 'windows'
@@ -356,6 +253,9 @@ jobs:
           cp app/public/icons/LICENSE-lucide.txt portable/licenses/Lucide-LICENSE.txt
           : > portable/portable.dat
           (cd portable && 7z a -y ../triastasis-windows-x64-portable.zip ./* >/dev/null)
+          sha256sum triastasis-windows-x64-setup.exe > triastasis-windows-x64-setup.exe.sha256
+          sha256sum triastasis-windows-x64-portable.zip > triastasis-windows-x64-portable.zip.sha256
           gh release upload "${{ steps.tag.outputs.value }}" \
-            triastasis-windows-x64-setup.exe triastasis-windows-x64-portable.zip \
+            triastasis-windows-x64-setup.exe triastasis-windows-x64-setup.exe.sha256 \
+            triastasis-windows-x64-portable.zip triastasis-windows-x64-portable.zip.sha256 \
             --clobber --repo "${{ github.repository }}"
