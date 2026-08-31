@@ -201,6 +201,17 @@ fn import_generation_manifest(path: String) -> Result<manifest::ImportedGenerati
     manifest::import_generation_manifest_impl(&path)
 }
 
+#[tauri::command]
+async fn discover_generation_manifests(
+    root: String,
+) -> Result<manifest::ManifestDiscovery, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        manifest::discover_generation_manifests_impl(&root)
+    })
+    .await
+    .map_err(|e| format!("manifest discovery task failed: {e}"))?
+}
+
 /// Write a manifest beside its generation. The frontend sends the structured
 /// manifest with blank hashes; the writer fills them from existing files.
 /// `fileName` pins the manifest filename (resume flows reuse the same file).
@@ -586,6 +597,7 @@ fn main() {
             app_version,
             read_generation_manifest,
             import_generation_manifest,
+            discover_generation_manifests,
             write_generation_manifest,
             read_manifest_asset,
             remove_output_file,
@@ -620,7 +632,9 @@ fn main() {
                         eprintln!("[studio] server autostart failed: {e}");
                     }
                     let automation_state = app.state::<AutomationState>();
-                    if let Err(e) = automation::start(&cfg, automation_state.inner()) {
+                    if let Err(e) =
+                        automation::start(&cfg, automation_state.inner(), Some(app.handle().clone()))
+                    {
                         eprintln!("[studio] automation API failed: {e}");
                     }
                 }

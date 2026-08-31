@@ -255,6 +255,65 @@ export async function automationJobFiles(
   return { glb, input };
 }
 
+export interface AutomationImportFailure {
+  path: string;
+  error: string;
+}
+
+export interface AutomationImportRequest {
+  id: string;
+  statusUrl: string;
+  sourcePath: string;
+  status: "pending" | "running" | "completed";
+  submittedAt: number;
+  manifestPaths: string[];
+  warnings: string[];
+  imported: number;
+  skipped: number;
+  failures: AutomationImportFailure[];
+}
+
+export interface AutomationImportCompletion {
+  imported: number;
+  skipped: number;
+  failures: AutomationImportFailure[];
+}
+
+/** Import requests submitted through the loopback automation API. */
+export async function automationImportRequests(apiUrl: string): Promise<AutomationImportRequest[]> {
+  const response = await fetch(`${apiUrl}/imports`);
+  if (!response.ok) throw new Error(`Automation imports request failed (${response.status})`);
+  const payload = await response.json() as { imports?: AutomationImportRequest[] };
+  return Array.isArray(payload.imports) ? payload.imports : [];
+}
+
+/** Atomically claim a pending import or resume one left running after a UI failure. */
+export async function claimAutomationImport(
+  apiUrl: string,
+  id: string,
+): Promise<AutomationImportRequest> {
+  const response = await fetch(`${apiUrl}/imports/${encodeURIComponent(id)}/claim`, {
+    method: "POST",
+  });
+  if (!response.ok) throw new Error(`Could not claim automation import (${response.status})`);
+  return response.json() as Promise<AutomationImportRequest>;
+}
+
+/** Publish exact per-manifest results so automation clients can await completion. */
+export async function completeAutomationImport(
+  apiUrl: string,
+  id: string,
+  completion: AutomationImportCompletion,
+): Promise<AutomationImportRequest> {
+  const response = await fetch(`${apiUrl}/imports/${encodeURIComponent(id)}/complete`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(completion),
+  });
+  if (!response.ok) throw new Error(`Could not complete automation import (${response.status})`);
+  return response.json() as Promise<AutomationImportRequest>;
+}
+
 // ---- Triastasis generation manifests ----
 
 export interface ImportedGeneration {
@@ -262,6 +321,17 @@ export interface ImportedGeneration {
   manifest: GenerationManifest;
   imageBytes: number[];
   glbBytes: number[];
+}
+
+export interface ManifestDiscovery {
+  root: string;
+  paths: string[];
+  warnings: string[];
+}
+
+/** Recursively find current Triastasis manifests without following directory links. */
+export function discoverGenerationManifests(root: string): Promise<ManifestDiscovery> {
+  return invoke<ManifestDiscovery>("discover_generation_manifests", { root });
 }
 
 /** Validate a manifest and report issues with its referenced files. */

@@ -1,11 +1,14 @@
 use reqwest::blocking::Client;
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::collections::{HashMap, VecDeque};
-use std::io::{Cursor, Read};
+use std::io::{Cursor, Read, Write};
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use tauri::Emitter;
 use tiny_http::{Header, Method, Request, Response, Server, StatusCode};
 
 use crate::config::{self, Config};
@@ -13,6 +16,7 @@ use crate::config::{self, Config};
 const MAX_REQUEST_BYTES: usize = 64 * 1024 * 1024;
 const PLANE_COLLAPSE_RATIO: f64 = 0.05;
 static JOB_COUNTER: AtomicU64 = AtomicU64::new(1);
+static IMPORT_COUNTER: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -52,6 +56,50 @@ enum JobStatus {
     Succeeded,
     Failed,
     Cancelled,
+}
+
+#[derive(Clone, Copy, PartialEq, Serialize, Debug)]
+#[serde(rename_all = "lowercase")]
+enum ImportRequestStatus {
+    Pending,
+    Running,
+    Completed,
+}
+
+#[derive(Clone, Serialize, Deserialize, Debug)]
+#[serde(rename_all = "camelCase")]
+struct ImportFailure {
+    path: String,
+    error: String,
+}
+
+#[derive(Clone, Serialize, Debug)]
+#[serde(rename_all = "camelCase")]
+struct ImportRequest {
+    id: String,
+    status_url: String,
+    source_path: String,
+    status: ImportRequestStatus,
+    submitted_at: u64,
+    manifest_paths: Vec<String>,
+    warnings: Vec<String>,
+    imported: usize,
+    skipped: usize,
+    failures: Vec<ImportFailure>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct SubmitImportRequest {
+    source_path: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct CompleteImportRequest {
+    imported: usize,
+    skipped: usize,
+    failures: Vec<ImportFailure>,
 }
 
 #[derive(Clone, Serialize, Deserialize, Debug)]
@@ -566,6 +614,30 @@ struct JobView {
     progress: JobProgressView,
 }
 
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ExportJobRequest {
+    destination_path: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ExportedFile {
+    role: String,
+    path: String,
+    bytes: u64,
+    sha256: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ExportJobResponse {
+    job_id: String,
+    destination_path: String,
+    manifest_path: String,
+    files: Vec<ExportedFile>,
+}
+
 struct Job {
     id: String,
     status: JobStatus,
@@ -904,6 +976,7 @@ impl Default for AdmissionState {
 #[derive(Default)]
 struct JobQueue {
     data: Mutex<QueueData>,
+    imports: Mutex<HashMap<String, ImportRequest>>,
     changed: Condvar,
     admission: Mutex<AdmissionState>,
     /// Last persistence failure. While latched, durability cannot be
@@ -1667,6 +1740,402 @@ fn get_job(request: Request, queue: &JobQueue, id: &str, base_url: &str) {
     }
 }
 
+const MAX_EXPORT_REQUEST_BYTES: usize = 64 * 1024;
+
+fn sha256_file(path: &Path) -> Result<(u64, String), String> {
+    let mut file =
+        std::fs::File::open(path).map_err(|e| format!("could not open {}: {e}", path.display()))?;
+    let mut hasher = Sha256::new();
+    let mut total = 0u64;
+    let mut buffer = [0u8; 1024 * 1024];
+    loop {
+        let count = file
+            .read(&mut buffer)
+            .map_err(|e| format!("could not read {}: {e}", path.display()))?;
+        if count == 0 {
+            break;
+        }
+        hasher.update(&buffer[..count]);
+        total += count as u64;
+    }
+    Ok((total, format!("{:x}", hasher.finalize())))
+}
+
+fn copy_file_verified(
+    source: &Path,
+    destination: &Path,
+    role: &str,
+) -> Result<ExportedFile, String> {
+    let source_before = sha256_file(source)?;
+    let mut reader = std::fs::File::open(source)
+        .map_err(|e| format!("could not open source {}: {e}", source.display()))?;
+    let mut writer = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(destination)
+        .map_err(|e| format!("could not create {}: {e}", destination.display()))?;
+    std::io::copy(&mut reader, &mut writer)
+        .map_err(|e| format!("could not copy {}: {e}", source.display()))?;
+    writer
+        .sync_all()
+        .map_err(|e| format!("could not flush {}: {e}", destination.display()))?;
+    drop(writer);
+
+    let source_after = sha256_file(source)?;
+    let copied = sha256_file(destination)?;
+    if source_before != source_after {
+        return Err(format!(
+            "source changed while it was being exported: {}",
+            source.display()
+        ));
+    }
+    if source_before != copied {
+        return Err(format!(
+            "hash verification failed after copying {}",
+            source.display()
+        ));
+    }
+    Ok(ExportedFile {
+        role: role.to_string(),
+        path: destination
+            .file_name()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .into_owned(),
+        bytes: copied.0,
+        sha256: copied.1,
+    })
+}
+
+fn recorded_file(path: &Path, role: &str) -> Result<ExportedFile, String> {
+    let (bytes, sha256) = sha256_file(path)?;
+    Ok(ExportedFile {
+        role: role.to_string(),
+        path: path
+            .file_name()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .into_owned(),
+        bytes,
+        sha256,
+    })
+}
+
+fn cleanup_export_stage(stage: &Path, source_name: &str) {
+    let manifest_temp = format!("asset-static.triastasis.json.tmp-{}", std::process::id());
+    for name in [
+        source_name,
+        "asset-static.glb",
+        "job.json",
+        "asset-static.triastasis.json",
+        &manifest_temp,
+    ] {
+        let path = stage.join(name);
+        if path
+            .symlink_metadata()
+            .map(|metadata| metadata.file_type().is_file())
+            .unwrap_or(false)
+        {
+            let _ = std::fs::remove_file(path);
+        }
+    }
+    // Refuse recursive cleanup. If anything unexpected appeared in this
+    // private staging directory, leave it for inspection instead of risking
+    // deletion through a raced junction or symlink.
+    let _ = std::fs::remove_dir(stage);
+}
+
+fn export_source_name(source_name: &str) -> String {
+    let extension = Path::new(source_name)
+        .extension()
+        .and_then(|value| value.to_str())
+        .filter(|value| {
+            !value.is_empty()
+                && value.len() <= 8
+                && value.chars().all(|ch| ch.is_ascii_alphanumeric())
+        })
+        .map(str::to_ascii_lowercase)
+        .unwrap_or_else(|| "img".to_string());
+    format!("source.{extension}")
+}
+
+fn generation_manifest(
+    job: &DurableJob,
+    source_name: &str,
+    model_name: &str,
+) -> crate::manifest::GenerationManifest {
+    use crate::manifest::{
+        AutoU32, GenerationManifest, ManifestDimensions, ManifestFileRef, ManifestQualityWarning,
+        TextureEncodingChoice,
+    };
+    let auto = |value: Option<u32>| value.map(AutoU32::Value).unwrap_or(AutoU32::Auto);
+    let texture_encoding = match job.params.texture_encoding.as_deref() {
+        Some("webp") => TextureEncodingChoice::Webp,
+        Some("png") => TextureEncodingChoice::Png,
+        _ => TextureEncodingChoice::Auto,
+    };
+    let quality_warning = job
+        .quality_warning
+        .as_ref()
+        .map(|warning| ManifestQualityWarning {
+            code: warning.code.clone(),
+            message: warning.message.clone(),
+            thin_ratio: warning.thin_ratio,
+            threshold: warning.threshold,
+            dimensions: ManifestDimensions {
+                x: warning.dimensions.x,
+                y: warning.dimensions.y,
+                z: warning.dimensions.z,
+            },
+        });
+    GenerationManifest {
+        status: "completed".to_string(),
+        label: Path::new(&job.source_name)
+            .file_stem()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .into_owned(),
+        source_image: Some(source_name.to_string()),
+        model: Some(model_name.to_string()),
+        resolution: job.params.resolution,
+        seed: job.params.seed,
+        bg_removal: job.params.bg_removal.clone(),
+        uv: job.params.uv.clone(),
+        texture: job.params.texture.unwrap_or(true),
+        target_faces: auto(job.params.target_faces),
+        atlas_size: auto(job.params.atlas_size),
+        texture_resolution: auto(job.params.texture_resolution.map(u32::from)),
+        remesh_band: auto(job.params.remesh_band.map(u32::from)),
+        texture_encoding,
+        job_id: Some(job.id.clone()),
+        duration_seconds: job
+            .started_at
+            .zip(job.finished_at)
+            .map(|(started, finished)| finished.saturating_sub(started) as f64 / 1000.0),
+        quality_warning,
+        files: vec![
+            ManifestFileRef {
+                role: "sourceImage".to_string(),
+                path: source_name.to_string(),
+                sha256: String::new(),
+            },
+            ManifestFileRef {
+                role: "glb".to_string(),
+                path: model_name.to_string(),
+                sha256: String::new(),
+            },
+        ],
+        ..GenerationManifest::default()
+    }
+}
+
+fn write_job_manifest(job: &DurableJob) -> Result<PathBuf, String> {
+    let source = Path::new(&job.source_image_path);
+    let model = job
+        .output_path
+        .as_deref()
+        .map(Path::new)
+        .ok_or("completed job has no model path")?;
+    let dir = model
+        .parent()
+        .ok_or("completed model has no parent directory")?;
+    if source.parent() != Some(dir) {
+        return Err("completed source and model are not in the same directory".to_string());
+    }
+    let source_name = source
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or("completed source has no valid file name")?;
+    let model_name = model
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or("completed model has no valid file name")?;
+    let manifest = generation_manifest(job, source_name, model_name);
+    crate::manifest::write_generation_manifest_impl(dir, manifest, None)
+}
+
+fn export_job_package(
+    job: DurableJob,
+    destination: &Path,
+) -> Result<ExportJobResponse, (u16, String)> {
+    if job.status != JobStatus::Succeeded {
+        return Err((409, "only succeeded jobs can be exported".to_string()));
+    }
+    if !destination.is_absolute() {
+        return Err((400, "destinationPath must be absolute".to_string()));
+    }
+    if destination.file_name().is_none() {
+        return Err((
+            400,
+            "destinationPath must name a new package directory".to_string(),
+        ));
+    }
+    match std::fs::symlink_metadata(destination) {
+        Ok(_) => {
+            return Err((
+                409,
+                "destinationPath already exists; exports never overwrite".to_string(),
+            ))
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err((500, format!("could not inspect destinationPath: {error}"))),
+    }
+    let parent = destination
+        .parent()
+        .ok_or_else(|| (400, "destinationPath has no parent directory".to_string()))?;
+    let parent_metadata = std::fs::metadata(parent)
+        .map_err(|e| (400, format!("destination parent is not accessible: {e}")))?;
+    if !parent_metadata.is_dir() {
+        return Err((400, "destination parent is not a directory".to_string()));
+    }
+
+    let model_source = job
+        .output_path
+        .as_deref()
+        .map(PathBuf::from)
+        .ok_or_else(|| (410, "saved model is no longer available".to_string()))?;
+    let image_source = PathBuf::from(&job.source_image_path);
+    if !model_source.is_file() {
+        return Err((410, "saved model is no longer available".to_string()));
+    }
+    if !image_source.is_file() {
+        return Err((410, "source image is no longer available".to_string()));
+    }
+
+    let stage_name = format!(
+        ".triastasis-export-{}-{}",
+        std::process::id(),
+        JOB_COUNTER.fetch_add(1, Ordering::Relaxed)
+    );
+    let stage = parent.join(stage_name);
+    std::fs::create_dir(&stage).map_err(|e| {
+        (
+            500,
+            format!("could not create export staging directory: {e}"),
+        )
+    })?;
+
+    let source_name = export_source_name(&job.source_name);
+    let result = (|| -> Result<ExportJobResponse, String> {
+        let source_target = stage.join(&source_name);
+        let model_target = stage.join("asset-static.glb");
+        let mut files = vec![
+            copy_file_verified(&image_source, &source_target, "sourceImage")?,
+            copy_file_verified(&model_source, &model_target, "glb")?,
+        ];
+
+        let mut exported_job = job.clone();
+        exported_job.source_image_path = source_name.clone();
+        exported_job.output_path = Some("asset-static.glb".to_string());
+        let job_target = stage.join("job.json");
+        let job_body = serde_json::to_vec_pretty(&exported_job)
+            .map_err(|e| format!("could not encode job record: {e}"))?;
+        let mut job_file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&job_target)
+            .map_err(|e| format!("could not create job.json: {e}"))?;
+        job_file
+            .write_all(&job_body)
+            .map_err(|e| format!("could not write job.json: {e}"))?;
+        job_file
+            .sync_all()
+            .map_err(|e| format!("could not flush job.json: {e}"))?;
+        drop(job_file);
+        files.push(recorded_file(&job_target, "job")?);
+
+        let manifest = generation_manifest(&job, &source_name, "asset-static.glb");
+        let manifest_target = crate::manifest::write_generation_manifest_impl(
+            &stage,
+            manifest,
+            Some("asset-static.triastasis.json"),
+        )?;
+        let preview =
+            crate::manifest::read_generation_manifest_impl(&manifest_target.to_string_lossy())?;
+        if !preview.issues.is_empty() {
+            return Err(format!(
+                "exported manifest validation failed: {}",
+                serde_json::to_string(&preview.issues).unwrap_or_default()
+            ));
+        }
+        files.push(recorded_file(&manifest_target, "manifest")?);
+
+        if destination.exists() {
+            return Err(
+                "destinationPath appeared during export; refusing to overwrite".to_string(),
+            );
+        }
+        std::fs::rename(&stage, destination)
+            .map_err(|e| format!("could not publish completed export package: {e}"))?;
+        let destination_path = std::fs::canonicalize(destination)
+            .unwrap_or_else(|_| destination.to_path_buf())
+            .to_string_lossy()
+            .into_owned();
+        Ok(ExportJobResponse {
+            job_id: job.id,
+            manifest_path: destination
+                .join("asset-static.triastasis.json")
+                .to_string_lossy()
+                .into_owned(),
+            destination_path,
+            files,
+        })
+    })();
+
+    if result.is_err() && stage.exists() {
+        cleanup_export_stage(&stage, &source_name);
+    }
+    result.map_err(|error| (500, error))
+}
+
+fn export_job(mut request: Request, queue: &JobQueue, id: &str) {
+    if request.body_length().unwrap_or(0) > MAX_EXPORT_REQUEST_BYTES {
+        let _ = request.respond(error_response(
+            413,
+            "export request exceeds the 64 KB limit",
+        ));
+        return;
+    }
+    let mut body = Vec::new();
+    if request
+        .as_reader()
+        .take((MAX_EXPORT_REQUEST_BYTES + 1) as u64)
+        .read_to_end(&mut body)
+        .is_err()
+        || body.len() > MAX_EXPORT_REQUEST_BYTES
+    {
+        let _ = request.respond(error_response(400, "could not read export request"));
+        return;
+    }
+    let input: ExportJobRequest = match serde_json::from_slice(&body) {
+        Ok(value) => value,
+        Err(error) => {
+            let _ = request.respond(error_response(
+                400,
+                &format!("invalid export request JSON: {error}"),
+            ));
+            return;
+        }
+    };
+    let job = {
+        let data = queue.data.lock().unwrap();
+        data.jobs.get(id).map(Job::to_durable)
+    };
+    let Some(job) = job else {
+        let _ = request.respond(error_response(404, "job not found"));
+        return;
+    };
+    match export_job_package(job, Path::new(&input.destination_path)) {
+        Ok(exported) => {
+            let body = serde_json::to_string(&exported).unwrap();
+            let _ = request.respond(json_response(201, body));
+        }
+        Err((status, error)) => {
+            let _ = request.respond(error_response(status, &error));
+        }
+    }
+}
+
 fn get_image(request: Request, queue: &JobQueue, id: &str) {
     let result = {
         let data = queue.data.lock().unwrap();
@@ -1803,7 +2272,218 @@ fn cancel_job(request: Request, queue: &JobQueue, id: &str, base_url: &str) {
     let _ = request.respond(json_response(200, body));
 }
 
-fn handle_request(request: Request, queue: &Arc<JobQueue>, info: &AutomationInfo, base_url: &str) {
+const MAX_IMPORT_REQUEST_BYTES: usize = 64 * 1024;
+const MAX_IMPORT_COMPLETION_BYTES: usize = 4 * 1024 * 1024;
+const MAX_IMPORT_REQUESTS: usize = 256;
+
+fn prepare_import_request(
+    source_path: &str,
+    base_url: &str,
+) -> Result<ImportRequest, (u16, String)> {
+    let discovery = crate::manifest::discover_generation_manifests_impl(source_path)
+        .map_err(|error| (400, error))?;
+    if discovery.paths.is_empty() {
+        return Err((
+            422,
+            "no .triastasis.json files were found at or below sourcePath".to_string(),
+        ));
+    }
+    let id = format!(
+        "import-{}-{}",
+        now_ms(),
+        IMPORT_COUNTER.fetch_add(1, Ordering::Relaxed)
+    );
+    Ok(ImportRequest {
+        status_url: format!("{base_url}/imports/{id}"),
+        id,
+        source_path: discovery.root,
+        status: ImportRequestStatus::Pending,
+        submitted_at: now_ms(),
+        manifest_paths: discovery.paths,
+        warnings: discovery.warnings,
+        imported: 0,
+        skipped: 0,
+        failures: Vec::new(),
+    })
+}
+
+fn apply_import_completion(
+    import: &mut ImportRequest,
+    completion: CompleteImportRequest,
+) -> Result<(), String> {
+    if import.status != ImportRequestStatus::Running {
+        return Err("import request is not running".to_string());
+    }
+    let accounted = completion
+        .imported
+        .saturating_add(completion.skipped)
+        .saturating_add(completion.failures.len());
+    if accounted != import.manifest_paths.len() {
+        return Err(
+            "import completion counts must account for every discovered manifest".to_string(),
+        );
+    }
+    import.imported = completion.imported;
+    import.skipped = completion.skipped;
+    import.failures = completion.failures;
+    import.status = ImportRequestStatus::Completed;
+    Ok(())
+}
+
+fn submit_import(
+    mut request: Request,
+    queue: &JobQueue,
+    base_url: &str,
+    app: Option<&tauri::AppHandle>,
+) {
+    if request.body_length().unwrap_or(0) > MAX_IMPORT_REQUEST_BYTES {
+        let _ = request.respond(error_response(
+            413,
+            "import request exceeds the 64 KB limit",
+        ));
+        return;
+    }
+    let mut body = Vec::new();
+    if request
+        .as_reader()
+        .take((MAX_IMPORT_REQUEST_BYTES + 1) as u64)
+        .read_to_end(&mut body)
+        .is_err()
+        || body.len() > MAX_IMPORT_REQUEST_BYTES
+    {
+        let _ = request.respond(error_response(400, "could not read import request"));
+        return;
+    }
+    let input: SubmitImportRequest = match serde_json::from_slice(&body) {
+        Ok(value) => value,
+        Err(error) => {
+            let _ = request.respond(error_response(
+                400,
+                &format!("invalid import request JSON: {error}"),
+            ));
+            return;
+        }
+    };
+    let import = match prepare_import_request(&input.source_path, base_url) {
+        Ok(import) => import,
+        Err((status, error)) => {
+            let _ = request.respond(error_response(status, &error));
+            return;
+        }
+    };
+    let id = import.id.clone();
+    {
+        let mut imports = queue.imports.lock().unwrap();
+        if imports.len() >= MAX_IMPORT_REQUESTS {
+            let _ = request.respond(error_response(
+                429,
+                "too many import requests are retained; restart Triastasis to clear completed request history",
+            ));
+            return;
+        }
+        imports.insert(id.clone(), import.clone());
+    }
+    if let Some(app) = app {
+        let _ = app.emit("automation-import-requested", id);
+    }
+    let body = serde_json::to_string(&import).unwrap();
+    let _ = request.respond(json_response(202, body));
+}
+
+fn list_imports(request: Request, queue: &JobQueue) {
+    let mut imports = queue
+        .imports
+        .lock()
+        .unwrap()
+        .values()
+        .cloned()
+        .collect::<Vec<_>>();
+    imports.sort_by_key(|import| import.submitted_at);
+    let body = serde_json::json!({ "imports": imports });
+    let _ = request.respond(json_response(200, body.to_string()));
+}
+
+fn get_import(request: Request, queue: &JobQueue, id: &str) {
+    let import = queue.imports.lock().unwrap().get(id).cloned();
+    match import {
+        Some(import) => {
+            let _ = request.respond(json_response(200, serde_json::to_string(&import).unwrap()));
+        }
+        None => {
+            let _ = request.respond(error_response(404, "import request not found"));
+        }
+    }
+}
+
+fn claim_import(request: Request, queue: &JobQueue, id: &str) {
+    let mut imports = queue.imports.lock().unwrap();
+    let Some(import) = imports.get_mut(id) else {
+        let _ = request.respond(error_response(404, "import request not found"));
+        return;
+    };
+    if import.status == ImportRequestStatus::Completed {
+        let _ = request.respond(error_response(409, "import request is already completed"));
+        return;
+    }
+    import.status = ImportRequestStatus::Running;
+    let body = serde_json::to_string(import).unwrap();
+    let _ = request.respond(json_response(200, body));
+}
+
+fn complete_import(mut request: Request, queue: &JobQueue, id: &str) {
+    if request.body_length().unwrap_or(0) > MAX_IMPORT_COMPLETION_BYTES {
+        let _ = request.respond(error_response(
+            413,
+            "import completion exceeds the 4 MB limit",
+        ));
+        return;
+    }
+    let mut body = Vec::new();
+    if request
+        .as_reader()
+        .take((MAX_IMPORT_COMPLETION_BYTES + 1) as u64)
+        .read_to_end(&mut body)
+        .is_err()
+        || body.len() > MAX_IMPORT_COMPLETION_BYTES
+    {
+        let _ = request.respond(error_response(400, "could not read import completion"));
+        return;
+    }
+    let completion: CompleteImportRequest = match serde_json::from_slice(&body) {
+        Ok(value) => value,
+        Err(error) => {
+            let _ = request.respond(error_response(
+                400,
+                &format!("invalid import completion JSON: {error}"),
+            ));
+            return;
+        }
+    };
+    let mut imports = queue.imports.lock().unwrap();
+    let Some(import) = imports.get_mut(id) else {
+        let _ = request.respond(error_response(404, "import request not found"));
+        return;
+    };
+    if let Err(error) = apply_import_completion(import, completion) {
+        let status = if error == "import request is not running" {
+            409
+        } else {
+            400
+        };
+        let _ = request.respond(error_response(status, &error));
+        return;
+    }
+    let body = serde_json::to_string(import).unwrap();
+    let _ = request.respond(json_response(200, body));
+}
+
+fn handle_request(
+    request: Request,
+    queue: &Arc<JobQueue>,
+    info: &AutomationInfo,
+    base_url: &str,
+    app: Option<&tauri::AppHandle>,
+) {
     if !request_origins_allowed(&request) {
         let _ = request.respond(error_response(
             403,
@@ -1838,7 +2518,7 @@ fn handle_request(request: Request, queue: &Arc<JobQueue>, info: &AutomationInfo
             "queue": { "queued": queued, "running": running, "total": total },
             "persistenceHealthy": degradation.is_none(),
             "persistenceError": degradation,
-            "endpoints": ["POST /jobs", "GET /jobs", "GET /jobs/{id}", "GET /jobs/{id}/model", "GET /jobs/{id}/image", "DELETE /jobs/{id}"]
+            "endpoints": ["POST /jobs", "GET /jobs", "GET /jobs/{id}", "GET /jobs/{id}/model", "GET /jobs/{id}/image", "POST /jobs/{id}/export", "DELETE /jobs/{id}", "POST /imports", "GET /imports", "GET /imports/{id}", "POST /imports/{id}/claim", "POST /imports/{id}/complete"]
         });
         let _ = request.respond(json_response(200, body.to_string()));
         return;
@@ -1849,6 +2529,14 @@ fn handle_request(request: Request, queue: &Arc<JobQueue>, info: &AutomationInfo
     }
     if method == Method::Get && path == "/jobs" {
         list_jobs(request, queue, base_url);
+        return;
+    }
+    if method == Method::Post && path == "/imports" {
+        submit_import(request, queue, base_url, app);
+        return;
+    }
+    if method == Method::Get && path == "/imports" {
+        list_imports(request, queue);
         return;
     }
 
@@ -1867,8 +2555,27 @@ fn handle_request(request: Request, queue: &Arc<JobQueue>, info: &AutomationInfo
             get_image(request, queue, id);
             return;
         }
+        if method == Method::Post && parts.len() == 3 && parts[2] == "export" {
+            export_job(request, queue, id);
+            return;
+        }
         if method == Method::Delete && parts.len() == 2 {
             cancel_job(request, queue, id, base_url);
+            return;
+        }
+    }
+    if parts.len() >= 2 && parts[0] == "imports" {
+        let id = parts[1];
+        if method == Method::Get && parts.len() == 2 {
+            get_import(request, queue, id);
+            return;
+        }
+        if method == Method::Post && parts.len() == 3 && parts[2] == "claim" {
+            claim_import(request, queue, id);
+            return;
+        }
+        if method == Method::Post && parts.len() == 3 && parts[2] == "complete" {
+            complete_import(request, queue, id);
             return;
         }
     }
@@ -2137,38 +2844,51 @@ fn worker_loop(queue: Arc<JobQueue>, stop: Arc<AtomicBool>) {
             ))
         })();
 
-        let mut data = queue.data.lock().unwrap();
-        if let Some(job) = data.jobs.get_mut(&id) {
-            // Source bytes are no longer needed once the copy was persisted.
-            job.source_image.clear();
-            job.finished_at = Some(now_ms());
-            match result {
-                Ok((path, source_path, quality_warning)) => {
-                    job.status = JobStatus::Succeeded;
-                    job.output_path = Some(path);
-                    job.source_path = Some(source_path);
-                    job.quality_warning = quality_warning;
-                    job.progress.percent = Some(100.0);
-                    job.progress.stage_id = Some("complete".to_string());
-                    job.progress.stage_label = Some("Model ready".to_string());
-                    job.progress.updated_at = Some(now_secs());
+        let completed_job = {
+            let mut data = queue.data.lock().unwrap();
+            let mut completed_job = None;
+            if let Some(job) = data.jobs.get_mut(&id) {
+                // Source bytes are no longer needed once the copy was persisted.
+                job.source_image.clear();
+                job.finished_at = Some(now_ms());
+                match result {
+                    Ok((path, source_path, quality_warning)) => {
+                        job.status = JobStatus::Succeeded;
+                        job.output_path = Some(path);
+                        job.source_path = Some(source_path);
+                        job.quality_warning = quality_warning;
+                        job.progress.percent = Some(100.0);
+                        job.progress.stage_id = Some("complete".to_string());
+                        job.progress.stage_label = Some("Model ready".to_string());
+                        job.progress.updated_at = Some(now_secs());
+                        completed_job = Some(job.to_durable());
+                    }
+                    Err(error) => {
+                        job.status = JobStatus::Failed;
+                        job.error = Some(error);
+                        job.progress.updated_at = Some(now_secs());
+                    }
                 }
-                Err(error) => {
-                    job.status = JobStatus::Failed;
-                    job.error = Some(error);
-                    job.progress.updated_at = Some(now_secs());
+                if let Err(terminal_error) = persist_locked(&data) {
+                    queue.record_persistence_failure(
+                        &format!("terminal transition of job {id}"),
+                        &terminal_error,
+                    );
+                } else {
+                    // A successful save proves durability again; the worker's
+                    // degraded retry loop also clears the latch, but do it here so
+                    // capabilities reflect recovery immediately.
+                    queue.record_persistence_success();
                 }
             }
-            if let Err(terminal_error) = persist_locked(&data) {
-                queue.record_persistence_failure(
-                    &format!("terminal transition of job {id}"),
-                    &terminal_error,
+            completed_job
+        };
+        if let Some(job) = completed_job {
+            if let Err(error) = write_job_manifest(&job) {
+                eprintln!(
+                    "[triastasis] could not write generation manifest for {}: {error}",
+                    job.id
                 );
-            } else {
-                // A successful save proves durability again; the worker's
-                // degraded retry loop also clears the latch, but do it here so
-                // capabilities reflect recovery immediately.
-                queue.record_persistence_success();
             }
         }
     }
@@ -2293,7 +3013,11 @@ fn wait_for_orphan(client: &Client, id: &str) -> Result<(), String> {
     }
 }
 
-pub fn start(cfg: &Config, state: &AutomationState) -> Result<AutomationInfo, String> {
+pub fn start(
+    cfg: &Config,
+    state: &AutomationState,
+    app: Option<tauri::AppHandle>,
+) -> Result<AutomationInfo, String> {
     stop(state);
     let mut recovery = StartRecovery::new(state);
     let api_port = cfg.port.checked_add(1).ok_or("server port is too high")?;
@@ -2316,7 +3040,9 @@ pub fn start(cfg: &Config, state: &AutomationState) -> Result<AutomationInfo, St
     std::thread::spawn(move || {
         while !http_stop.load(Ordering::Relaxed) {
             match http_server.recv_timeout(Duration::from_millis(500)) {
-                Ok(Some(request)) => handle_request(request, &http_queue, &http_info, &base_url),
+                Ok(Some(request)) => {
+                    handle_request(request, &http_queue, &http_info, &base_url, app.as_ref())
+                }
                 Ok(None) => {}
                 Err(_) if http_stop.load(Ordering::Relaxed) => break,
                 Err(_) => {}
@@ -2447,6 +3173,180 @@ mod tests {
         glb.extend_from_slice(&0x4e4f534au32.to_le_bytes());
         glb.extend_from_slice(&json);
         glb
+    }
+
+    #[test]
+    fn export_creates_a_verified_portable_package_without_touching_sources() {
+        let root = std::env::temp_dir().join(format!(
+            "triastasis-export-test-{}-{}",
+            std::process::id(),
+            now_ms()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let source_path = root.join("durable-source.png");
+        let model_path = root.join("durable-model.glb");
+        let source_bytes = b"\x89PNG\r\n\x1a\nsource pixels";
+        let model_bytes = test_glb([1.0, 0.8, 0.4]);
+        std::fs::write(&source_path, source_bytes).unwrap();
+        std::fs::write(&model_path, &model_bytes).unwrap();
+
+        let mut saved = durable("export-me", JobStatus::Succeeded, 1000);
+        saved.started_at = Some(1200);
+        saved.finished_at = Some(3200);
+        saved.source_name = "Penguin Reference.PNG".to_string();
+        saved.source_image_path = source_path.to_string_lossy().into_owned();
+        saved.output_path = Some(model_path.to_string_lossy().into_owned());
+        let destination = root.join("penguin-package");
+
+        let exported = export_job_package(saved, &destination).unwrap();
+        assert_eq!(exported.job_id, "export-me");
+        assert_eq!(exported.files.len(), 4);
+        assert!(destination.join("source.png").is_file());
+        assert!(destination.join("asset-static.glb").is_file());
+        assert!(destination.join("job.json").is_file());
+        assert!(destination.join("asset-static.triastasis.json").is_file());
+
+        let preview = crate::manifest::read_generation_manifest_impl(
+            &destination
+                .join("asset-static.triastasis.json")
+                .to_string_lossy(),
+        )
+        .unwrap();
+        assert!(preview.issues.is_empty());
+        assert_eq!(preview.manifest.job_id.as_deref(), Some("export-me"));
+        assert_eq!(
+            std::fs::read(&source_path).unwrap(),
+            source_bytes,
+            "the durable source must remain unchanged"
+        );
+        assert_eq!(
+            std::fs::read(&model_path).unwrap(),
+            model_bytes,
+            "the durable model must remain unchanged"
+        );
+
+        let job_json: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(destination.join("job.json")).unwrap()).unwrap();
+        assert_eq!(job_json["sourceImagePath"], "source.png");
+        assert_eq!(job_json["outputPath"], "asset-static.glb");
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn export_refuses_to_overwrite_an_existing_destination() {
+        let root = std::env::temp_dir().join(format!(
+            "triastasis-export-collision-test-{}-{}",
+            std::process::id(),
+            now_ms()
+        ));
+        let destination = root.join("existing-package");
+        std::fs::create_dir_all(&destination).unwrap();
+        let marker = destination.join("keep.txt");
+        std::fs::write(&marker, b"do not replace").unwrap();
+        let saved = durable("export-me", JobStatus::Succeeded, 1000);
+
+        let error = export_job_package(saved, &destination).unwrap_err();
+        assert_eq!(error.0, 409);
+        assert!(error.1.contains("never overwrite"));
+        assert_eq!(std::fs::read(&marker).unwrap(), b"do not replace");
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn completed_job_manifest_is_written_beside_automation_artifacts() {
+        let root = std::env::temp_dir().join(format!(
+            "triastasis-job-manifest-test-{}-{}",
+            std::process::id(),
+            now_ms()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let source = root.join("automation_job-123_source.png");
+        let model = root.join("automation_job-123.glb");
+        std::fs::write(&source, b"\x89PNG\r\n\x1a\nsource pixels").unwrap();
+        std::fs::write(&model, test_glb([1.0, 0.8, 0.4])).unwrap();
+        let mut saved = durable("job-123", JobStatus::Succeeded, 1000);
+        saved.source_image_path = source.to_string_lossy().into_owned();
+        saved.output_path = Some(model.to_string_lossy().into_owned());
+
+        let manifest_path = write_job_manifest(&saved).unwrap();
+        assert_eq!(
+            manifest_path.file_name().unwrap(),
+            "automation_job-123.triastasis.json"
+        );
+        let preview =
+            crate::manifest::read_generation_manifest_impl(&manifest_path.to_string_lossy())
+                .unwrap();
+        assert!(preview.issues.is_empty());
+        assert_eq!(
+            preview.manifest.source_image.as_deref(),
+            Some("automation_job-123_source.png")
+        );
+        assert_eq!(
+            preview.manifest.model.as_deref(),
+            Some("automation_job-123.glb")
+        );
+        assert_eq!(preview.manifest.job_id.as_deref(), Some("job-123"));
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn import_request_discovers_nested_manifests_and_accounts_for_every_result() {
+        let root = std::env::temp_dir().join(format!(
+            "triastasis-import-request-test-{}-{}",
+            std::process::id(),
+            now_ms()
+        ));
+        let nested = root.join("nested");
+        std::fs::create_dir_all(&nested).unwrap();
+        std::fs::write(root.join("one.triastasis.json"), b"{}").unwrap();
+        std::fs::write(nested.join("two.triastasis.json"), b"{}").unwrap();
+        std::fs::write(nested.join("legacy.polyloom.json"), b"{}").unwrap();
+
+        let mut request =
+            prepare_import_request(&root.to_string_lossy(), "http://127.0.0.1:8082").unwrap();
+        assert_eq!(request.status, ImportRequestStatus::Pending);
+        assert_eq!(request.manifest_paths.len(), 2);
+        assert!(request
+            .status_url
+            .ends_with(&format!("/imports/{}", request.id)));
+
+        request.status = ImportRequestStatus::Running;
+        let incomplete = CompleteImportRequest {
+            imported: 1,
+            skipped: 0,
+            failures: Vec::new(),
+        };
+        assert!(apply_import_completion(&mut request, incomplete).is_err());
+        assert_eq!(request.status, ImportRequestStatus::Running);
+
+        let completion = CompleteImportRequest {
+            imported: 1,
+            skipped: 0,
+            failures: vec![ImportFailure {
+                path: request.manifest_paths[1].clone(),
+                error: "invalid manifest".to_string(),
+            }],
+        };
+        apply_import_completion(&mut request, completion).unwrap();
+        assert_eq!(request.status, ImportRequestStatus::Completed);
+        assert_eq!(request.imported, 1);
+        assert_eq!(request.failures.len(), 1);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn import_request_refuses_a_tree_without_current_manifests() {
+        let root = std::env::temp_dir().join(format!(
+            "triastasis-empty-import-request-test-{}-{}",
+            std::process::id(),
+            now_ms()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("legacy.polyloom.json"), b"{}").unwrap();
+        let error =
+            prepare_import_request(&root.to_string_lossy(), "http://127.0.0.1:8082").unwrap_err();
+        assert_eq!(error.0, 422);
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]
@@ -3312,7 +4212,7 @@ mod tests {
             custom_models_dir: String::new(),
         };
 
-        let error = match start(&cfg, &state) {
+        let error = match start(&cfg, &state, None) {
             Ok(_) => panic!("an overflowing port must fail before binding"),
             Err(error) => error,
         };
@@ -3329,7 +4229,7 @@ mod tests {
             ..cfg
         };
 
-        assert!(start(&cfg, &state).is_err());
+        assert!(start(&cfg, &state, None).is_err());
         assert!(!state.maintenance.load(Ordering::Acquire));
         assert!(state.control.lock().unwrap().is_none());
     }

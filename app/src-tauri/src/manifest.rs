@@ -22,6 +22,16 @@ pub const MIN_SUPPORTED_MANIFEST_SCHEMA_VERSION: u32 = 1;
 
 pub const MANIFEST_EXTENSION: &str = "triastasis.json";
 pub const LEGACY_MANIFEST_EXTENSION: &str = "polyloom.json";
+const MAX_DISCOVERY_ENTRIES: usize = 250_000;
+const MAX_DISCOVERED_MANIFESTS: usize = 10_000;
+
+#[derive(Serialize, Clone, Debug, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct ManifestDiscovery {
+    pub root: String,
+    pub paths: Vec<String>,
+    pub warnings: Vec<String>,
+}
 
 /// The validation bounds shared with trellis-server, enforced when parsing.
 const TARGET_FACES_RANGE: (u32, u32) = (10_000, 1_000_000);
@@ -118,6 +128,106 @@ pub enum TextureEncodingChoice {
 
 fn is_manifest_name(name: &str) -> bool {
     name.ends_with(MANIFEST_EXTENSION) || name.ends_with(LEGACY_MANIFEST_EXTENSION)
+}
+
+fn is_current_manifest_name(name: &str) -> bool {
+    name.to_ascii_lowercase()
+        .ends_with(&format!(".{MANIFEST_EXTENSION}"))
+}
+
+/// Selects one current Triastasis manifest or recursively discovers manifests
+/// below a user-selected directory. Directory links are never followed, so
+/// traversal cannot escape the selected tree through a junction or symlink.
+/// Unreadable branches are reported while other branches continue.
+pub fn discover_generation_manifests_impl(root: &str) -> Result<ManifestDiscovery, String> {
+    let requested = Path::new(root);
+    if !requested.is_absolute() {
+        return Err("manifest search path must be absolute".to_string());
+    }
+    let canonical = std::fs::canonicalize(requested)
+        .map_err(|e| format!("could not resolve manifest search path: {e}"))?;
+    if canonical.is_file() {
+        let is_current = canonical
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(is_current_manifest_name);
+        if !is_current {
+            return Err("manifest search file is not a .triastasis.json manifest".to_string());
+        }
+        let path = canonical.to_string_lossy().into_owned();
+        return Ok(ManifestDiscovery {
+            root: path.clone(),
+            paths: vec![path],
+            warnings: Vec::new(),
+        });
+    }
+    if !canonical.is_dir() {
+        return Err("manifest search path is not a file or directory".to_string());
+    }
+
+    let mut paths = Vec::new();
+    let mut warnings = Vec::new();
+    let mut stack = vec![canonical.clone()];
+    let mut inspected = 0usize;
+    while let Some(dir) = stack.pop() {
+        let entries = match std::fs::read_dir(&dir) {
+            Ok(entries) => entries,
+            Err(error) => {
+                warnings.push(format!("could not read {}: {error}", dir.display()));
+                continue;
+            }
+        };
+        let mut children = entries
+            .flatten()
+            .map(|entry| entry.path())
+            .collect::<Vec<_>>();
+        children.sort_by_key(|path| path.to_string_lossy().to_ascii_lowercase());
+        for path in children.into_iter().rev() {
+            inspected += 1;
+            if inspected > MAX_DISCOVERY_ENTRIES {
+                warnings.push(format!(
+                    "stopped after inspecting {MAX_DISCOVERY_ENTRIES} filesystem entries"
+                ));
+                stack.clear();
+                break;
+            }
+            let metadata = match std::fs::symlink_metadata(&path) {
+                Ok(metadata) => metadata,
+                Err(error) => {
+                    warnings.push(format!("could not inspect {}: {error}", path.display()));
+                    continue;
+                }
+            };
+            if metadata.file_type().is_symlink() {
+                continue;
+            }
+            if metadata.is_dir() {
+                stack.push(path);
+                continue;
+            }
+            if metadata.is_file()
+                && path
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(is_current_manifest_name)
+            {
+                paths.push(path.to_string_lossy().into_owned());
+                if paths.len() >= MAX_DISCOVERED_MANIFESTS {
+                    warnings.push(format!(
+                        "stopped after finding {MAX_DISCOVERED_MANIFESTS} manifests"
+                    ));
+                    stack.clear();
+                    break;
+                }
+            }
+        }
+    }
+    paths.sort_by_key(|path| path.to_ascii_lowercase());
+    Ok(ManifestDiscovery {
+        root: canonical.to_string_lossy().into_owned(),
+        paths,
+        warnings,
+    })
 }
 
 /// Refusal thresholds. A manifest is small structured data; artifacts are
@@ -1039,6 +1149,65 @@ mod tests {
             ],
             ..GenerationManifest::default()
         }
+    }
+
+    #[test]
+    fn recursive_discovery_finds_only_current_manifests_in_stable_order() {
+        let temp = TempDir::new("recursive-discovery");
+        let nested = temp.0.join("zeta").join("deeper");
+        let alpha = temp.0.join("alpha");
+        std::fs::create_dir_all(&nested).unwrap();
+        std::fs::create_dir_all(&alpha).unwrap();
+        std::fs::write(temp.0.join("root.triastasis.json"), b"{}").unwrap();
+        std::fs::write(alpha.join("asset.TRIASTASIS.JSON"), b"{}").unwrap();
+        std::fs::write(nested.join("deep.triastasis.json"), b"{}").unwrap();
+        std::fs::write(nested.join("legacy.polyloom.json"), b"{}").unwrap();
+        std::fs::write(nested.join("ordinary.json"), b"{}").unwrap();
+
+        let found = discover_generation_manifests_impl(&temp.0.to_string_lossy()).unwrap();
+        assert!(found.warnings.is_empty());
+        assert_eq!(found.paths.len(), 3);
+        let names = found
+            .paths
+            .iter()
+            .map(|path| {
+                Path::new(path)
+                    .file_name()
+                    .unwrap()
+                    .to_string_lossy()
+                    .into_owned()
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            names,
+            vec![
+                "asset.TRIASTASIS.JSON",
+                "root.triastasis.json",
+                "deep.triastasis.json"
+            ]
+        );
+    }
+
+    #[test]
+    fn discovery_accepts_a_current_manifest_file() {
+        let temp = TempDir::new("discovery-file-root");
+        let file = temp.write("asset.triastasis.json", b"{}");
+        let found = discover_generation_manifests_impl(&file.to_string_lossy()).unwrap();
+        let canonical = std::fs::canonicalize(file)
+            .unwrap()
+            .to_string_lossy()
+            .into_owned();
+        assert_eq!(found.root, canonical);
+        assert_eq!(found.paths, vec![canonical]);
+        assert!(found.warnings.is_empty());
+    }
+
+    #[test]
+    fn discovery_rejects_a_non_manifest_file() {
+        let temp = TempDir::new("discovery-non-manifest-file");
+        let file = temp.write("ordinary.json", b"{}");
+        let error = discover_generation_manifests_impl(&file.to_string_lossy()).unwrap_err();
+        assert!(error.contains("not a .triastasis.json manifest"));
     }
 
     fn existing_manifest_in(dir: &Path) -> PathBuf {

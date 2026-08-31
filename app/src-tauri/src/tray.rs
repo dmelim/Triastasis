@@ -77,7 +77,11 @@ pub fn restart_services(app: &AppHandle) -> Result<(), String> {
         automation::resume(app.state::<AutomationState>().inner());
         return Err(error);
     }
-    if let Err(error) = automation::start(&cfg, app.state::<AutomationState>().inner()) {
+    if let Err(error) = automation::start(
+        &cfg,
+        app.state::<AutomationState>().inner(),
+        Some(app.clone()),
+    ) {
         automation::resume(app.state::<AutomationState>().inner());
         return Err(error);
     }

@@ -85,8 +85,12 @@ import {
 } from "./store";
 import {
   automationInfo,
+  automationImportRequests,
   automationJobFiles,
   automationJobs,
+  claimAutomationImport,
+  completeAutomationImport,
+  discoverGenerationManifests,
   findLinkedManifest,
   importGenerationManifest,
   isTauri,
@@ -102,7 +106,12 @@ import {
   saveToOutputDir,
   scanInterruptedManifests,
 } from "./tauri";
-import type { AutomationJob } from "./tauri";
+import type {
+  AutomationImportCompletion,
+  AutomationImportRequest,
+  AutomationJob,
+  ImportedGeneration,
+} from "./tauri";
 import type { GenerationManifest, GenerationQualityWarning } from "./types";
 import type { CameraPreset, CameraType, DisplayMode, TopologyDetail, Viewer, ViewerSelection, ViewerStats } from "./viewer";
 import {
@@ -2025,6 +2034,10 @@ function monitorExternalJob(apiUrl: string, initial: AutomationJob): void {
         progress.classList.add("hidden");
         if (elapsedTimer) window.clearInterval(elapsedTimer);
         elapsedTimer = null;
+        if (job.status === "succeeded") {
+          automationJobsCache = null;
+          void syncAutomationResults();
+        }
         return;
       }
       jobProgress.percent = job.progress?.percent ?? null;
@@ -3336,6 +3349,63 @@ function syncAutomationResults(): Promise<number> {
   return automationSync;
 }
 
+let automationImportSync: Promise<number> | null = null;
+
+function failedAutomationImport(
+  request: AutomationImportRequest,
+  error: unknown,
+): AutomationImportCompletion {
+  const message = (error as Error).message || String(error);
+  return {
+    imported: 0,
+    skipped: 0,
+    failures: request.manifestPaths.map((path) => ({ path, error: message })),
+  };
+}
+
+function syncAutomationImportRequests(apiUrl?: string): Promise<number> {
+  if (!isTauri()) return Promise.resolve(0);
+  if (automationImportSync) return automationImportSync;
+  automationImportSync = (async () => {
+    const resolvedApi =
+      apiUrl ?? (await automationInfo().then((info) => info?.running ? info.url : ""));
+    if (!resolvedApi) return 0;
+    const requests = await automationImportRequests(resolvedApi);
+    let completed = 0;
+    for (const pending of requests.filter((request) => request.status !== "completed")) {
+      let request: AutomationImportRequest;
+      try {
+        request = await claimAutomationImport(resolvedApi, pending.id);
+      } catch (error) {
+        console.warn(`Could not claim automation import ${pending.id}`, error);
+        continue;
+      }
+      let result: AutomationImportCompletion;
+      try {
+        result = await importManifestPaths(request.manifestPaths, request.warnings);
+      } catch (error) {
+        result = failedAutomationImport(request, error);
+      }
+      try {
+        await completeAutomationImport(resolvedApi, request.id, result);
+        reportManifestImport(result, request.warnings, "Automation: ");
+        completed += 1;
+      } catch (error) {
+        console.warn(`Could not publish automation import result ${request.id}`, error);
+      }
+    }
+    return completed;
+  })()
+    .catch((error) => {
+      console.warn("Could not synchronize automation imports", error);
+      return 0;
+    })
+    .finally(() => {
+      automationImportSync = null;
+    });
+  return automationImportSync;
+}
+
 clearGalleryBtn.addEventListener("click", async () => {
   if (generating) {
     toast("Wait for generation to finish before clearing the gallery", "err");
@@ -3420,6 +3490,7 @@ async function pollHealthInternal(): Promise<void> {
       const api = await automationInfo();
       if (!api?.running) automationJobsCache = null;
       const jobs = api?.running ? await loadAutomationJobs(api.url) : [];
+      if (api?.running) void syncAutomationImportRequests(api.url);
       const runningJobs = jobs.filter((job) => job.status === "running").length;
       const queuedJobs = jobs.filter((job) => job.status === "queued").length;
       const queueLabel = runningJobs || queuedJobs
@@ -3473,7 +3544,11 @@ listenSafely<string>("tray-action-blocked", (message) => {
 });
 listenSafely("studio-shown", () => {
   void syncAutomationResults();
+  void syncAutomationImportRequests();
   void restoreActiveJobDisplay();
+});
+listenSafely<string>("automation-import-requested", () => {
+  void syncAutomationImportRequests();
 });
 listenSafely("server-restarted", () => {
   automationJobsCache = null;
@@ -3482,11 +3557,13 @@ listenSafely("server-restarted", () => {
 
 window.addEventListener("focus", () => {
   void syncAutomationResults();
+  void syncAutomationImportRequests();
   void restoreActiveJobDisplay();
 });
 document.addEventListener("visibilitychange", () => {
   if (document.visibilityState === "visible") {
     void syncAutomationResults();
+    void syncAutomationImportRequests();
     void restoreActiveJobDisplay();
   }
 });
@@ -3857,10 +3934,15 @@ async function importManifestFlow(
   path: string,
   timings: StageTiming,
   onPersisted: () => void,
+  refreshAfterImport = true,
+  preloaded?: ImportedGeneration,
 ): Promise<VersionRecord> {
-  const imported = await importGenerationManifest(path);
+  const imported = preloaded ?? (await importGenerationManifest(path));
   timings.mark("invoke-import");
   const m = imported.manifest;
+  if (m.status !== "completed") {
+    throw new Error(`Cannot import a generation with status "${m.status}"`);
+  }
   const label = m.label || "Imported model";
   const assetId = newId();
   const versionId = newId();
@@ -3910,10 +3992,123 @@ async function importManifestFlow(
   await put(rec);
   onPersisted();
   timings.mark("persist-record");
-  revealAssetDock();
-  await refreshGallery();
-  timings.mark("refresh-gallery");
+  if (refreshAfterImport) {
+    revealAssetDock();
+    await refreshGallery();
+    timings.mark("refresh-gallery");
+  }
   return rec;
+}
+
+function normalizedManifestPath(path: string): string {
+  return path.replace(/\//g, "\\").toLowerCase();
+}
+
+function importedJobId(record: VersionRecord): string | null {
+  const automationJobId = record.operationParams.automationJobId;
+  if (typeof automationJobId === "string" && automationJobId) return automationJobId;
+  const originalIds = record.operationParams.originalIds;
+  if (!originalIds || typeof originalIds !== "object") return null;
+  const jobId = (originalIds as Record<string, unknown>).jobId;
+  return typeof jobId === "string" && jobId ? jobId : null;
+}
+
+async function importManifestPaths(
+  paths: string[],
+  warnings: string[],
+): Promise<AutomationImportCompletion> {
+  const existing = await all();
+  const importedPaths = new Set(
+    existing
+      .map((record) => record.operationParams.manifestPath)
+      .filter((path): path is string => typeof path === "string")
+      .map(normalizedManifestPath),
+  );
+  const importedJobIds = new Set(
+    existing.map(importedJobId).filter((jobId): jobId is string => Boolean(jobId)),
+  );
+  const failures: Array<{ path: string; error: string }> = [];
+  let importedCount = 0;
+  let skippedCount = 0;
+
+  for (const path of paths) {
+    const normalized = normalizedManifestPath(path);
+    if (importedPaths.has(normalized)) {
+      skippedCount += 1;
+      continue;
+    }
+    const timings = startStageTiming();
+    let persisted = false;
+    try {
+      const imported = await importGenerationManifest(path);
+      const jobId = imported.manifest.jobId;
+      if (jobId && importedJobIds.has(jobId)) {
+        skippedCount += 1;
+        importedPaths.add(normalized);
+        continue;
+      }
+      await importManifestFlow(
+        path,
+        timings,
+        () => {
+          persisted = true;
+        },
+        false,
+        imported,
+      );
+      importedPaths.add(normalized);
+      if (jobId) importedJobIds.add(jobId);
+      importedCount += 1;
+    } catch (error) {
+      if (persisted) {
+        importedPaths.add(normalized);
+        importedCount += 1;
+      } else {
+        failures.push({
+          path,
+          error: (error as Error).message || String(error),
+        });
+      }
+    }
+  }
+
+  if (importedCount) {
+    revealAssetDock();
+    try {
+      await refreshGallery();
+    } catch (error) {
+      console.warn("Imported manifests were saved, but the gallery could not refresh", error);
+    }
+  }
+  if (warnings.length) console.warn("Manifest discovery warnings", warnings);
+  if (failures.length) console.warn("Manifest folder import failures", failures);
+
+  return { imported: importedCount, skipped: skippedCount, failures };
+}
+
+function reportManifestImport(
+  result: AutomationImportCompletion,
+  warnings: string[],
+  prefix = "",
+): void {
+  const summary = [
+    `${prefix}Imported ${result.imported}`,
+    result.skipped ? `skipped ${result.skipped} already imported` : "",
+    result.failures.length ? `failed ${result.failures.length}` : "",
+    warnings.length ? `${warnings.length} scan warning${warnings.length === 1 ? "" : "s"}` : "",
+  ].filter(Boolean);
+  toast(summary.join(", "), result.failures.length || warnings.length ? "err" : "ok");
+}
+
+async function importManifestFolder(root: string): Promise<void> {
+  const discovery = await discoverGenerationManifests(root);
+  if (!discovery.paths.length) {
+    toast("No .triastasis.json files were found in that folder", "err");
+    if (discovery.warnings.length) console.warn("Manifest discovery warnings", discovery.warnings);
+    return;
+  }
+  const result = await importManifestPaths(discovery.paths, discovery.warnings);
+  reportManifestImport(result, discovery.warnings);
 }
 
 async function requeueFromManifest(path: string, m?: GenerationManifest): Promise<void> {
@@ -4259,6 +4454,23 @@ $("import-generation-btn").addEventListener("click", async () => {
   }
 });
 
+$("import-generation-folder-btn").addEventListener("click", async () => {
+  const button = $<HTMLButtonElement>("import-generation-folder-btn");
+  try {
+    const { open } = await import("@tauri-apps/plugin-dialog");
+    const picked = await open({ directory: true, multiple: false });
+    if (typeof picked !== "string") return;
+    button.disabled = true;
+    button.textContent = "Importing…";
+    await importManifestFolder(picked);
+  } catch (error) {
+    toast((error as Error).message || "Could not import the folder", "err");
+  } finally {
+    button.disabled = false;
+    button.textContent = "Import folder…";
+  }
+});
+
 
 // ---- boot ----
 async function boot(): Promise<void> {
@@ -4272,6 +4484,7 @@ async function boot(): Promise<void> {
   subscribeModelStorageRefresh();
   await pollHealth();
   await syncAutomationResults();
+  await syncAutomationImportRequests();
   await checkInterruptedManifests();
   await refreshGallery();
   window.setInterval(pollHealth, 4000);
