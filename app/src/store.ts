@@ -22,6 +22,7 @@ import {
   clearNativeGallery,
   deleteNativeRecords,
   loadNativeGallery,
+  nativeGalleryRecoveryCount,
   markNativeMigrationCompleted,
   nativeMigrationWasCompleted,
   writeNativeRecord,
@@ -632,4 +633,9 @@ export function isEphemeral(): boolean {
 /** A native gallery failure must not be presented as a genuinely empty library. */
 export function galleryLoadFailed(): boolean {
   return nativePersistenceFailure !== null;
+}
+
+/** Saved native records omitted because neither a committed nor legacy copy was readable. */
+export function galleryRecoveryCount(): number {
+  return nativeGalleryRecoveryCount();
 }

@@ -75,10 +75,10 @@ output {
   background: var(--surface-warning); color: var(--content-warning); padding: var(--space-2) var(--space-4);
   flex: 0 0 auto;
 }
-#recovery-review { color: var(--content-warning); font-size: inherit; text-decoration: underline; }
-#recovery-review:hover:not(:disabled) { color: var(--content-warning); }
-#recovery-review:disabled { text-decoration: underline; }
-#recovery-review:focus-visible { outline-color: var(--status-warning); }
+#recovery-review, #gallery-recovery-import { color: var(--content-warning); font-size: inherit; text-decoration: underline; }
+#recovery-review:hover:not(:disabled), #gallery-recovery-import:hover:not(:disabled) { color: var(--content-warning); }
+#recovery-review:disabled, #gallery-recovery-import:disabled { text-decoration: underline; }
+#recovery-review:focus-visible, #gallery-recovery-import:focus-visible { outline-color: var(--status-warning); }
 
 /* ---- workspace ---- */
 /* Full-bleed shell: sections are distinguished by surface color alone —

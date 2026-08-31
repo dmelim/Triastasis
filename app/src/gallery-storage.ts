@@ -95,7 +95,7 @@ async function loadFromRevision(
   const [input, glb, thumb] = await Promise.all([
     fs.readFile(`${rdir}/input.bin`),
     fs.readFile(`${rdir}/model.glb`),
-    metadata.hasThumb ? fs.readFile(`${rdir}/thumb.bin`) : Promise.resolve(null),
+    metadata.hasThumb ? fs.readFile(`${rdir}/thumb.bin`).catch(() => null) : Promise.resolve(null),
   ]);
   const { inputType, glbType, thumbType, hasThumb: _hasThumb, revision: _revision, ...record } =
     metadata;
@@ -112,7 +112,7 @@ async function loadLegacy(fs: GalleryFs, dir: string): Promise<GenRecord> {
   const [input, glb, thumb] = await Promise.all([
     fs.readFile(`${dir}/input.bin`),
     fs.readFile(`${dir}/model.glb`),
-    metadata.hasThumb ? fs.readFile(`${dir}/thumb.bin`) : Promise.resolve(null),
+    metadata.hasThumb ? fs.readFile(`${dir}/thumb.bin`).catch(() => null) : Promise.resolve(null),
   ]);
   const { inputType, glbType, thumbType, hasThumb: _hasThumb, ...record } = metadata;
   return {

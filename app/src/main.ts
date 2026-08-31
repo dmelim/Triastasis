@@ -76,6 +76,7 @@ import {
   createDerivedVersion,
   del as removeRecord,
   galleryLoadFailed,
+  galleryRecoveryCount,
   isEphemeral,
   listAssetVersions,
   newId,
@@ -198,6 +199,8 @@ const automationBadge = $("automation-badge");
 const serverDot = $("server-dot");
 const serverLabel = $("server-label");
 const setupBanner = $("setup-banner");
+const galleryRecoveryBanner = $("gallery-recovery-banner");
+const galleryRecoveryImport = $<HTMLButtonElement>("gallery-recovery-import");
 const candidateWrap = $("candidate-wrap");
 const candidateGallery = $("candidate-gallery");
 const candidateSummary = $("candidate-summary");
@@ -1482,7 +1485,7 @@ function applyHardwareGuardrails(normalizeSelection = true): void {
   const resolutionLocked = !override && maximum < 1536;
   hardwareResolutionNote.classList.toggle("hidden", !resolutionLocked);
   hardwareResolutionNote.querySelector("span")!.textContent = resolutionLocked
-    ? `1536 is above the ${maximum} recommendation for this hardware.`
+    ? `1536 is disabled: it is experimental and recommended only for GPUs with 16 GB+ VRAM. Detected ${hardwareLabel}; recommended max ${maximum}.`
     : "";
 }
 
@@ -2934,6 +2937,12 @@ async function refreshGallery(): Promise<void> {
   galleryUrls.forEach((u) => URL.revokeObjectURL(u));
   galleryUrls = [];
   const recs = await all();
+  const recoveryCount = galleryRecoveryCount();
+  galleryRecoveryBanner.classList.toggle("hidden", recoveryCount === 0);
+  if (recoveryCount > 0) {
+    galleryRecoveryBanner.querySelector("span")!.textContent =
+      `${recoveryCount} saved ${recoveryCount === 1 ? "record could" : "records could"} not be loaded. The files remain on disk and can be reimported.`;
+  }
   galleryEl.innerHTML = "";
   versionGalleryEl.innerHTML = "";
   if (!recs.length) {
@@ -4453,6 +4462,8 @@ $("import-generation-btn").addEventListener("click", async () => {
     toast((error as Error).message || "Could not pick a manifest", "err");
   }
 });
+
+galleryRecoveryImport.addEventListener("click", () => $("import-generation-folder-btn").click());
 
 $("import-generation-folder-btn").addEventListener("click", async () => {
   const button = $<HTMLButtonElement>("import-generation-folder-btn");

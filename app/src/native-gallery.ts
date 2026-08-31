@@ -67,11 +67,13 @@ const tauriFs: GalleryFs = {
 };
 
 const store = createTransactionalGallery(tauriFs, ROOT);
+let unreadableRecordCount = 0;
 
 export async function loadNativeGallery(): Promise<GenRecord[]> {
   await ensureRoot();
   const entries = await tauriFs.listDirectories(ROOT);
   const records: GenRecord[] = [];
+  unreadableRecordCount = 0;
 
   for (const name of entries) {
     try {
@@ -80,11 +82,18 @@ export async function loadNativeGallery(): Promise<GenRecord[]> {
       // cannot hide the whole gallery.
       const record = await store.loadRecord(name);
       if (record) records.push(record);
+      else unreadableRecordCount += 1;
     } catch (error) {
+      unreadableRecordCount += 1;
       console.warn(`Skipping unreadable native gallery record ${name}`, error);
     }
   }
   return records;
+}
+
+/** Number of saved record directories that could not be recovered this session. */
+export function nativeGalleryRecoveryCount(): number {
+  return unreadableRecordCount;
 }
 
 export async function writeNativeRecord(record: VersionRecord): Promise<void> {

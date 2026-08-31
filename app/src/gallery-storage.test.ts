@@ -232,6 +232,18 @@ test("removing a thumbnail cannot make a record disappear", async () => {
   assert.equal(loaded.thumb, null);
 });
 
+test("a physically missing thumbnail degrades to the source preview", async () => {
+  const fs = new MemoryFs();
+  const gallery = createTransactionalGallery(fs, ROOT);
+  await gallery.writeRecord("r1", makeRecord({ id: "r1" }));
+  fs.files.delete(`${ROOT}/r1/revisions/1/thumb.bin`);
+
+  const loaded = await gallery.loadRecord("r1");
+  assert.ok(loaded);
+  assert.equal(loaded.thumb, null);
+  assert.equal(await readBlob(loaded.input), "png-bytes");
+});
+
 test("cleanup keeps the current and at most one previous revision", async () => {
   const fs = new MemoryFs();
   const gallery = createTransactionalGallery(fs, ROOT);
