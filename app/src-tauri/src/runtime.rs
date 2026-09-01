@@ -1,5 +1,7 @@
 use serde::Serialize;
 use sha2::{Digest, Sha256};
+#[cfg(target_os = "windows")]
+use std::sync::Mutex;
 use std::{
     io::{Read, Write},
     path::{Component, Path, PathBuf},
@@ -8,6 +10,8 @@ use std::{
 };
 
 const REPO: &str = "dmelim/Triastasis";
+#[cfg(target_os = "windows")]
+static INSTALL_LOCK: Mutex<()> = Mutex::new(());
 
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -45,6 +49,27 @@ fn hidden(command: &mut Command) {
     }
 }
 
+fn recommendation_for_capability(capability: Option<f32>) -> (String, String) {
+    match capability {
+        Some(value) if value.is_finite() && value >= 7.5 => (
+            "cuda".into(),
+            format!("NVIDIA compute capability {value:.1} detected. The CUDA runtime is recommended."),
+        ),
+        Some(value) if value.is_finite() && value >= 6.0 => (
+            "cuda12".into(),
+            format!("NVIDIA compute capability {value:.1} detected. The CUDA 12 compatibility runtime is recommended."),
+        ),
+        Some(value) if value.is_finite() => (
+            "vulkan".into(),
+            format!("NVIDIA compute capability {value:.1} detected, but the published CUDA runtimes require 6.0 or newer. Vulkan is recommended for this GPU."),
+        ),
+        _ => (
+            "vulkan".into(),
+            "No compatible NVIDIA CUDA device was detected. Vulkan is the safest compatible runtime.".into(),
+        ),
+    }
+}
+
 fn detect_recommendation() -> (String, String) {
     let mut command = Command::new("nvidia-smi");
     command.args([
@@ -60,20 +85,7 @@ fn detect_recommendation() -> (String, String) {
         .filter(|output| output.status.success())
         .and_then(|output| String::from_utf8(output.stdout).ok())
         .and_then(|text| text.lines().next()?.trim().parse::<f32>().ok());
-    match capability {
-        Some(value) if (6.0..7.5).contains(&value) => (
-            "cuda12".into(),
-            format!("NVIDIA compute capability {value:.1} detected. The CUDA 12 compatibility runtime is recommended."),
-        ),
-        Some(value) => (
-            "cuda".into(),
-            format!("NVIDIA compute capability {value:.1} detected. The CUDA runtime is recommended."),
-        ),
-        None => (
-            "vulkan".into(),
-            "No compatible NVIDIA CUDA device was detected. Vulkan is the safest compatible runtime.".into(),
-        ),
-    }
+    recommendation_for_capability(capability)
 }
 
 fn recommendation() -> (String, String) {
@@ -274,6 +286,11 @@ pub fn install(backend: &str) -> Result<RuntimeStatus, String> {
     if !matches!(backend, "cuda" | "cuda12" | "rocm" | "vulkan") {
         return Err("choose CUDA, CUDA 12 compatibility, ROCm, or Vulkan".into());
     }
+    // Every backend uses the same staging and activation paths. Keep the
+    // complete transaction serialized even if the frontend invokes it twice.
+    let _install_guard = INSTALL_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     let current = status()?;
     if current.installed {
         return Ok(current);
@@ -340,4 +357,32 @@ pub fn install(backend: &str) -> Result<RuntimeStatus, String> {
 #[cfg(not(target_os = "windows"))]
 pub fn install(_backend: &str) -> Result<RuntimeStatus, String> {
     Err("automatic runtime installation is currently available on Windows only".into())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::recommendation_for_capability;
+
+    fn backend(capability: Option<f32>) -> String {
+        recommendation_for_capability(capability).0
+    }
+
+    #[test]
+    fn recommends_vulkan_without_supported_nvidia_compute() {
+        assert_eq!(backend(None), "vulkan");
+        assert_eq!(backend(Some(5.9)), "vulkan");
+        assert_eq!(backend(Some(f32::NAN)), "vulkan");
+    }
+
+    #[test]
+    fn recommends_cuda12_for_legacy_supported_compute() {
+        assert_eq!(backend(Some(6.0)), "cuda12");
+        assert_eq!(backend(Some(7.4)), "cuda12");
+    }
+
+    #[test]
+    fn recommends_current_cuda_from_compute_75() {
+        assert_eq!(backend(Some(7.5)), "cuda");
+        assert_eq!(backend(Some(12.0)), "cuda");
+    }
 }

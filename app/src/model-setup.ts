@@ -55,6 +55,7 @@ const ONBOARDING_STORAGE_KEY = "triastasis.onboarding.complete.v1";
 let pendingCustomPath: string | null = null;
 type OnboardingStep = "welcome" | "runtime" | "credits" | "models";
 let onboardingStep: OnboardingStep = "welcome";
+let runtimeInstallInProgress = false;
 
 function onboardingWasCompleted(): boolean {
   try {
@@ -180,11 +181,13 @@ async function currentScan(): Promise<ModelsScan | null> {
 export async function refreshModelSetup(): Promise<void> {
   const el = section();
   if (!el || !isTauri()) return;
+  if (runtimeInstallInProgress) return;
   const onboardingComplete = onboardingWasCompleted();
   const [scan, runtime] = await Promise.all([
     currentScan(),
     scanRuntime().catch(() => null),
   ]);
+  if (runtimeInstallInProgress) return;
   if (!scan || !runtime) {
     setSetupVisible(true);
     renderSetupError(el, !onboardingComplete);
@@ -623,6 +626,10 @@ function bindActions(root: HTMLElement, scan: ModelsScan, runtime: RuntimeStatus
           markOnboardingCompleted();
         } else if (act === "install-runtime") {
           const backend = btn.dataset.backend || runtime.recommendedBackend;
+          runtimeInstallInProgress = true;
+          root.querySelectorAll<HTMLButtonElement>("[data-act]").forEach((control) => {
+            control.disabled = true;
+          });
           showMessage(root, `Downloading and verifying the ${runtimeLabel(backend)} runtime...`, false);
           await installRuntime(backend);
         } else if (act === "change-location") {
@@ -662,6 +669,12 @@ function bindActions(root: HTMLElement, scan: ModelsScan, runtime: RuntimeStatus
         showMessage(root, (e as Error).message || String(e), true);
         refreshAfterAction = false;
       } finally {
+        if (act === "install-runtime") {
+          runtimeInstallInProgress = false;
+          root.querySelectorAll<HTMLButtonElement>("[data-act]").forEach((control) => {
+            control.disabled = false;
+          });
+        }
         if (beginsDownload) {
           btn.innerHTML = originalHtml;
           btn.style.minWidth = originalMinWidth;
