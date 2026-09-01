@@ -1,31 +1,29 @@
 Triastasis - portable (no-install) build
 ============================================
 
-This is a self-contained build: everything stays inside this folder and nothing
-is written to the system (no installer, no AppData / registry / config dirs).
+This portable build keeps its app-managed files inside this folder and does not
+need an installer. Setup downloads the selected runtime and model files, but it
+does not require a terminal, PowerShell, or manual archive extraction.
 
 Layout (all next to this app):
   portable.dat   <- marker that enables portable mode -- do not delete
   data/          <- config + generated GLBs are written here (created on first run)
-  runtime/       <- put the trellis-server runtime here (see setup)
-  models/        <- put the GGUF model weights here (see setup)
+  runtime/       <- verified generation runtime installed by setup
+  models/        <- verified model files installed by setup
 
 First-time setup
 ----------------
-  1. Download the server runtime for your GPU from the releases page and extract
-     it into a "runtime" folder next to this app:
-       trellis-cuda-<os>-x64      (NVIDIA)
-       trellis-cuda12-<os>-x64    (NVIDIA Pascal/Volta, e.g. Tesla P100)
-       trellis-rocm-<os>-x64      (AMD; needs the matching ROCm runtime on PATH)
-       trellis-vulkan-<os>-x64    (AMD / Intel / universal fallback)
-  2. Launch the app (triastasis / triastasis.exe). On first launch, review the
-     upstream model terms and choose a verified, resumable model download. The
-     app stores it in the portable "models" folder.
-  3. Add an image and generate.
+  1. Launch triastasis.exe.
+  2. Follow the Runtime step. Triastasis detects the GPU, recommends a compatible
+     runtime, downloads it from the matching release, verifies its SHA-256, and
+     installs it in the portable "runtime" folder.
+  3. Review the upstream model terms and choose a verified, resumable model
+     download. Triastasis stores it in the portable "models" folder.
+  4. Add an image and generate.
 
-You can instead put an existing runtime and compatible model folder next to the
-app, or select a custom model folder in Settings. Custom model files are
-unverified and remain under their upstream terms.
+Advanced users can instead put an existing compatible runtime in the "runtime"
+folder or select a custom model folder in Settings. Manual setup is optional.
+Custom model files are unverified and remain under their upstream terms.
 
 To uninstall: delete this folder.
 

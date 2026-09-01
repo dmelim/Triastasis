@@ -1,11 +1,12 @@
 # Triastasis 0.0.1-alpha.1
 
-This is the first public alpha of Triastasis, a local desktop workspace for turning a single image into a textured 3D asset through the included native C++/GGML runtime.
+This is the first public alpha of Triastasis, a local desktop workspace for turning a single image into a textured 3D asset through a native C++/GGML runtime. It is designed to make local image-to-3D generation approachable for non-developers as well as technical users.
 
 ## Highlights
 
 - Generate textured static GLB assets locally from one image.
-- Complete first-run onboarding for credits, model terms, storage, and a hardware-recommended bundle.
+- Complete guided first-run onboarding for runtime installation, credits, model terms, storage, and a hardware-recommended bundle.
+- Install the recommended verified runtime without using a terminal, PowerShell, or manually extracting an archive.
 - Choose verified, resumable model bundles based on available hardware and storage.
 - Inspect geometry, topology, UVs, normals, and PBR channels in the desktop viewer.
 - Keep local assets with favorites, version lineage, and reproducible generation manifests.
@@ -17,7 +18,7 @@ This is the first public alpha of Triastasis, a local desktop workspace for turn
 This alpha release provides:
 
 - Windows x64 installer and portable ZIP.
-- Windows native runtime bundles for CUDA, CUDA 12 legacy, Vulkan, and experimental ROCm configurations.
+- Windows native runtime bundles for CUDA, CUDA 12 compatibility, Vulkan, and experimental ROCm configurations. Triastasis downloads and verifies the selected runtime during onboarding.
 
 Linux support remains work in progress and is not supported by this release.
 
