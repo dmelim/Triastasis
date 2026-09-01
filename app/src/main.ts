@@ -48,6 +48,7 @@ import { escapeHtml, hasBlockingCoreIssue, manifestIssueText } from "./manifest-
 import { initModelDownloadState } from "./model-download-state";
 import { initModelSetup, openModelSetup } from "./model-setup";
 import { subscribeModelStorageRefresh } from "./model-settings";
+import { ensureServerReady } from "./server-startup";
 import type { ManifestMetrics, ManifestQualityWarning } from "./types";
 import {
   detectPlaneCollapse,
@@ -100,6 +101,7 @@ import {
   discoverGenerationManifests,
   findLinkedManifest,
   importGenerationManifest,
+  invoke,
   isTauri,
   listen,
   listenForNativeFileDrops,
@@ -205,6 +207,7 @@ const automationBadge = $("automation-badge");
 const serverDot = $("server-dot");
 const serverLabel = $("server-label");
 const setupBanner = $("setup-banner");
+const setupBannerButton = $<HTMLButtonElement>("banner-settings");
 const galleryRecoveryBanner = $("gallery-recovery-banner");
 const galleryRecoveryImport = $<HTMLButtonElement>("gallery-recovery-import");
 const candidateWrap = $("candidate-wrap");
@@ -3473,10 +3476,46 @@ $("banner-settings").addEventListener("click", () => {
     void openModelSetup();
     return;
   }
+  if (setupBanner.dataset.action === "retry-server") {
+    void recoverServer().then(() => pollHealth());
+    return;
+  }
   void openSettings();
 });
 
 // ---- server status ----
+let serverRecoveryInProgress = false;
+let serverRecoveryError: string | null = null;
+
+function showServerStarting(): void {
+  serverDot.className = "dot";
+  serverLabel.textContent = "starting";
+  setupBanner.classList.remove("hidden");
+  (setupBanner.querySelector("span") as HTMLElement).textContent =
+    "Starting the local model server. This can take a few seconds.";
+  setupBannerButton.textContent = "Starting…";
+  setupBannerButton.disabled = true;
+  setupBanner.dataset.action = "retry-server";
+}
+
+async function recoverServer(): Promise<boolean> {
+  if (!isTauri() || serverRecoveryInProgress) return false;
+  serverRecoveryInProgress = true;
+  serverRecoveryError = null;
+  showServerStarting();
+  try {
+    const result = await ensureServerReady({
+      health: () => health(800),
+      restart: () => invoke("restart_server"),
+      delay: (milliseconds) => new Promise((resolve) => window.setTimeout(resolve, milliseconds)),
+    });
+    serverRecoveryError = result.error;
+    return result.ready;
+  } finally {
+    serverRecoveryInProgress = false;
+  }
+}
+
 async function pollHealthInternal(): Promise<void> {
   const cfg = await loadConfig(true);
   serverConfigured = cfg.configured;
@@ -3494,10 +3533,18 @@ async function pollHealthInternal(): Promise<void> {
     setupBanner.dataset.action = "onboarding";
   } else if (!ok && cfg.configured) {
     setupBanner.classList.remove("hidden");
-    (setupBanner.querySelector("span") as HTMLElement).textContent =
-      "Server is offline. It may still be loading; check the models directory in settings.";
-    $("banner-settings").textContent = "Open settings";
-    setupBanner.dataset.action = "settings";
+    if (serverRecoveryInProgress) {
+      showServerStarting();
+    } else {
+      (setupBanner.querySelector("span") as HTMLElement).textContent = serverRecoveryError
+        ? "The model server did not start. Try again, or review the server logs if the problem continues."
+        : "The model server is unavailable. Triastasis can restart it automatically.";
+      setupBannerButton.textContent = "Retry server";
+      setupBannerButton.disabled = false;
+      setupBanner.dataset.action = "retry-server";
+    }
+  } else {
+    setupBannerButton.disabled = false;
   }
   updateGenerateEnabled();
   if (isTauri()) {
@@ -4499,6 +4546,10 @@ async function boot(): Promise<void> {
   await initModelSetup();
   await refreshHardwareGuardrails();
   subscribeModelStorageRefresh();
+  const cfg = await loadConfig(true);
+  if (isTauri() && cfg.configured && !(await health(800))) {
+    await recoverServer();
+  }
   await pollHealth();
   await syncAutomationResults();
   await syncAutomationImportRequests();
