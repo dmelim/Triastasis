@@ -39,15 +39,11 @@ resolution with seed 42. The after images are renders of the exported GLBs.
 ## Quick start
 
 The current alpha release supports Windows x64. Linux support is still work in
-progress and is not part of the supported release yet. The Windows installer
-auto-detects your GPU runtime and installs the native server and desktop app.
-On first launch, the app onboarding guides you through credits, model terms,
-storage, and a verified model-bundle download.
-
-```powershell
-# Windows (x64), in PowerShell
-irm https://raw.githubusercontent.com/dmelim/Triastasis/main/install/install.ps1 | iex
-```
+progress and is not part of the supported release yet. Download and run
+`triastasis-windows-x64-setup.exe` from the release page. On first launch, the
+app detects the GPU, installs a verified native runtime, and guides you through
+credits, model terms, storage, and a verified model-bundle download. No terminal
+or PowerShell command is required.
 
 See [Getting started](docs/getting-started.md) for portable installations,
 storage locations, backend selection, installer options, and troubleshooting.
@@ -56,15 +52,16 @@ storage locations, backend selection, installer options, and troubleshooting.
 
 Triastasis is a standalone desktop app built with [Tauri](https://tauri.app)
 for anyone who wants image-to-3D without managing a Python environment. The
-one-command installer adds the matching native runtime and desktop app. On first
-launch, onboarding explains the project credits and model terms, recommends a
-model bundle for the detected hardware, and provides a verified, resumable
+Windows installer adds the desktop app, and first-run onboarding installs the
+matching native runtime. On first launch, onboarding explains the project
+credits and model terms, recommends a model bundle for the detected hardware, and provides a verified, resumable
 in-app download.
 
 **Using it:**
 
-1. **Complete onboarding** by reviewing Credits, choosing model storage, and
-   activating a curated or custom model bundle.
+1. **Complete onboarding** by installing the recommended runtime, reviewing
+   Credits, choosing model storage, and activating a curated or custom model
+   bundle.
 2. **Add an image** by dropping it onto the source area, browsing for one, or
    pasting from the clipboard.
 3. **Choose a preset.** Medium is the recommended default, Low is faster, and

@@ -35,6 +35,7 @@ import {
   curatedModelTermsHtml,
 } from "./model-terms";
 import { isTauri, pickDirectory } from "./tauri";
+import { installRuntime, runtimeLabel, scanRuntime, type RuntimeStatus } from "./runtime-manager";
 
 function escapeHtml(value: string): string {
   return value
@@ -52,7 +53,7 @@ function section(): HTMLElement | null {
 const APP_SHELL_SELECTOR = ".mode-rail, #setup-banner, #recovery-banner, #workspace";
 const ONBOARDING_STORAGE_KEY = "triastasis.onboarding.complete.v1";
 let pendingCustomPath: string | null = null;
-type OnboardingStep = "welcome" | "credits" | "models";
+type OnboardingStep = "welcome" | "runtime" | "credits" | "models";
 let onboardingStep: OnboardingStep = "welcome";
 
 function onboardingWasCompleted(): boolean {
@@ -88,8 +89,8 @@ function renderSetupLoading(root: HTMLElement): void {
     <div class="onboarding-shell onboarding-shell--loading" role="status" aria-live="polite">
       <img class="onboarding-logo" src="/brand/triastasis-mark.png" alt="" />
       <div class="onboarding-loading-copy">
-        <strong id="model-setup-title">Checking your model setup</strong>
-        <span>Looking for model bundles already installed on this computer.</span>
+        <strong id="model-setup-title">Checking your local setup</strong>
+        <span>Checking the generation runtime and model bundles on this computer.</span>
       </div>
     </div>`;
 }
@@ -107,8 +108,8 @@ function renderSetupError(root: HTMLElement, showWelcome: boolean): void {
           </div>
         </header>` : ""}
       <section class="onboarding-error" aria-labelledby="model-setup-error-title">
-        <h2 id="model-setup-error-title">We could not check your model bundles</h2>
-        <p>Triastasis needs access to its model storage before setup can continue.</p>
+        <h2 id="model-setup-error-title">We could not check your local setup</h2>
+        <p>Triastasis needs access to its runtime and model storage before setup can continue.</p>
         <button class="button button--primary" data-act="retry-scan">Try again</button>
       </section>
     </div>`;
@@ -180,21 +181,24 @@ export async function refreshModelSetup(): Promise<void> {
   const el = section();
   if (!el || !isTauri()) return;
   const onboardingComplete = onboardingWasCompleted();
-  const scan = await currentScan();
-  if (!scan) {
+  const [scan, runtime] = await Promise.all([
+    currentScan(),
+    scanRuntime().catch(() => null),
+  ]);
+  if (!scan || !runtime) {
     setSetupVisible(true);
     renderSetupError(el, !onboardingComplete);
     return;
   }
   const partials = modelDownloadSnapshot().partial;
-  const show = shouldShowSetup(scan, onboardingComplete);
+  const show = shouldShowSetup(scan, onboardingComplete) || !runtime.installed;
   setSetupVisible(show);
   if (!show) {
     el.replaceChildren();
     return;
   }
-  if (onboardingComplete) onboardingStep = "models";
-  await renderSetup(el, scan, partials, !onboardingComplete);
+  if (onboardingComplete) onboardingStep = runtime.installed ? "models" : "runtime";
+  await renderSetup(el, scan, runtime, partials, !onboardingComplete);
 }
 
 /** Reopen model setup when generation discovers that no model is configured. */
@@ -239,6 +243,7 @@ function buildViews(
 async function renderSetup(
   root: HTMLElement,
   scan: ModelsScan,
+  runtime: RuntimeStatus,
   partials: string[],
   showWelcome: boolean,
 ): Promise<void> {
@@ -418,16 +423,55 @@ async function renderSetup(
       </section>
   `;
 
-  const step = showWelcome ? onboardingStep : "models";
+  const recommendedRuntime = runtime.recommendedBackend;
+  const runtimeContent = `
+    <section class="onboarding-runtime onboarding-stage" aria-labelledby="runtime-setup-title">
+      <div class="onboarding-models-heading">
+        <h1 id="runtime-setup-title">Set up the generation runtime</h1>
+        <p>Triastasis needs a native GPU runtime to generate models locally. The app downloads it from the matching Triastasis release and verifies its SHA-256 before installation.</p>
+      </div>
+      <div id="model-setup-message" class="banner hidden"><span></span></div>
+      ${runtime.installed ? `
+        <div class="runtime-status runtime-status--ready">
+          <div>
+            <strong>${escapeHtml(runtimeLabel(runtime.backend))} runtime is ready</strong>
+            <p>Installed at <code>${escapeHtml(runtime.path)}</code></p>
+          </div>
+          <span class="model-badge ok">Ready</span>
+        </div>` : `
+        <div class="runtime-status recommended">
+          <div>
+            <div class="bundle-head">
+              <strong>${escapeHtml(runtimeLabel(recommendedRuntime))}</strong>
+              <span class="model-badge rec">Recommended for this system</span>
+            </div>
+            <p>${escapeHtml(runtime.recommendation)}</p>
+          </div>
+          <button class="button button--primary" type="button" data-act="install-runtime" data-backend="${escapeHtml(recommendedRuntime)}">Install recommended runtime</button>
+        </div>
+        <details class="runtime-options">
+          <summary>Choose a different runtime</summary>
+          <p>Use this only when you know which backend your system requires. Vulkan is the broad compatibility option. ROCm may require a separate compatible AMD runtime.</p>
+          <div class="runtime-option-actions">
+            ${["vulkan", "cuda", "cuda12", "rocm"].filter((backend) => backend !== recommendedRuntime).map((backend) =>
+              `<button class="button button--secondary button--sm" type="button" data-act="install-runtime" data-backend="${backend}">${escapeHtml(runtimeLabel(backend))}</button>`
+            ).join("")}
+          </div>
+        </details>`}
+      <p class="model-note">${runtime.portable ? "Portable mode installs the runtime beside Triastasis." : "The runtime is installed in your local application data and can be replaced by a future verified update."}</p>
+    </section>`;
+
+  const step = showWelcome ? onboardingStep : runtime.installed ? "models" : "runtime";
   root.setAttribute(
     "aria-labelledby",
-    step === "welcome" ? "model-setup-title" : step === "credits" ? "model-credits-title" : "model-bundle-title",
+    step === "welcome" ? "model-setup-title" : step === "runtime" ? "runtime-setup-title" : step === "credits" ? "model-credits-title" : "model-bundle-title",
   );
   root.innerHTML = `
     <div class="onboarding-shell onboarding-shell--${step}">
       ${showWelcome ? `
         <nav class="onboarding-progress" aria-label="Onboarding progress">
           <span${step === "welcome" ? ' aria-current="step"' : ""}>Welcome</span>
+          <span${step === "runtime" ? ' aria-current="step"' : ""}>Runtime</span>
           <span${step === "credits" ? ' aria-current="step"' : ""}>Credits</span>
           <span${step === "models" ? ' aria-current="step"' : ""}>Models</span>
         </nav>` : ""}
@@ -439,6 +483,7 @@ async function renderSetup(
           </div>
           <img class="onboarding-logo" src="/brand/triastasis-mark.png" alt="Triastasis logo" />
         </header>` : ""}
+      ${step === "runtime" ? runtimeContent : ""}
       ${step === "credits" ? `
         <section class="onboarding-credits onboarding-stage" aria-labelledby="model-credits-title">
           <h1 id="model-credits-title">Credits and model terms</h1>
@@ -449,12 +494,13 @@ async function renderSetup(
       <div class="onboarding-nav" aria-label="Onboarding navigation">
         ${step !== "welcome" && showWelcome ? '<button class="button button--secondary" type="button" data-act="previous-step">Previous</button>' : '<span></span>'}
         ${step === "welcome" ? '<button class="button button--primary" type="button" data-act="next-step">Next</button>' : ""}
+        ${step === "runtime" && runtime.installed ? '<button class="button button--primary" type="button" data-act="next-step">Next</button>' : ""}
         ${step === "credits" ? '<button class="button button--primary" type="button" data-act="next-step">Next</button>' : ""}
         ${step === "models" ? '<button class="button button--primary" type="button" data-act="start">Start Triastasis</button>' : ""}
       </div>
     </div>`;
 
-  bindActions(root, scan);
+  bindActions(root, scan, runtime);
   if (step === "credits" || (!showWelcome && step === "models")) {
     bindCuratedModelTerms(root, () => void refreshModelSetup());
   }
@@ -524,7 +570,7 @@ function showMessage(root: HTMLElement, text: string, isError: boolean): void {
   (box.querySelector("span") as HTMLElement).textContent = text;
 }
 
-function bindActions(root: HTMLElement, scan: ModelsScan): void {
+function bindActions(root: HTMLElement, scan: ModelsScan, runtime: RuntimeStatus): void {
   root.querySelectorAll<HTMLButtonElement>("[data-act]").forEach((btn) => {
     btn.onclick = async () => {
       const act = btn.dataset.act;
@@ -535,6 +581,7 @@ function bindActions(root: HTMLElement, scan: ModelsScan): void {
         return;
       }
       const beginsDownload =
+        act === "install-runtime" ||
         act === "download" ||
         act === "resume" ||
         act === "verify" ||
@@ -554,9 +601,19 @@ function bindActions(root: HTMLElement, scan: ModelsScan): void {
       }
       try {
         if (act === "next-step") {
-          onboardingStep = onboardingStep === "welcome" ? "credits" : "models";
+          if (onboardingStep === "welcome") onboardingStep = "runtime";
+          else if (onboardingStep === "runtime") {
+            if (!runtime.installed) {
+              showMessage(root, "Install the recommended runtime before continuing.", true);
+              refreshAfterAction = false;
+              return;
+            }
+            onboardingStep = "credits";
+          } else onboardingStep = "models";
         } else if (act === "previous-step") {
-          onboardingStep = onboardingStep === "models" ? "credits" : "welcome";
+          if (onboardingStep === "models") onboardingStep = "credits";
+          else if (onboardingStep === "credits") onboardingStep = "runtime";
+          else onboardingStep = "welcome";
         } else if (act === "start") {
           if (needsSetup(scan)) {
             showMessage(root, "Choose and activate a model bundle before starting Triastasis.", true);
@@ -564,6 +621,10 @@ function bindActions(root: HTMLElement, scan: ModelsScan): void {
             return;
           }
           markOnboardingCompleted();
+        } else if (act === "install-runtime") {
+          const backend = btn.dataset.backend || runtime.recommendedBackend;
+          showMessage(root, `Downloading and verifying the ${runtimeLabel(backend)} runtime...`, false);
+          await installRuntime(backend);
         } else if (act === "change-location") {
           const picked = await pickDirectory(scan.modelsRoot);
           if (picked && picked !== scan.modelsRoot) {

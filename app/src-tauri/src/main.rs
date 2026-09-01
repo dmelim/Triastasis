@@ -12,6 +12,7 @@ mod downloader;
 mod hardware;
 mod manifest;
 mod models;
+mod runtime;
 mod server;
 mod tray;
 
@@ -301,6 +302,18 @@ fn model_catalog() -> Result<Vec<models::BundleSummary>, String> {
 #[tauri::command]
 fn scan_models() -> Result<models::ModelsScan, String> {
     models::scan_models()
+}
+
+#[tauri::command]
+fn runtime_status() -> Result<runtime::RuntimeStatus, String> {
+    runtime::status()
+}
+
+#[tauri::command]
+async fn install_runtime(backend: String) -> Result<runtime::RuntimeStatus, String> {
+    tauri::async_runtime::spawn_blocking(move || runtime::install(&backend))
+        .await
+        .map_err(|error| format!("runtime installation task failed: {error}"))?
 }
 
 /// Full size+SHA-256 verification of one bundle inside the managed root,
@@ -607,6 +620,8 @@ fn main() {
             list_sibling_manifests,
             model_catalog,
             scan_models,
+            runtime_status,
+            install_runtime,
             verify_model_bundle,
             free_disk_space,
             start_model_download,

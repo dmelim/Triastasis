@@ -1,42 +1,38 @@
 # Getting started with Triastasis
 
 Triastasis is a desktop app for turning one image into a textured static GLB on
-your own computer. The installer adds the desktop app and matching native
-runtime. The app then guides you through model setup on first launch.
+your own computer. The installer adds the desktop app. On first launch, the app
+installs the matching native runtime and guides you through model setup.
 
 The current alpha release supports Windows x64. Linux support is still work in
 progress and is not part of the supported release yet.
 
 ## Install the app and native runtime
 
-The current one-command setup detects the GPU backend, downloads the matching
-`trellis-server` runtime, runs the normal Windows desktop installer, and writes
-the local runtime configuration. The standalone `.exe` in the release is a
-normal NSIS installer, but it does not yet download the GPU runtime by itself.
-
 ### Windows
 
-Run this in PowerShell:
+Download and run `triastasis-windows-x64-setup.exe` from the release page. This
+is the normal per-user Windows installer and does not require PowerShell or a
+terminal.
 
-```powershell
-irm https://raw.githubusercontent.com/dmelim/Triastasis/main/install/install.ps1 | iex
-```
+On first launch, Triastasis detects the GPU, recommends the matching native
+runtime, downloads it from the same release, verifies its required SHA-256, and
+activates it before model setup. Model weights are intentionally not part of the
+initial installer and are downloaded separately during the same onboarding.
 
-Model weights are intentionally not part of the initial installation. The app
-downloads and verifies the selected model bundle during onboarding.
-
-New releases include SHA-256 files for the runtime and desktop downloads. The
-setup verifies them when available and stops on a mismatch. Older releases that
-predate checksum publication remain installable with an explicit warning.
+The PowerShell bootstrap remains available as an advanced compatibility path
+for unattended setup and explicit backend, storage, or port overrides. It is no
+longer the normal installation path.
 
 ## Complete first-run onboarding
 
-Launch Triastasis after installation. First-run setup has three stages:
+Launch Triastasis after installation. First-run setup has four stages:
 
 1. **Welcome** explains that generation runs locally.
-2. **Credits** identifies the upstream projects and asks you to review and
+2. **Runtime** detects the GPU and installs a verified CUDA or Vulkan runtime.
+3. **Credits** identifies the upstream projects and asks you to review and
    accept the terms needed for curated model downloads.
-3. **Models** shows the available storage location and model bundles. Triastasis
+4. **Models** shows the available storage location and model bundles. Triastasis
    recommends a bundle for the detected hardware and reports its download size.
 
 You can change the model storage location before downloading. Curated downloads
@@ -109,14 +105,12 @@ Download the portable application archive from the release page:
 
 - `triastasis-windows-x64-portable.zip`
 
-Extract it to a writable directory. Download the matching
-`trellis-<backend>-windows-x64` runtime archive from the same release and extract
-its server and libraries into the portable `runtime/` directory. Keep the
-included `portable.dat` marker beside the executable.
-
-Launch the app and complete the same first-run onboarding. Curated model bundles
-are downloaded into the portable `models/` directory by default. Configuration,
-output, logs, and app-managed data remain under the portable folder.
+Extract it to a writable directory and keep the included `portable.dat` marker
+beside the executable. Launch the app and complete the same first-run
+onboarding. Triastasis installs the selected runtime into the portable
+`runtime/` directory and curated model bundles into the portable `models/`
+directory by default. Configuration, output, logs, and app-managed data remain
+under the portable folder.
 
 ## Advanced installer options
 
