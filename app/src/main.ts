@@ -1,4 +1,10 @@
 import "./ui.css";
+
+// Keep browser tooling available during tauri dev, but never expose the
+// WebView2 context menu in packaged builds.
+if (!import.meta.env.DEV && "__TAURI_INTERNALS__" in window) {
+  document.addEventListener("contextmenu", (event) => event.preventDefault());
+}
 import type { BufferGeometry, Mesh, Object3D } from "three";
 import { generate, getGenerationProgress, health, type NativeProgress } from "./api";
 import { loadConfig } from "./config";
