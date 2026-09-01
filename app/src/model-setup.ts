@@ -432,9 +432,12 @@ async function renderSetup(
     .map((view) => {
       const ownProgress = progress?.bundleId === view.summary.id ? progress : null;
       const activationInProgress = maintenance.kind === "activating";
+      const activatingThisBundle = activationInProgress && maintenance.bundleId === view.summary.id;
+      const activationFailed = activationFeedback?.bundleId === view.summary.id &&
+        activationFeedback.state === "failed";
       const controlsDisabled = activationInProgress ? " disabled" : "";
       let action: string;
-      if (activationInProgress && maintenance.bundleId === view.summary.id) {
+      if (activatingThisBundle) {
         action = `
           <button class="button button--primary button--sm" type="button" disabled aria-busy="true">
             <span class="spinner" aria-hidden="true"></span>
@@ -468,11 +471,28 @@ async function renderSetup(
       const recBadge = view.recommended
         ? `<span class="model-badge rec">Recommended for this system</span>`
         : "";
+      const stateBadge = view.active
+        ? '<span class="model-badge ok">Active</span>'
+        : activatingThisBundle
+          ? '<span class="model-badge activating">Activating</span>'
+          : activationFailed
+            ? '<span class="model-badge failed">Activation failed</span>'
+            : view.installed
+              ? '<span class="model-badge installed">Installed</span>'
+              : "";
+      const cardState = view.active
+        ? " active"
+        : activatingThisBundle
+          ? " activating"
+          : activationFailed
+            ? " activation-failed"
+            : "";
       const warn = view.warning ? `<p class="model-warning">${escapeHtml(view.warning)}</p>` : "";
       return `
-        <div class="bundle-card${view.recommended ? " recommended" : ""}" data-bundle="${view.summary.id}">
+        <div class="bundle-card${cardState}" data-bundle="${view.summary.id}">
           <div class="bundle-head">
             <strong>${escapeHtml(view.summary.displayName)}</strong>
+            ${stateBadge}
             ${recBadge}
           </div>
           <p>${view.summary.quantization.toUpperCase()}, about ${formatGigabytes(view.summary.totalBytes)}, ${view.summary.fileCount} files</p>
@@ -709,7 +729,7 @@ function renderActivationStatus(message: string, isError: boolean): string {
   return `
     <div class="model-progress${isError ? " model-progress--failed" : ""}" role="${isError ? "alert" : "status"}">
       <strong>${escapeHtml(message)}</strong>
-      ${isError ? "<p><span>The downloaded bundle remains installed. Try activation again when no other maintenance operation is running.</span></p>" : ""}
+      ${isError ? "<p><span>The bundle remains installed. Check that another Triastasis instance is not running, then try activation again. Technical details are saved in the app logs.</span></p>" : ""}
     </div>`;
 }
 

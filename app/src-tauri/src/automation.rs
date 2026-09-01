@@ -989,10 +989,12 @@ struct Control {
     stop: Arc<AtomicBool>,
     server: Arc<Server>,
     queue: Arc<JobQueue>,
+    threads: Vec<std::thread::JoinHandle<()>>,
 }
 
 #[derive(Default)]
 pub struct AutomationState {
+    lifecycle: Mutex<()>,
     control: Mutex<Option<Control>>,
     info: Mutex<AutomationInfo>,
     maintenance: AtomicBool,
@@ -1008,7 +1010,10 @@ struct StartRecovery<'a> {
 
 impl<'a> StartRecovery<'a> {
     fn new(state: &'a AutomationState) -> Self {
-        Self { state, armed: true }
+        Self {
+            state,
+            armed: !state.maintenance.load(Ordering::Acquire),
+        }
     }
 
     fn complete(&mut self) {
@@ -1019,7 +1024,7 @@ impl<'a> StartRecovery<'a> {
 impl Drop for StartRecovery<'_> {
     fn drop(&mut self) {
         if self.armed {
-            self.state.maintenance.store(false, Ordering::Release);
+            resume(self.state);
         }
     }
 }
@@ -1239,11 +1244,27 @@ pub fn quiesce_if_idle(state: &AutomationState) -> Result<(), MaintenanceError> 
 /// Resume submissions after a failed restart, or after a new automation
 /// control has been installed. This is deliberately idempotent.
 pub fn resume(state: &AutomationState) {
-    state.maintenance.store(false, Ordering::Release);
     let guard = state.control.lock().unwrap();
     if let Some(control) = guard.as_ref() {
-        control.queue.admission.lock().unwrap().accepting = true;
+        control.queue.admission.lock().unwrap().accepting = !control.stop.load(Ordering::Acquire);
     }
+    state.maintenance.store(false, Ordering::Release);
+}
+
+/// Own the admission gate through restart, rollback, and final status reporting.
+pub struct MaintenanceGuard<'a>(&'a AutomationState);
+
+impl Drop for MaintenanceGuard<'_> {
+    fn drop(&mut self) {
+        resume(self.0);
+    }
+}
+
+pub fn begin_maintenance(
+    state: &AutomationState,
+) -> Result<MaintenanceGuard<'_>, MaintenanceError> {
+    quiesce_if_idle(state)?;
+    Ok(MaintenanceGuard(state))
 }
 
 fn find_bytes(haystack: &[u8], needle: &[u8]) -> Option<usize> {
@@ -3033,11 +3054,19 @@ pub fn start(
     state: &AutomationState,
     app: Option<tauri::AppHandle>,
 ) -> Result<AutomationInfo, String> {
-    stop(state);
+    let _lifecycle = state.lifecycle.lock().unwrap();
     let mut recovery = StartRecovery::new(state);
+    stop_locked(state)?;
     let api_port = cfg.port.checked_add(1).ok_or("server port is too high")?;
     let addr = format!("127.0.0.1:{api_port}");
-    let server = Arc::new(Server::http(&addr).map_err(|e| format!("automation API: {e}"))?);
+    let server = Arc::new(bind_api_listener(&addr, Duration::from_secs(2)).map_err(|error| {
+        log_lifecycle_error(&format!("binding automation API at {addr}: {error}"));
+        if error.kind() == std::io::ErrorKind::AddrInUse {
+            format!("Triastasis could not restart its local service because port {api_port} is still in use. Quit any other Triastasis instance (including its tray icon), then try activation again. If it continues, restart Triastasis. Your model files are still installed.")
+        } else {
+            "Triastasis could not start its local service. Restart Triastasis and try activation again. Technical details are in automation.log.".to_string()
+        }
+    })?);
     let stop_flag = Arc::new(AtomicBool::new(false));
     let queue = Arc::new(JobQueue::default());
     queue.admission.lock().unwrap().accepting = !state.maintenance.load(Ordering::Acquire);
@@ -3052,7 +3081,7 @@ pub fn start(
     let http_queue = queue.clone();
     let http_stop = stop_flag.clone();
     let http_info = info.clone();
-    std::thread::spawn(move || {
+    let http_thread = std::thread::spawn(move || {
         while !http_stop.load(Ordering::Relaxed) {
             match http_server.recv_timeout(Duration::from_millis(500)) {
                 Ok(Some(request)) => {
@@ -3067,30 +3096,90 @@ pub fn start(
 
     let worker_queue = queue.clone();
     let worker_stop = stop_flag.clone();
-    std::thread::spawn(move || worker_loop(worker_queue, worker_stop));
+    let worker_thread = std::thread::spawn(move || worker_loop(worker_queue, worker_stop));
 
     *state.info.lock().unwrap() = info.clone();
-    let next_queue = queue.clone();
     *state.control.lock().unwrap() = Some(Control {
         stop: stop_flag,
         server,
         queue,
+        threads: vec![http_thread, worker_thread],
     });
-    state.maintenance.store(false, Ordering::Release);
-    next_queue.admission.lock().unwrap().accepting = true;
+    // An activation/restart caller keeps the gate through its entire transaction.
+    if recovery.armed {
+        resume(state);
+    }
     recovery.complete();
     Ok(info)
 }
 
+/// Bind rather than probe: never adopt or terminate a foreign process on this port.
+/// tiny_http closes its internal accept thread asynchronously even after Drop.
+fn bind_api_listener(addr: &str, timeout: Duration) -> std::io::Result<Server> {
+    let deadline = std::time::Instant::now() + timeout;
+    loop {
+        match std::net::TcpListener::bind(addr) {
+            Ok(listener) => {
+                return Server::from_listener(listener, None)
+                    .map_err(|error| std::io::Error::other(error.to_string()))
+            }
+            Err(error)
+                if error.kind() == std::io::ErrorKind::AddrInUse
+                    && std::time::Instant::now() < deadline =>
+            {
+                std::thread::sleep(Duration::from_millis(25));
+            }
+            Err(error) => return Err(error),
+        }
+    }
+}
+
+fn log_lifecycle_error(detail: &str) {
+    eprintln!("[triastasis] {detail}");
+    if let Ok(dir) = config::resolve_logs_dir() {
+        if let Ok(mut file) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(dir.join("automation.log"))
+        {
+            let _ = writeln!(file, "{} {detail}", now_secs());
+        }
+    }
+}
+
 pub fn stop(state: &AutomationState) {
+    let _lifecycle = state.lifecycle.lock().unwrap();
+    if let Err(error) = stop_locked(state) {
+        log_lifecycle_error(&error);
+    }
+}
+
+fn stop_locked(state: &AutomationState) -> Result<(), String> {
     state.maintenance.store(true, Ordering::Release);
-    if let Some(control) = state.control.lock().unwrap().take() {
+    state.info.lock().unwrap().running = false;
+    let previous = state.control.lock().unwrap().take();
+    if let Some(mut control) = previous {
         control.queue.admission.lock().unwrap().accepting = false;
-        control.stop.store(true, Ordering::Relaxed);
+        control.stop.store(true, Ordering::Release);
         control.queue.changed.notify_all();
         control.server.unblock();
+        let deadline = std::time::Instant::now() + Duration::from_secs(3);
+        while control.threads.iter().any(|thread| !thread.is_finished()) {
+            if std::time::Instant::now() >= deadline {
+                // Retain ownership so a retry cannot race a detached old listener.
+                *state.control.lock().unwrap() = Some(control);
+                return Err("Triastasis is still stopping its previous local service. Wait a moment and try activation again. Your model files are still installed.".to_string());
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        for thread in control.threads.drain(..) {
+            if thread.join().is_err() {
+                log_lifecycle_error("automation thread panicked during shutdown");
+            }
+        }
+        drop(control);
     }
-    state.info.lock().unwrap().running = false;
+    Ok(())
 }
 
 pub fn info(state: &AutomationState) -> AutomationInfo {
@@ -4225,6 +4314,7 @@ mod tests {
             stop: Arc::new(AtomicBool::new(false)),
             server,
             queue: queue.clone(),
+            threads: Vec::new(),
         });
 
         assert_eq!(
@@ -4281,5 +4371,35 @@ mod tests {
         assert!(start(&cfg, &state, None).is_err());
         assert!(!state.maintenance.load(Ordering::Acquire));
         assert!(state.control.lock().unwrap().is_none());
+    }
+
+    #[test]
+    fn owned_listener_is_fully_stopped_before_the_same_port_is_rebound() {
+        let probe = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = probe.local_addr().unwrap();
+        drop(probe);
+
+        let server = Arc::new(Server::http(addr).unwrap());
+        let stop_flag = Arc::new(AtomicBool::new(false));
+        let thread_server = server.clone();
+        let thread_stop = stop_flag.clone();
+        let http_thread = std::thread::spawn(move || {
+            while !thread_stop.load(Ordering::Acquire) {
+                let _ = thread_server.recv_timeout(Duration::from_millis(10));
+            }
+        });
+        let queue = Arc::new(JobQueue::default());
+        let state = AutomationState::default();
+        *state.control.lock().unwrap() = Some(Control {
+            stop: stop_flag,
+            server,
+            queue,
+            threads: vec![http_thread],
+        });
+
+        stop(&state);
+        assert!(state.control.lock().unwrap().is_none());
+        let rebound = bind_api_listener(&addr.to_string(), Duration::from_millis(250));
+        assert!(rebound.is_ok(), "the stopped API port must be reusable");
     }
 }

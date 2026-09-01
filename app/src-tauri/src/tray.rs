@@ -61,11 +61,12 @@ fn maintenance_message(action: &str, error: automation::MaintenanceError) -> Str
 }
 
 pub fn restart_services(app: &AppHandle) -> Result<(), String> {
-    if let Err(error) = automation::quiesce_if_idle(app.state::<AutomationState>().inner()) {
-        let message = maintenance_message("restart the server", error);
-        show_main_window(app);
-        return Err(message);
-    }
+    let _maintenance = automation::begin_maintenance(app.state::<AutomationState>().inner())
+        .map_err(|error| {
+            let message = maintenance_message("restart the server", error);
+            show_main_window(app);
+            message
+        })?;
     restart_services_while_quiesced(app)
 }
 
@@ -73,23 +74,14 @@ pub fn restart_services(app: &AppHandle) -> Result<(), String> {
 pub(crate) fn restart_services_while_quiesced(app: &AppHandle) -> Result<(), String> {
     let cfg = match config::load() {
         Some(cfg) => cfg,
-        None => {
-            automation::resume(app.state::<AutomationState>().inner());
-            return Err("no config.json found".to_string());
-        }
+        None => return Err("no config.json found".to_string()),
     };
-    if let Err(error) = server::start(app, &cfg, app.state::<ServerState>().inner(), false) {
-        automation::resume(app.state::<AutomationState>().inner());
-        return Err(error);
-    }
-    if let Err(error) = automation::start(
+    server::start(app, &cfg, app.state::<ServerState>().inner(), false)?;
+    automation::start(
         &cfg,
         app.state::<AutomationState>().inner(),
         Some(app.clone()),
-    ) {
-        automation::resume(app.state::<AutomationState>().inner());
-        return Err(error);
-    }
+    )?;
     let _ = app.emit("server-restarted", ());
     Ok(())
 }

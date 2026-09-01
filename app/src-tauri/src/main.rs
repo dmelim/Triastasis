@@ -466,15 +466,15 @@ fn activate_model_bundle(
     let root = scan.models_root.clone();
 
     // Queue-idle gating: activation must not interrupt running generations.
-    match automation::quiesce_if_idle(automation.inner()) {
-        Ok(()) => {}
-        Err(automation::MaintenanceError::AlreadyInProgress) => {
-            return Err("another maintenance operation is already in progress".to_string());
-        }
-        Err(automation::MaintenanceError::Busy(_)) => {
-            return Err("wait until all generations finish before switching bundles".to_string());
-        }
-    }
+    let _maintenance =
+        automation::begin_maintenance(automation.inner()).map_err(|error| match error {
+            automation::MaintenanceError::AlreadyInProgress => {
+                "another maintenance operation is already in progress".to_string()
+            }
+            automation::MaintenanceError::Busy(_) => {
+                "wait until all generations finish before switching bundles".to_string()
+            }
+        })?;
 
     let previous = config::load().map(|c| (c.models_dir, c.models_root, c.active_bundle));
     let apply = || -> Result<(), String> {
@@ -486,14 +486,8 @@ fn activate_model_bundle(
         tray::restart_services_while_quiesced(&app)
     };
     match apply() {
-        Ok(()) => {
-            automation::resume(automation.inner());
-            Ok(())
-        }
+        Ok(()) => Ok(()),
         Err(e) => {
-            // A config write may fail before the restart helper gets a chance
-            // to release the gate. Resume idempotently before rollback.
-            automation::resume(automation.inner());
             // Roll back to the previously active configuration.
             if let Some((dir, r#root, active)) = previous {
                 if let Some(mut cfg) = config::load() {
@@ -503,7 +497,7 @@ fn activate_model_bundle(
                     config::save(&cfg).ok();
                 }
             }
-            tray::restart_services(&app).ok();
+            tray::restart_services_while_quiesced(&app).ok();
             Err(format!("activation failed, previous bundle restored: {e}"))
         }
     }
@@ -513,7 +507,11 @@ fn activate_model_bundle(
 /// publisher verification. The folder remains user-owned and is never copied
 /// or deleted by this command.
 #[tauri::command]
-fn activate_custom_model_directory(app: tauri::AppHandle, path: String) -> Result<(), String> {
+fn activate_custom_model_directory(
+    app: tauri::AppHandle,
+    automation: tauri::State<AutomationState>,
+    path: String,
+) -> Result<(), String> {
     let requested = path.trim();
     if requested.is_empty() {
         return Err("choose a custom model folder first".to_string());
@@ -529,13 +527,22 @@ fn activate_custom_model_directory(app: tauri::AppHandle, path: String) -> Resul
     next.models_dir = custom_dir.clone();
     next.custom_models_dir = custom_dir;
     next.active_bundle = models::CUSTOM_BUNDLE_ID.to_string();
+    let _maintenance =
+        automation::begin_maintenance(automation.inner()).map_err(|error| match error {
+            automation::MaintenanceError::AlreadyInProgress => {
+                "another maintenance operation is already in progress".to_string()
+            }
+            automation::MaintenanceError::Busy(_) => {
+                "wait until all generations finish before switching model folders".to_string()
+            }
+        })?;
     config::save(&next)?;
 
-    match tray::restart_services(&app) {
+    match tray::restart_services_while_quiesced(&app) {
         Ok(()) => Ok(()),
         Err(error) => {
             config::save(&previous).ok();
-            tray::restart_services(&app).ok();
+            tray::restart_services_while_quiesced(&app).ok();
             Err(format!(
                 "custom model activation failed, previous model folder restored: {error}"
             ))
