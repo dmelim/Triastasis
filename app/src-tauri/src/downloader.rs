@@ -491,6 +491,7 @@ pub fn run_download(
 ) -> Result<(), String> {
     let active = control.begin(bundle_id)?;
     let result = run_download_inner(app, &active, bundle_id);
+    let ready = result.is_ok() && active.status.lock().unwrap().state == "ready";
     if let Err(error) = &result {
         let already_reported = active.status.lock().unwrap().state == "failed";
         if !already_reported {
@@ -517,6 +518,28 @@ pub fn run_download(
         }
     }
     control.finish(bundle_id);
+    if ready {
+        let (file_count, total_bytes) = models::catalog()
+            .ok()
+            .and_then(|cat| cat.bundle(bundle_id))
+            .map(|bundle| (bundle.files.len(), ModelCatalog::total_bytes(bundle)))
+            .unwrap_or((0, 0));
+        emit_progress(
+            app,
+            &progress_payload(
+                bundle_id,
+                "ready",
+                None,
+                file_count,
+                file_count,
+                total_bytes,
+                total_bytes,
+                total_bytes,
+                total_bytes,
+                0,
+            ),
+        );
+    }
     result
 }
 
@@ -1051,21 +1074,6 @@ fn run_download_inner(
     }
     remove_partials(&dl_dir);
     set_state(status, "ready", None);
-    emit_progress(
-        app,
-        &progress_payload(
-            bundle_id,
-            "ready",
-            None,
-            file_count,
-            file_count,
-            total_total,
-            total_total,
-            total_total,
-            total_total,
-            0,
-        ),
-    );
     Ok(())
 }
 

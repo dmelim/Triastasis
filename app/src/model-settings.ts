@@ -17,9 +17,11 @@ import {
   discardPartial,
   downloadBundle,
   forgetCustomBundle,
+  modelMaintenanceSnapshot,
   pauseBundle,
   removeBundle,
   resetIncompleteBundle,
+  subscribeModelMaintenance,
   verifyAndRegister,
 } from "./model-manager";
 import {
@@ -57,6 +59,8 @@ export async function renderModelStorage(container: HTMLElement | null): Promise
   const snapshot = modelDownloadSnapshot();
   const catalog = snapshot.catalog.length ? snapshot.catalog : [];
   const progress = snapshot.progress;
+  const maintenance = modelMaintenanceSnapshot();
+  const modelActionsDisabled = maintenance.kind !== "idle";
 
   const free = await availableBytes(scan.modelsRoot);
   const used = scan.managed.reduce((sum, m) => {
@@ -118,6 +122,11 @@ export async function renderModelStorage(container: HTMLElement | null): Promise
         actions = `<button class="button button--primary button--sm" data-act="download" data-id="${bundle.id}">Download</button>`;
       }
 
+      if (modelActionsDisabled) {
+        actions = actions.replaceAll("<button ", "<button disabled ");
+        if (maintenance.bundleId === bundle.id) statusLine = `Activating ${escapeHtml(bundle.displayName)}...`;
+      }
+
       return `
         <div class="bundle-row${isActive ? " active" : ""}">
           <div class="bundle-row-main">
@@ -141,7 +150,7 @@ export async function renderModelStorage(container: HTMLElement | null): Promise
         </div>
         <div class="bundle-actions">
           ${custom.available && !customActive
-            ? `<button class="button button--primary button--sm" data-act="use-custom" data-path="${escapeHtml(custom.dir)}">Use this folder</button>`
+            ? `<button class="button button--primary button--sm" data-act="use-custom" data-path="${escapeHtml(custom.dir)}"${modelActionsDisabled ? " disabled" : ""}>Use this folder</button>`
             : ""}
           ${!customActive
             ? `<button class="button button--secondary button--sm" data-act="forget-custom">Forget</button>`
@@ -160,7 +169,7 @@ export async function renderModelStorage(container: HTMLElement | null): Promise
           <p>Custom model files are not verified or supported by Triastasis. They may be incompatible, unsafe, or incorrectly licensed. You are responsible for the files and their source.</p>
           <code>${escapeHtml(pendingCustomDirectory)}</code>
           <div class="custom-model-confirm-actions">
-            <button class="button button--primary button--sm" data-act="confirm-custom" data-path="${escapeHtml(pendingCustomDirectory)}">Use this folder</button>
+            <button class="button button--primary button--sm" data-act="confirm-custom" data-path="${escapeHtml(pendingCustomDirectory)}"${modelActionsDisabled ? " disabled" : ""}>Use this folder</button>
             <button class="button button--secondary button--sm" data-act="cancel-custom">Cancel</button>
           </div>
         </div>` : ""}
@@ -264,9 +273,11 @@ let subscribed = false;
 export function subscribeModelStorageRefresh(): void {
   if (subscribed) return;
   subscribed = true;
-  subscribeModelDownloads(() => {
+  const refreshRenderedStorage = () => {
     document
       .querySelectorAll<HTMLElement>("#settings-model-storage")
       .forEach((el) => void renderModelStorage(el));
-  });
+  };
+  subscribeModelDownloads(refreshRenderedStorage);
+  subscribeModelMaintenance(refreshRenderedStorage);
 }

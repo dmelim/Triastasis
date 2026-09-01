@@ -483,7 +483,7 @@ fn activate_model_bundle(
         cfg.models_root = root.clone();
         cfg.active_bundle = bundle_id.clone();
         config::save(&cfg)?;
-        tray::restart_services(&app)
+        tray::restart_services_while_quiesced(&app)
     };
     match apply() {
         Ok(()) => {
@@ -491,6 +491,9 @@ fn activate_model_bundle(
             Ok(())
         }
         Err(e) => {
+            // A config write may fail before the restart helper gets a chance
+            // to release the gate. Resume idempotently before rollback.
+            automation::resume(automation.inner());
             // Roll back to the previously active configuration.
             if let Some((dir, r#root, active)) = previous {
                 if let Some(mut cfg) = config::load() {
@@ -501,7 +504,6 @@ fn activate_model_bundle(
                 }
             }
             tray::restart_services(&app).ok();
-            automation::resume(automation.inner());
             Err(format!("activation failed, previous bundle restored: {e}"))
         }
     }

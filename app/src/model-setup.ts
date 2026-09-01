@@ -21,11 +21,13 @@ import {
   cancelBundle,
   detectNativeHardware,
   downloadBundle,
+  modelMaintenanceSnapshot,
   pauseBundle,
   recommendBundle,
   resetIncompleteBundle,
   selectionWarning,
   setModelsRoot,
+  subscribeModelMaintenance,
   verifyAndRegister,
 } from "./model-manager";
 import { busyContentFor } from "./modal-busy";
@@ -53,9 +55,12 @@ function section(): HTMLElement | null {
 const APP_SHELL_SELECTOR = ".mode-rail, #setup-banner, #recovery-banner, #workspace";
 const ONBOARDING_STORAGE_KEY = "triastasis.onboarding.complete.v1";
 let pendingCustomPath: string | null = null;
-type OnboardingStep = "welcome" | "runtime" | "credits" | "models";
+export type OnboardingStep = "welcome" | "credits" | "runtime" | "models";
 let onboardingStep: OnboardingStep = "welcome";
 let runtimeInstallInProgress = false;
+let lastReadyBundleId: string | null = null;
+let activationFeedback: { bundleId: string; state: "ready" | "failed"; message: string } | null = null;
+const automaticActivationAttempts = new Set<string>();
 
 function onboardingWasCompleted(): boolean {
   try {
@@ -122,13 +127,54 @@ function renderSetupError(root: HTMLElement, showWelcome: boolean): void {
 
 /** True when the app has nothing usable to generate with yet. */
 export function needsSetup(scan: ModelsScan): boolean {
-  const hasVerifiedActive = scan.managed.some(
-    (m) => m.registered && m.bundleId === scan.activeBundle,
+  return effectiveActiveBundleId(scan) === null;
+}
+
+/** Resolve the bundle the server can actually use, including legacy flat layouts. */
+export function effectiveActiveBundleId(scan: ModelsScan): string | null {
+  const managedActive = scan.managed.find(
+    (bundle) => bundle.registered && bundle.bundleId === scan.activeBundle,
   );
-  const legacyUsable = scan.legacy?.status === "completeUnverified";
-  const customUsable =
-    scan.activeBundle === "custom-local" && scan.custom?.available === true;
-  return !hasVerifiedActive && !legacyUsable && !customUsable;
+  if (managedActive) return managedActive.bundleId;
+  if (
+    scan.activeBundle === "custom-local" &&
+    scan.custom?.bundleId === "custom-local" &&
+    scan.custom.available
+  ) {
+    return scan.custom.bundleId;
+  }
+  if (scan.legacy?.status === "completeUnverified") {
+    return scan.legacy.bundleId;
+  }
+  return null;
+}
+
+/** Pick the initial managed bundle without overriding a valid existing choice. */
+export function defaultInstalledBundleId(
+  scan: ModelsScan,
+  recommendedBundleId: string,
+  preferRecommended = false,
+): string | null {
+  const installed = scan.managed
+    .filter((bundle) => bundle.registered)
+    .map((bundle) => bundle.bundleId);
+  const activeBundleId = effectiveActiveBundleId(scan);
+  if (installed.length === 1) {
+    return activeBundleId === installed[0] ? null : installed[0];
+  }
+  if (
+    preferRecommended &&
+    installed.length > 1 &&
+    installed.includes(recommendedBundleId) &&
+    activeBundleId !== recommendedBundleId
+  ) {
+    return recommendedBundleId;
+  }
+  if (activeBundleId) return null;
+  if (installed.length > 1 && installed.includes(recommendedBundleId)) {
+    return recommendedBundleId;
+  }
+  return installed[0] ?? null;
 }
 
 /** The welcome is shown once; missing models still reopen the focused setup screen. */
@@ -170,12 +216,108 @@ export function bundleCanResume(
   return managedIncomplete || partials.includes(bundleId);
 }
 
+export function nextOnboardingStep(
+  step: OnboardingStep,
+  termsAccepted: boolean,
+  runtimeInstalled: boolean,
+): OnboardingStep {
+  if (step === "welcome") return "credits";
+  if (step === "credits") return termsAccepted ? "runtime" : "credits";
+  if (step === "runtime") return runtimeInstalled ? "models" : "runtime";
+  return "models";
+}
+
+export function previousOnboardingStep(step: OnboardingStep): OnboardingStep {
+  if (step === "models") return "runtime";
+  if (step === "runtime") return "credits";
+  if (step === "credits") return "welcome";
+  return "welcome";
+}
+
+export function startBlockedReason(
+  scan: ModelsScan,
+  runtimeInstalled: boolean,
+  blockingActivity: string | null = null,
+): string | null {
+  if (!runtimeInstalled) return "Finish runtime setup first.";
+  if (blockingActivity) return blockingActivity;
+  if (needsSetup(scan)) return "Download and activate a model bundle first.";
+  return null;
+}
+
 async function currentScan(): Promise<ModelsScan | null> {
   try {
     return await scanModels();
   } catch {
     return null;
   }
+}
+
+async function activateManagedBundle(bundleId: string): Promise<void> {
+  activationFeedback = null;
+  try {
+    await activateBundle(bundleId);
+    const scan = await currentScan();
+    if (!scan || scan.activeBundle !== bundleId) {
+      throw new Error("The model bundle was activated but could not be confirmed as ready.");
+    }
+    activationFeedback = {
+      bundleId,
+      state: "ready",
+      message: `${bundleDisplayName(bundleId)} is ready`,
+    };
+  } catch (error) {
+    activationFeedback = {
+      bundleId,
+      state: "failed",
+      message: (error as Error).message || String(error),
+    };
+    throw error;
+  }
+}
+
+function bundleDisplayName(bundleId: string): string {
+  return modelDownloadSnapshot().catalog.find((bundle) => bundle.id === bundleId)?.displayName || "Model bundle";
+}
+
+function handleDownloadStateChange(): void {
+  const progress = modelDownloadSnapshot().progress;
+  const readyBundleId = progress?.state === "ready" ? progress.bundleId : null;
+  if (!readyBundleId) {
+    lastReadyBundleId = null;
+    if (progress && ["preparing", "downloading", "verifying"].includes(progress.state)) {
+      activationFeedback = null;
+    }
+    void refreshModelSetup();
+    return;
+  }
+  if (readyBundleId === lastReadyBundleId) {
+    void refreshModelSetup();
+    return;
+  }
+  if (modelMaintenanceSnapshot().kind !== "idle") {
+    lastReadyBundleId = null;
+    void refreshModelSetup();
+    return;
+  }
+  lastReadyBundleId = readyBundleId;
+  void (async () => {
+    const scan = await currentScan();
+    if (scan?.activeBundle === readyBundleId) {
+      activationFeedback = {
+        bundleId: readyBundleId,
+        state: "ready",
+        message: `${bundleDisplayName(readyBundleId)} is ready`,
+      };
+    } else {
+      try {
+        await activateManagedBundle(readyBundleId);
+      } catch {
+        // The persistent activation feedback explains the failure and leaves a retry action available.
+      }
+    }
+    await refreshModelSetup();
+  })();
 }
 
 export async function refreshModelSetup(): Promise<void> {
@@ -230,6 +372,7 @@ function buildViews(
   partials: string[],
 ): { views: BundleView[]; recommendation: ReturnType<typeof recommendBundle> } {
   const recommendation = recommendBundle(vramMb);
+  const activeBundleId = effectiveActiveBundleId(scan);
   const views = catalog.map((summary) => ({
     summary,
     recommended: summary.id === recommendation.bundleId,
@@ -238,7 +381,7 @@ function buildViews(
       (scan.legacy?.status === "completeUnverified" && scan.legacy.bundleId === summary.id),
     needsRegistration: bundleNeedsRegistration(scan, summary.id),
     canResume: bundleCanResume(scan, summary.id, partials),
-    active: scan.activeBundle === summary.id,
+    active: activeBundleId === summary.id,
   }));
   return { views, recommendation };
 }
@@ -255,7 +398,7 @@ async function renderSetup(
     ? snapshot.catalog
     : [{ id: "", displayName: "", quantization: "", fileCount: 0, totalBytes: 0 }];
   const hardware = await detectNativeHardware();
-  const { views } = buildViews(
+  const { views, recommendation } = buildViews(
     catalog.filter((b) => b.id),
     scan,
     hardware?.vramMb ?? null,
@@ -263,6 +406,21 @@ async function renderSetup(
   );
   const progress = snapshot.progress;
   const termsAccepted = curatedModelTermsAccepted();
+  const step = showWelcome ? onboardingStep : runtime.installed ? "models" : "runtime";
+  const automaticBundleId = step === "models" && runtime.installed
+    ? defaultInstalledBundleId(scan, recommendation.bundleId, showWelcome)
+    : null;
+  if (automaticBundleId && modelMaintenanceSnapshot().kind === "idle") {
+    const attemptKey = `${scan.modelsRoot}\n${automaticBundleId}`;
+    if (!automaticActivationAttempts.has(attemptKey)) {
+      automaticActivationAttempts.add(attemptKey);
+      void activateManagedBundle(automaticBundleId)
+        .catch(() => undefined)
+        .finally(() => void refreshModelSetup());
+    }
+  }
+  const maintenance = modelMaintenanceSnapshot();
+  const activationBundleName = maintenance.bundleId ? bundleDisplayName(maintenance.bundleId) : null;
 
   const freeText =
     scan.freeBytes != null ? `${formatGigabytes(scan.freeBytes)} free` : "free space unknown";
@@ -273,8 +431,16 @@ async function renderSetup(
   const cards = views
     .map((view) => {
       const ownProgress = progress?.bundleId === view.summary.id ? progress : null;
+      const activationInProgress = maintenance.kind === "activating";
+      const controlsDisabled = activationInProgress ? " disabled" : "";
       let action: string;
-      if (ownProgress?.state === "preparing") {
+      if (activationInProgress && maintenance.bundleId === view.summary.id) {
+        action = `
+          <button class="button button--primary button--sm" type="button" disabled aria-busy="true">
+            <span class="spinner" aria-hidden="true"></span>
+            <span class="spinner-label">Activating ${escapeHtml(view.summary.displayName)}...</span>
+          </button>`;
+      } else if (ownProgress?.state === "preparing") {
         action = `
           <button class="button button--primary button--sm" type="button" disabled aria-busy="true">
             <span class="spinner" aria-hidden="true"></span>
@@ -282,22 +448,22 @@ async function renderSetup(
           </button>`;
       } else if (ownProgress && ["downloading", "verifying"].includes(ownProgress.state)) {
         action = `
-          <button class="button button--secondary button--sm" data-act="pause" data-id="${view.summary.id}">Pause</button>
-          <button class="button button--secondary button--sm" data-act="cancel" data-id="${view.summary.id}">Cancel</button>`;
+          <button class="button button--secondary button--sm" data-act="pause" data-id="${view.summary.id}"${controlsDisabled}>Pause</button>
+          <button class="button button--secondary button--sm" data-act="cancel" data-id="${view.summary.id}"${controlsDisabled}>Cancel</button>`;
       } else if (view.installed) {
         action = view.active
-          ? ""
-          : `<button class="button button--primary button--sm" data-act="use" data-id="${view.summary.id}">Use ${escapeHtml(view.summary.displayName)}</button>`;
+          ? '<button class="button button--primary button--sm" type="button" disabled aria-current="true">In use</button>'
+          : `<button class="button button--primary button--sm" data-act="use" data-id="${view.summary.id}"${controlsDisabled}>Use ${escapeHtml(view.summary.displayName)}</button>`;
       } else if (view.needsRegistration) {
-        action = `<button class="button button--primary button--sm" data-act="verify" data-id="${view.summary.id}">Verify and register</button>`;
+        action = `<button class="button button--primary button--sm" data-act="verify" data-id="${view.summary.id}"${controlsDisabled}>Verify and register</button>`;
       } else if (ownProgress?.state === "paused") {
-        action = `<button class="button button--primary button--sm" data-act="resume" data-id="${view.summary.id}">Resume download</button>`;
+        action = `<button class="button button--primary button--sm" data-act="resume" data-id="${view.summary.id}"${controlsDisabled}>Resume download</button>`;
       } else if (ownProgress?.state === "failed") {
         action = "";
       } else if (view.canResume) {
-        action = `<button class="button button--primary button--sm" data-act="resume" data-id="${view.summary.id}">Verify and resume</button>`;
+        action = `<button class="button button--primary button--sm" data-act="resume" data-id="${view.summary.id}"${controlsDisabled}>Verify and resume</button>`;
       } else {
-        action = `<button class="button button--primary button--sm" data-act="download" data-id="${view.summary.id}">Download</button>`;
+        action = `<button class="button button--primary button--sm" data-act="download" data-id="${view.summary.id}"${controlsDisabled}>Download</button>`;
       }
       const recBadge = view.recommended
         ? `<span class="model-badge rec">Recommended for this system</span>`
@@ -316,41 +482,35 @@ async function renderSetup(
     })
     .join("");
 
-  const progressPanel = progress
-    ? ["preparing", "downloading", "verifying"].includes(progress.state)
-      ? renderProgress(progress)
-      : progress.state === "failed"
-        ? renderDownloadFailure(progress)
-        : ""
-    : "";
+  const progressPanel = maintenance.kind === "activating" && activationBundleName
+    ? renderActivationStatus(`Activating ${activationBundleName}...`, false)
+    : activationFeedback
+      ? renderActivationStatus(activationFeedback.message, activationFeedback.state === "failed")
+      : progress
+        ? ["preparing", "downloading", "verifying"].includes(progress.state)
+          ? renderProgress(progress)
+          : progress.state === "failed"
+            ? renderDownloadFailure(progress)
+            : ""
+        : "";
 
-  const legacyPanel = renderLegacyPanel(scan);
+  const legacyPanel = renderLegacyPanel(scan, maintenance.kind !== "idle");
   const installedIds = new Set(installedBundleIds(scan));
   if (scan.activeBundle) installedIds.add(scan.activeBundle);
   if (scan.legacy?.status === "completeUnverified" && scan.legacy.bundleId) {
     installedIds.add(scan.legacy.bundleId);
   }
   const installedViews = views.filter((view) => installedIds.has(view.summary.id));
-  const selectableInstalledViews = installedViews.filter((view) =>
-    scan.activeBundle !== view.summary.id &&
-    !(scan.legacy?.status === "completeUnverified" && scan.legacy.bundleId === view.summary.id)
-  );
+
   const installedPrompt = installedViews.length
     ? `
       <section class="installed-bundle-prompt" aria-labelledby="installed-bundle-title">
         <div>
           <h3 id="installed-bundle-title">Model bundle found</h3>
           <p>${installedViews.length === 1
-            ? `We found ${escapeHtml(installedViews[0].summary.displayName)} already installed. Use it now, or choose another bundle below.`
-            : `We found ${installedViews.length} model bundles already installed. Use one now, or choose another bundle below.`}</p>
+            ? `We found ${escapeHtml(installedViews[0].summary.displayName)} already installed. Its current status is shown below.`
+            : `We found ${installedViews.length} model bundles already installed. The current selection and other available choices are shown below.`}</p>
         </div>
-        ${selectableInstalledViews.length
-          ? `<div class="installed-bundle-actions">
-              ${selectableInstalledViews.map((view) =>
-                `<button class="button button--primary" data-act="use" data-id="${view.summary.id}">Use ${escapeHtml(view.summary.displayName)}</button>`
-              ).join("")}
-            </div>`
-          : ""}
       </section>`
     : "";
   const customPrompt = scan.custom
@@ -367,9 +527,9 @@ async function renderSetup(
         </div>
         ${scan.custom.available
           ? `<div class="installed-bundle-actions">
-              ${scan.activeBundle === scan.custom.bundleId
-                ? '<span class="model-badge ok">Custom folder is ready</span>'
-                : `<button class="button button--primary" data-act="use-custom" data-path="${escapeHtml(scan.custom.dir)}">Use custom folder</button>`}
+              ${effectiveActiveBundleId(scan) === scan.custom.bundleId
+                ? '<button class="button button--primary" type="button" disabled aria-current="true">In use</button>'
+                : `<button class="button button--primary" data-act="use-custom" data-path="${escapeHtml(scan.custom.dir)}"${maintenance.kind !== "idle" ? " disabled" : ""}>Use custom folder</button>`}
             </div>`
           : ""}
       </section>`
@@ -389,7 +549,7 @@ async function renderSetup(
           <p>Custom model files are not verified or supported by Triastasis. They may be incompatible, unsafe, or incorrectly licensed. You are responsible for the files and their source.</p>
           <code>${escapeHtml(pendingCustomPath)}</code>
           <div class="custom-model-confirm-actions">
-            <button class="button button--primary button--sm" data-act="confirm-custom" data-path="${escapeHtml(pendingCustomPath)}">Use this folder</button>
+            <button class="button button--primary button--sm" data-act="confirm-custom" data-path="${escapeHtml(pendingCustomPath)}"${maintenance.kind !== "idle" ? " disabled" : ""}>Use this folder</button>
             <button class="button button--secondary button--sm" data-act="cancel-custom">Cancel</button>
           </div>
         </div>` : ""}
@@ -436,21 +596,21 @@ async function renderSetup(
       <div id="model-setup-message" class="banner hidden"><span></span></div>
       ${runtime.installed ? `
         <div class="runtime-status runtime-status--ready">
-          <div>
+          <div class="runtime-status-title">
             <strong>${escapeHtml(runtimeLabel(runtime.backend))} runtime is ready</strong>
-            <p>Installed at <code>${escapeHtml(runtime.path)}</code></p>
+            <span class="model-badge ok">Ready</span>
           </div>
-          <span class="model-badge ok">Ready</span>
+          <p>Installed at <code>${escapeHtml(runtime.path)}</code></p>
         </div>` : `
         <div class="runtime-status recommended">
-          <div>
-            <div class="bundle-head">
-              <strong>${escapeHtml(runtimeLabel(recommendedRuntime))}</strong>
-              <span class="model-badge rec">Recommended for this system</span>
-            </div>
-            <p>${escapeHtml(runtime.recommendation)}</p>
+          <div class="runtime-status-title">
+            <strong>${escapeHtml(runtimeLabel(recommendedRuntime))}</strong>
+            <span class="model-badge rec">Recommended for this system</span>
           </div>
-          <button class="button button--primary" type="button" data-act="install-runtime" data-backend="${escapeHtml(recommendedRuntime)}">Install recommended runtime</button>
+          <p>${escapeHtml(runtime.recommendation)}</p>
+          <div class="runtime-install-action">
+            <button class="button button--primary" type="button" data-act="install-runtime" data-backend="${escapeHtml(recommendedRuntime)}">Install recommended runtime</button>
+          </div>
         </div>
         <details class="runtime-options">
           <summary>Choose a different runtime</summary>
@@ -464,7 +624,18 @@ async function renderSetup(
       <p class="model-note">${runtime.portable ? "Portable mode installs the runtime beside Triastasis." : "The runtime is installed in your local application data and can be replaced by a future verified update."}</p>
     </section>`;
 
-  const step = showWelcome ? onboardingStep : runtime.installed ? "models" : "runtime";
+  const downloadInProgress = progress && ["preparing", "downloading", "verifying"].includes(progress.state)
+    ? `Finish downloading ${bundleDisplayName(progress.bundleId)} first.`
+    : null;
+  const blockingActivity = maintenance.kind === "activating" && activationBundleName
+    ? `Activating ${activationBundleName}...`
+    : downloadInProgress;
+  const startReason = startBlockedReason(scan, runtime.installed, blockingActivity);
+  const navigationReason = step === "credits" && !termsAccepted
+    ? "Accept the model terms to continue."
+    : step === "models"
+      ? startReason
+      : null;
   root.setAttribute(
     "aria-labelledby",
     step === "welcome" ? "model-setup-title" : step === "runtime" ? "runtime-setup-title" : step === "credits" ? "model-credits-title" : "model-bundle-title",
@@ -474,9 +645,9 @@ async function renderSetup(
       ${showWelcome ? `
         <nav class="onboarding-progress" aria-label="Onboarding progress">
           <span${step === "welcome" ? ' aria-current="step"' : ""}>Welcome</span>
-          <span${step === "runtime" ? ' aria-current="step"' : ""}>Runtime</span>
           <span${step === "credits" ? ' aria-current="step"' : ""}>Credits</span>
-          <span${step === "models" ? ' aria-current="step"' : ""}>Models</span>
+          <span${step === "runtime" ? ' aria-current="step"' : ""}>Runtime</span>
+          <span${step === "models" ? ' aria-current="step"' : ""}>Ready</span>
         </nav>` : ""}
       ${step === "welcome" ? `
         <header class="onboarding-intro onboarding-stage">
@@ -495,11 +666,16 @@ async function renderSetup(
         </section>` : ""}
       ${step === "models" ? modelsContent : ""}
       <div class="onboarding-nav" aria-label="Onboarding navigation">
-        ${step !== "welcome" && showWelcome ? '<button class="button button--secondary" type="button" data-act="previous-step">Previous</button>' : '<span></span>'}
-        ${step === "welcome" ? '<button class="button button--primary" type="button" data-act="next-step">Next</button>' : ""}
-        ${step === "runtime" && runtime.installed ? '<button class="button button--primary" type="button" data-act="next-step">Next</button>' : ""}
-        ${step === "credits" ? '<button class="button button--primary" type="button" data-act="next-step">Next</button>' : ""}
-        ${step === "models" ? '<button class="button button--primary" type="button" data-act="start">Start Triastasis</button>' : ""}
+        <div class="onboarding-nav-back">
+          ${step !== "welcome" && showWelcome ? '<button class="button button--secondary" type="button" data-act="previous-step">Previous</button>' : ""}
+        </div>
+        <div class="onboarding-nav-action">
+          ${navigationReason ? `<span id="onboarding-action-reason" class="onboarding-nav-reason" role="status">${escapeHtml(navigationReason)}</span>` : ""}
+          ${step === "welcome" ? '<button class="button button--primary" type="button" data-act="next-step">Next</button>' : ""}
+          ${step === "credits" ? `<button class="button button--primary" type="button" data-act="next-step"${termsAccepted ? "" : ' disabled aria-describedby="onboarding-action-reason"'}>Next</button>` : ""}
+          ${step === "runtime" && runtime.installed ? '<button class="button button--primary" type="button" data-act="next-step">Next</button>' : ""}
+          ${step === "models" ? `<button class="button button--primary" type="button" data-act="start"${startReason ? ' disabled aria-describedby="onboarding-action-reason"' : ""}>Start Triastasis</button>` : ""}
+        </div>
       </div>
     </div>`;
 
@@ -529,6 +705,14 @@ function renderProgress(progress: NonNullable<ReturnType<typeof modelDownloadSna
     </div>`;
 }
 
+function renderActivationStatus(message: string, isError: boolean): string {
+  return `
+    <div class="model-progress${isError ? " model-progress--failed" : ""}" role="${isError ? "alert" : "status"}">
+      <strong>${escapeHtml(message)}</strong>
+      ${isError ? "<p><span>The downloaded bundle remains installed. Try activation again when no other maintenance operation is running.</span></p>" : ""}
+    </div>`;
+}
+
 function renderDownloadFailure(
   progress: NonNullable<ReturnType<typeof modelDownloadSnapshot>["progress"]>,
 ): string {
@@ -544,7 +728,7 @@ function renderDownloadFailure(
     </div>`;
 }
 
-function renderLegacyPanel(scan: ModelsScan): string {
+function renderLegacyPanel(scan: ModelsScan, actionsDisabled: boolean): string {
   const legacy = scan.legacy;
   if (!legacy || legacy.status === "empty") return "";
   if (legacy.status === "completeUnverified") {
@@ -555,7 +739,7 @@ function renderLegacyPanel(scan: ModelsScan): string {
       <div class="model-legacy">
         <p>An incomplete legacy installation was found: ${legacy.matchedFiles} of ${legacy.totalFiles} files match ${escapeHtml(legacy.bundleId)}.</p>
         <p class="model-note">Legacy files are left untouched. Downloading creates a separate managed bundle.</p>
-        <button class="button button--primary button--sm" data-act="download" data-id="${escapeHtml(legacy.bundleId)}">Download managed bundle</button>
+        <button class="button button--primary button--sm" data-act="download" data-id="${escapeHtml(legacy.bundleId)}"${actionsDisabled ? " disabled" : ""}>Download managed bundle</button>
       </div>`;
   }
   return `
@@ -588,6 +772,7 @@ function bindActions(root: HTMLElement, scan: ModelsScan, runtime: RuntimeStatus
         act === "download" ||
         act === "resume" ||
         act === "verify" ||
+        act === "use" ||
         act === "confirm-custom" ||
         act === "use-custom";
       const originalHtml = btn.innerHTML;
@@ -599,27 +784,37 @@ function bindActions(root: HTMLElement, scan: ModelsScan, runtime: RuntimeStatus
         btn.style.minWidth = busy.minWidth;
         btn.innerHTML = busy.html;
         btn.querySelector<HTMLElement>(".spinner-label")!.textContent =
-          act === "verify" ? "Verifying..." : act === "resume" ? "Resuming..." : "Starting...";
+          act === "verify"
+            ? "Verifying..."
+            : act === "resume"
+              ? "Resuming..."
+              : act === "use" || act === "use-custom" || act === "confirm-custom"
+                ? "Activating..."
+                : "Starting...";
         btn.setAttribute("aria-busy", "true");
       }
       try {
         if (act === "next-step") {
-          if (onboardingStep === "welcome") onboardingStep = "runtime";
-          else if (onboardingStep === "runtime") {
-            if (!runtime.installed) {
-              showMessage(root, "Install the recommended runtime before continuing.", true);
-              refreshAfterAction = false;
-              return;
-            }
-            onboardingStep = "credits";
-          } else onboardingStep = "models";
+          const next = nextOnboardingStep(
+            onboardingStep,
+            curatedModelTermsAccepted(),
+            runtime.installed,
+          );
+          if (next === onboardingStep) {
+            refreshAfterAction = false;
+            return;
+          }
+          onboardingStep = next;
         } else if (act === "previous-step") {
-          if (onboardingStep === "models") onboardingStep = "credits";
-          else if (onboardingStep === "credits") onboardingStep = "runtime";
-          else onboardingStep = "welcome";
+          onboardingStep = previousOnboardingStep(onboardingStep);
         } else if (act === "start") {
-          if (needsSetup(scan)) {
-            showMessage(root, "Choose and activate a model bundle before starting Triastasis.", true);
+          const reason = startBlockedReason(
+            scan,
+            runtime.installed,
+            modelMaintenanceSnapshot().kind === "activating" ? "Finish model activation first." : null,
+          );
+          if (reason) {
+            showMessage(root, reason, true);
             refreshAfterAction = false;
             return;
           }
@@ -662,8 +857,8 @@ function bindActions(root: HTMLElement, scan: ModelsScan, runtime: RuntimeStatus
           await resetIncompleteBundle(id);
           showMessage(root, "Incomplete files deleted. Start the download again when ready.", false);
         } else if (act === "use") {
-          showMessage(root, "Switching to this bundle...", false);
-          await activateBundle(id);
+          showMessage(root, `Activating ${bundleDisplayName(id)}...`, false);
+          await activateManagedBundle(id);
         }
       } catch (e) {
         showMessage(root, (e as Error).message || String(e), true);
@@ -703,6 +898,10 @@ export async function initModelSetup(): Promise<void> {
     renderSetupLoading(root);
   }
   await refreshModelSetup();
-  subscribeModelDownloads(() => void refreshModelSetup());
+  subscribeModelDownloads(handleDownloadStateChange);
+  subscribeModelMaintenance((maintenance) => {
+    if (maintenance.kind === "idle") handleDownloadStateChange();
+    else void refreshModelSetup();
+  });
   window.setInterval(() => void refreshModelSetup(), 10000);
 }

@@ -66,6 +66,11 @@ pub fn restart_services(app: &AppHandle) -> Result<(), String> {
         show_main_window(app);
         return Err(message);
     }
+    restart_services_while_quiesced(app)
+}
+
+/// Restart after a caller has already acquired the automation maintenance gate.
+pub(crate) fn restart_services_while_quiesced(app: &AppHandle) -> Result<(), String> {
     let cfg = match config::load() {
         Some(cfg) => cfg,
         None => {

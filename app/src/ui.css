@@ -1703,10 +1703,13 @@ input:focus-visible,
 .onboarding-credits .onboarding-lineage a { color: var(--content-accent); }
 .onboarding-models { max-width: 960px; }
 .onboarding-runtime { width: min(760px, 100%); margin: 0 auto; }
-.runtime-status { display: flex; align-items: flex-start; justify-content: space-between; gap: var(--space-4); padding: var(--space-4); border: 1px solid var(--border-default); border-radius: var(--radius-card); background: var(--surface-panel); }
+.runtime-status { padding: var(--space-4); border: 1px solid var(--border-default); border-radius: var(--radius-card); background: var(--surface-panel); }
 .runtime-status.recommended { border-color: var(--border-focus); }
+.runtime-status-title { display: flex; align-items: center; flex-wrap: wrap; gap: var(--space-2); }
+.runtime-status-title strong { line-height: 1.4; }
 .runtime-status p, .runtime-options p { margin: var(--space-2) 0 0; color: var(--content-secondary); }
 .runtime-status code { overflow-wrap: anywhere; }
+.runtime-install-action { display: flex; justify-content: center; margin-top: var(--space-4); }
 .runtime-options { margin-top: var(--space-4); }
 .runtime-options summary { cursor: pointer; color: var(--content-secondary); }
 .runtime-option-actions { display: flex; flex-wrap: wrap; gap: var(--space-2); margin-top: var(--space-3); }
@@ -1724,6 +1727,10 @@ input:focus-visible,
   background: var(--surface-canvas);
 }
 .onboarding-nav .button { min-width: 96px; white-space: nowrap; }
+.onboarding-nav-back,
+.onboarding-nav-action { display: flex; align-items: center; gap: var(--space-3); }
+.onboarding-nav-action { justify-content: flex-end; margin-left: auto; }
+.onboarding-nav-reason { max-width: 34ch; color: var(--content-secondary); font-size: var(--font-size-caption); text-align: right; }
 .installed-bundle-prompt {
   display: flex;
   align-items: center;

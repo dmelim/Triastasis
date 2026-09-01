@@ -1,6 +1,6 @@
 // Bundle recommendation and shared actions for model management (Phases 3-4).
-// The recommendation never selects or downloads anything on its own; it only
-// labels one bundle "Recommended for this system" and explains uncertainty.
+// The recommendation labels the safest default for onboarding. Onboarding may
+// activate an already installed default, but downloads always require a user action.
 
 import { invoke } from "./tauri";
 import { loadConfig, saveConfig } from "./config";
@@ -30,6 +30,45 @@ export interface NativeHardwareInfo {
   gpuIndex: number;
   gpuName: string | null;
   vramMb: number | null;
+}
+
+export type ModelMaintenanceKind = "idle" | "activating";
+
+export interface ModelMaintenanceSnapshot {
+  kind: ModelMaintenanceKind;
+  bundleId: string | null;
+}
+
+type ModelMaintenanceListener = (snapshot: ModelMaintenanceSnapshot) => void;
+
+let maintenanceSnapshot: ModelMaintenanceSnapshot = { kind: "idle", bundleId: null };
+const maintenanceListeners = new Set<ModelMaintenanceListener>();
+
+export function modelMaintenanceSnapshot(): ModelMaintenanceSnapshot {
+  return maintenanceSnapshot;
+}
+
+export function subscribeModelMaintenance(listener: ModelMaintenanceListener): () => void {
+  maintenanceListeners.add(listener);
+  return () => maintenanceListeners.delete(listener);
+}
+
+function setModelMaintenance(snapshot: ModelMaintenanceSnapshot): void {
+  maintenanceSnapshot = snapshot;
+  maintenanceListeners.forEach((listener) => listener(snapshot));
+}
+
+function beginModelActivation(bundleId: string): void {
+  if (maintenanceSnapshot.kind !== "idle") {
+    throw new Error("Another model activation is already in progress.");
+  }
+  setModelMaintenance({ kind: "activating", bundleId });
+}
+
+function finishModelActivation(bundleId: string): void {
+  if (maintenanceSnapshot.kind === "activating" && maintenanceSnapshot.bundleId === bundleId) {
+    setModelMaintenance({ kind: "idle", bundleId: null });
+  }
 }
 
 /** Read the native hardware probe without the generation-resolution logic. */
@@ -117,6 +156,9 @@ export async function currentModelsRoot(fallback: string): Promise<string> {
 // ---- actions ------------------------------------------------------------------
 
 export async function downloadBundle(bundleId: string): Promise<void> {
+  if (maintenanceSnapshot.kind !== "idle") {
+    throw new Error("Wait for model activation to finish before starting another download.");
+  }
   if (!curatedModelTermsAccepted()) {
     throw new Error("Review and accept the upstream model terms before downloading a curated bundle.");
   }
@@ -155,13 +197,24 @@ export async function verifyAndRegister(bundleId: string): Promise<void> {
 }
 
 export async function activateBundle(bundleId: string): Promise<void> {
-  await activateModelBundle(bundleId);
-  await loadConfig(true);
+  beginModelActivation(bundleId);
+  try {
+    await activateModelBundle(bundleId);
+    await loadConfig(true);
+  } finally {
+    finishModelActivation(bundleId);
+  }
 }
 
 export async function activateCustomBundle(path: string): Promise<void> {
-  await activateCustomModelDirectory(path);
-  await loadConfig(true);
+  const bundleId = "custom-local";
+  beginModelActivation(bundleId);
+  try {
+    await activateCustomModelDirectory(path);
+    await loadConfig(true);
+  } finally {
+    finishModelActivation(bundleId);
+  }
 }
 
 export async function forgetCustomBundle(): Promise<void> {
