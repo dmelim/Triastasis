@@ -62,6 +62,42 @@ Record the upstream commit or release integrated by the sync. Security fixes and
 critical backend corrections should be prioritized; unrelated upstream UI work
 may be left out.
 
+## Alpha release process
+
+Use a hybrid release process for the first public alpha. Build and verify the
+Tauri application locally, while GitHub Actions builds the backend-specific
+native runtimes on clean Windows runners. Do not add broader release automation
+unless a concrete failure makes it necessary.
+
+- Keep the application version aligned in `app/package.json`,
+  `app/package-lock.json`, `app/src-tauri/Cargo.toml`,
+  `app/src-tauri/Cargo.lock`, and `app/src-tauri/tauri.conf.json`.
+- Keep installer defaults, documentation, the GitHub release tag, and the
+  version-derived runtime download URL aligned. For `0.0.1-alpha.1`, the tag is
+  `triastasis-v0.0.1-alpha.1`.
+- Before publishing, build the frontend, Rust application, NSIS installer, and
+  portable ZIP locally from the intended release commit. Use an isolated Cargo
+  target directory when validating a clean package build, and stage local test
+  artifacts only under ignored build output such as
+  `app/src-tauri/target/local-release/`.
+- Generate a SHA-256 sidecar for every installer, portable package, and runtime
+  archive. A sidecar contains the lowercase digest followed by two spaces and
+  the exact artifact filename.
+- Use `.github/workflows/release.yml` for the Vulkan, CUDA, CUDA 12
+  compatibility, and experimental ROCm runtime archives. The workflow may also
+  rebuild the desktop packages; that redundant clean build is desirable.
+- Publish the version tag as a quiet GitHub prerelease and verify that the NSIS
+  installer, portable ZIP, required runtime archives, and all checksum files are
+  present. ROCm is experimental and is not a release blocker; Vulkan, CUDA, and
+  CUDA 12 compatibility are required.
+- Treat a clean Windows installation as the acceptance gate. Test installation,
+  GPU recommendation, runtime and model download, restart persistence,
+  generation, GLB export, portable mode when practical, and uninstall.
+- Do not silently replace binaries after publication. Document minor alpha
+  limitations, and use the next alpha version for a blocking shipped defect.
+- Do not create or push commits, tags, or releases unless the user explicitly
+  asks for those operations.
+
 ## Windows application-data migrations
 
 Codex runs in a packaged Windows context. Writes to `%LOCALAPPDATA%` can be
