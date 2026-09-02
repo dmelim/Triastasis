@@ -115,6 +115,12 @@ curl --fail --silent --show-error "$api/health" >/dev/null || {
 }
 
 capabilities="$(curl --fail --silent --show-error "$api/capabilities")"
+if [[ -n "$export_dir" ]]; then
+  printf '%s' "$capabilities" | python -c 'import json,sys; d=json.load(sys.stdin); sys.exit(0 if d.get("library",{}).get("available") else 1)' || {
+    echo "This build lacks shared Library export. Update the running app before generating a package." >&2
+    exit 3
+  }
+fi
 policy="$(printf '%s' "$capabilities" | python -c "import json,sys; d=json.load(sys.stdin); print(d.get('capabilities',{}).get('policy','unknown'))")"
 persistence_healthy="$(printf '%s' "$capabilities" | python -c "import json,sys; d=json.load(sys.stdin); print(str(d.get('persistenceHealthy',True)).lower())")"
 max_concurrency="$(printf '%s' "$capabilities" | python -c "import json,sys; d=json.load(sys.stdin); print(d.get('capabilities',{}).get('maxConcurrency','unknown'))")"
@@ -192,10 +198,25 @@ if [[ -n "$export_dir" ]]; then
   command -v cygpath >/dev/null || { echo "cygpath is required for native Windows exports" >&2; exit 2; }
   export_path="$(cygpath -aw "$export_dir")"
   export_payload="$(python -c 'import json,sys; print(json.dumps({"destinationPath": sys.argv[1]}))' "$export_path")"
+  version_id="automation-$job_id"
+  library_url="$api/library/versions/$version_id"
+  registered=0
+  for attempt in {1..30}; do
+    if version_json="$(curl --fail --silent --show-error "$library_url" 2>/dev/null)"; then registered=1; break; fi
+    sleep 2
+  done
+  if [[ "$registered" != 1 ]]; then
+    echo "Generation succeeded ($job_id), but Library registration did not finish. Check /capabilities.library.registrationError; do not regenerate." >&2
+    exit 7
+  fi
+  printf '%s' "$version_json" | python -c 'import json,sys; w=json.load(sys.stdin).get("qualityWarning"); print(w or "", file=sys.stderr); sys.exit(1 if w else 0)' || {
+    echo "Quality warning: inspect this version before exporting or integrating." >&2
+    exit 8
+  }
   export_json="$(curl --fail-with-body --silent --show-error \
     --header "Content-Type: application/json" \
     --data "$export_payload" \
-    "$api/jobs/$job_id/export")"
+    "$library_url/export")"
   output="$export_dir/asset-static.glb"
   printf '%s\n' "$export_json"
 else

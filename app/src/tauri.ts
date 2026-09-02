@@ -167,6 +167,19 @@ export async function saveBytes(defaultName: string, bytes: Uint8Array): Promise
   return true;
 }
 
+/** Export the saved Library version through the same verified service as automation. */
+export async function saveLibraryGlb(versionId: string, defaultName: string, bytes: Uint8Array): Promise<boolean> {
+  if (!isTauri()) return saveBytes(defaultName, bytes);
+  const { save } = await import("@tauri-apps/plugin-dialog");
+  const destinationPath = await save({
+    defaultPath: defaultName,
+    filters: [{ name: "glTF binary", extensions: ["glb"] }],
+  });
+  if (!destinationPath) return false;
+  await invoke("export_library_version", { versionId, destinationPath, format: "glb" });
+  return true;
+}
+
 /** Native folder picker (Tauri only); returns the chosen path or null. */
 export async function pickDirectory(current?: string): Promise<string | null> {
   if (!isTauri()) return null;

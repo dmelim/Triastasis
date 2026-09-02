@@ -1,5 +1,33 @@
 # Triastasis automation API
 
+## Shared Library
+
+Use `GET /library/assets`, `GET /library/assets/{assetId}/versions`, and
+`GET /library/versions/{versionId}` for saved assets. IDs are URL-encoded path
+segments. This is the same Library used by the desktop, including manual,
+imported, edited, sweep and automated versions. Listings report unreadable
+records in `warnings`.
+
+`POST /library/versions/{versionId}/export` accepts an absolute
+`destinationPath` and optional `format` (`package` by default, or `glb`).
+The destination must not exist. Package exports preserve version metadata,
+asset/parent/sweep IDs, source and model, with SHA-256 verification.
+Desktop saved-version GLB exports use the same service. Unsaved editor exports
+remain transient; save a derived version before exporting it through this API.
+Export retains saved quality warnings; successful export is not a quality approval.
+
+Automation jobs register into the Library in the resident app process, without
+frontend focus or polling. Registration failures appear in
+`/capabilities.library.registrationError`; the job output remains recoverable.
+The frontend refreshes on `library-updated`. Persistent registration receipts
+prevent deleted assets from being reimported from job history. First startup
+baselines historical completed jobs without restoring missing records, because a
+pre-upgrade deletion cannot be distinguished from an unregistered result.
+Historical outputs remain recoverable through explicit job package export/import.
+No existing records are migrated or replaced.
+
+`/jobs` remains generation scheduling and history, not an asset catalogue.
+
 The desktop app starts a local queued API on the port immediately after the
 configured TRELLIS server port. With the default installer configuration, the
 native server is on 127.0.0.1:8080 and automation is on 127.0.0.1:8081.

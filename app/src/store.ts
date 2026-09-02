@@ -337,6 +337,22 @@ export async function put(rec: GenRecord): Promise<void> {
   }
 }
 
+/** Merge newly registered versions without replacing local edits or concurrent deletions. */
+export async function refreshNativeLibrary(): Promise<number> {
+  if (!(await initializeNativeStore())) return 0;
+  const knownIds = new Set(mem.keys());
+  const records = (await loadNativeGallery()).map(normalizeRecord);
+  let added = 0;
+  for (const record of records) {
+    // Registration only adds records. Do not replace an in-flight UI edit.
+    if (!knownIds.has(record.id) && !mem.has(record.id)) {
+      mem.set(record.id, record);
+      added += 1;
+    }
+  }
+  return added;
+}
+
 /** List all versions, newest first. */
 export async function all(): Promise<VersionRecord[]> {
   if (await initializeNativeStore()) {

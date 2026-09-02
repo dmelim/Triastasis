@@ -89,12 +89,12 @@ import {
   newId,
   put,
   renameVersion,
+  refreshNativeLibrary,
   setVersionFavorite,
 } from "./store";
 import {
   automationInfo,
   automationImportRequests,
-  automationJobFiles,
   automationJobs,
   claimAutomationImport,
   completeAutomationImport,
@@ -112,6 +112,7 @@ import {
   readManifestAsset,
   relinkManifestFile,
   saveBytes,
+  saveLibraryGlb,
   saveToOutputDir,
   scanInterruptedManifests,
 } from "./tauri";
@@ -2004,7 +2005,7 @@ async function restoreActiveJobDisplay(): Promise<void> {
   try {
     const api = await automationInfo();
     if (!api?.running) return;
-    const jobs = await automationJobs(api.url);
+    const jobs = await loadAutomationJobs(api.url);
     const active = jobs
       .filter((job) => job.status === "queued" || job.status === "running")
       .sort((a, b) => a.submittedAt - b.submittedAt)[0];
@@ -2775,7 +2776,7 @@ function renderLibraryAsset(asset: AssetGroup): HTMLElement {
     event.stopPropagation();
     try {
       const bytes = new Uint8Array(await representative.glb.arrayBuffer());
-      const ok = await saveBytes(`${safeStem(assetName)}.glb`, bytes);
+      const ok = await saveLibraryGlb(representative.versionId, `${safeStem(assetName)}.glb`, bytes);
       if (ok) toast("GLB exported", "ok");
     } catch (error) {
       toast((error as Error).message || "GLB export failed", "err");
@@ -3024,7 +3025,7 @@ async function refreshGallery(): Promise<void> {
       event.stopPropagation();
       try {
         const bytes = new Uint8Array(await representative.glb.arrayBuffer());
-        const ok = await saveBytes(`${safeStem(assetName)}.glb`, bytes);
+        const ok = await saveLibraryGlb(representative.versionId, `${safeStem(assetName)}.glb`, bytes);
         if (ok) toast("GLB exported", "ok");
       } catch (error) {
         toast((error as Error).message || "GLB export failed", "err");
@@ -3233,7 +3234,7 @@ async function refreshGallery(): Promise<void> {
         try {
           const bytes = new Uint8Array(await representative.glb.arrayBuffer());
           const base = safeStem(representative.label || representative.name);
-          const ok = await saveBytes(`${base}.glb`, bytes);
+          const ok = await saveLibraryGlb(representative.versionId, `${base}.glb`, bytes);
           if (ok) toast("GLB exported", "ok");
         } catch (error) {
           toast((error as Error).message || "GLB export failed", "err");
@@ -3303,67 +3304,14 @@ function syncAutomationResults(): Promise<number> {
   if (automationSync) return automationSync;
   automationSync = (async () => {
     try {
-      const api = await automationInfo();
-      if (!api?.running) return 0;
-      const [jobs, existing] = await Promise.all([loadAutomationJobs(api.url), all()]);
-      const existingIds = new Set(existing.map((record) => record.id));
-      let imported = 0;
-      const automationWarningMessages: string[] = [];
-
-      for (const job of jobs) {
-        if (job.status !== "succeeded") continue;
-        const recordId = `automation-${job.id}`;
-        if (existingIds.has(recordId)) continue;
-        try {
-          const { glb, input } = await automationJobFiles(api.url, job.id);
-          const inspection = await inspectGeneratedGlb(glb).catch(() => ({ dimensions: null, warning: null }));
-          const createdAt = job.submittedAt || Date.now();
-          const params = normalizeGenParams(job.params);
-          const record: VersionRecord = {
-            id: recordId,
-            ts: createdAt,
-            name: job.sourceName || "Automation source",
-            params,
-            input,
-            glb,
-            thumb: null,
-            assetId: recordId,
-            versionId: recordId,
-            operation: "generated",
-            operationParams: { automationJobId: job.id },
-            createdAt,
-            label: job.sourceName || `Automation ${job.id}`,
-            favorite: false,
-            metrics: { fileSize: glb.size, ...(inspection.dimensions ? { dimensions: inspection.dimensions } : {}) },
-            qualityWarning: job.qualityWarning ?? inspection.warning ?? undefined,
-          };
-          await put(record);
-          if (record.qualityWarning) automationWarningMessages.push(record.qualityWarning.message);
-          existingIds.add(recordId);
-          imported += 1;
-        } catch (error) {
-          console.warn(`Could not import automation job ${job.id}`, error);
-        }
-      }
-      if (imported > 0) {
-        await refreshGallery();
-        revealAssetDock();
-        const warningSummary = summarizeWarnings(automationWarningMessages);
-        toast(
-          warningSummary
-            ? `${imported} automation model${imported === 1 ? "" : "s"} added to Assets; ${warningSummary}. ${REFERENCE_GUIDANCE}`
-            : `${imported} automation model${imported === 1 ? "" : "s"} added to Assets`,
-          warningSummary ? "err" : "ok",
-        );
-      }
-      return imported;
+      const added = await refreshNativeLibrary();
+      if (added > 0) { await refreshGallery(); revealAssetDock(); }
+      return added;
     } catch (error) {
-      console.warn("Could not sync automation results; keeping the local gallery available", error);
+      console.warn("Could not refresh the shared Library", error);
       return 0;
     }
-  })().finally(() => {
-    automationSync = null;
-  });
+  })().finally(() => { automationSync = null; });
   return automationSync;
 }
 
@@ -3609,6 +3557,7 @@ listenSafely("studio-shown", () => {
   void syncAutomationImportRequests();
   void restoreActiveJobDisplay();
 });
+listenSafely("library-updated", () => { void syncAutomationResults(); });
 listenSafely<string>("automation-import-requested", () => {
   void syncAutomationImportRequests();
 });

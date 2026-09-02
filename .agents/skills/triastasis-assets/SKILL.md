@@ -9,13 +9,21 @@ Manage the complete lifecycle of static 3D assets with Triastasis. Generate from
 
 ## Required workflow
 
+For an existing asset, search the shared Library first: `GET /library/assets`,
+then `GET /library/assets/{assetId}/versions`. Inspect the chosen
+`GET /library/versions/{versionId}` and export it with
+`POST /library/versions/{versionId}/export`. This includes manual generations,
+sweeps, imported packages, derived versions, and automation results.
+`/jobs` is execution history, not the asset catalogue. Never interpret a missing
+job as a missing Library asset. See the API reference for the export contract.
+
 1. Resolve the target directory. If no game project exists, create a portable asset package and offer a small playable harness; do not choose an engine without the user's direction.
 2. Read [references/triastasis-api.md](references/triastasis-api.md).
 3. Resolve the automation API URL. It is one port above the configured native server and defaults to `http://127.0.0.1:8082`. Check `/health` for HTTP availability, then `/capabilities` for queue policy and persistence health. Ask the user to start or repair Triastasis only when those checks show it is unavailable or degraded.
 4. Create or select the source image.
 5. Generate one fast package with `scripts/triastasis_generate.sh --export-dir` at resolution 512. Use seed 42 unless the user supplied one. The native exporter preserves the source image, GLB, portable job record, and verified generation manifest together.
 6. Read the final job status. If it contains `qualityWarning`, surface it and stop before integration. A `collapsed-plane` result needs a better source view with visible depth, not an automatic BiRefNet retry. Otherwise inspect the GLB with Blender and `scripts/inspect_glb.py`. Read its JSON report and inspect all rendered views.
-7. Add the inspection report and previews to the exported package. Copy that package into the target project; never move, rename, or delete the Triastasis originals. Do not bypass the native export endpoint with ad hoc filesystem copies when the completed job is still available. The endpoint refuses existing destinations and returns verified hashes.
+7. Add the inspection report and previews to the exported package. Copy that package into the target project; never move, rename, or delete the Triastasis originals. Use app-owned Library export rather than ad hoc copies from runtime storage. The endpoint refuses existing destinations and returns verified hashes.
 8. Read [references/integration.md](references/integration.md). Integrate when a supported game project exists or the user requests a playable harness.
 
 When existing Triastasis packages need to enter the desktop Library, never copy

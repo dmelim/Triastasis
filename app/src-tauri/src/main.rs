@@ -618,6 +618,7 @@ fn main() {
             preview_alpha,
             app_version,
             read_generation_manifest,
+            automation::library::export_library_version,
             import_generation_manifest,
             discover_generation_manifests,
             write_generation_manifest,

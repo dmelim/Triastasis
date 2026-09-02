@@ -10,6 +10,10 @@ The API is loopback-only and queues jobs serially. Multiple submissions do not m
 |---|---|---|
 | GET | `/health` | Automation HTTP process availability |
 | GET | `/capabilities` | GPU, VRAM, queue, and concurrency policy |
+| GET | `/library/assets` | Shared assets with IDs, labels, latest version, and version counts |
+| GET | `/library/assets/{id}/versions` | All saved versions of an asset or sweep |
+| GET | `/library/versions/{id}` | Saved version metadata, parameters, lineage and quality warning |
+| POST | `/library/versions/{id}/export` | Export the selected Library version with verified hashes |
 | POST | `/jobs` | Submit native multipart generation fields |
 | GET | `/jobs` | List submitted jobs with live queue metadata |
 | GET | `/jobs/{id}` | Poll status |
@@ -22,6 +26,37 @@ The API is loopback-only and queues jobs serially. Multiple submissions do not m
 | GET | `/imports/{id}` | Poll one import request |
 | POST | `/imports/{id}/claim` | Internal desktop handoff or recovery for an unfinished request |
 | POST | `/imports/{id}/complete` | Internal desktop completion report |
+
+## Shared Library workflow
+
+URL-encode IDs returned by the API. Do not infer a version ID from a filename.
+Asset listing returns `assets`; asset inspection returns `versions`. Both return
+`warnings` for unreadable records rather than silently claiming the Library is
+complete. Version inspection returns the saved record metadata.
+
+Export JSON is `{"destinationPath":"C:\\absolute\\new-package"}`.
+The parent must exist and the destination must not exist. The default is a
+portable package containing the exact saved GLB, source image, full version
+metadata in `job.json`, and a verified `.triastasis.json` manifest. Asset,
+version, parent-version and sweep identities are retained. `format: "glb"`
+exports only the selected saved model to a new filename. Both refuse overwrite.
+Quality warnings are retained, not erased by export. Inspect them before integrating.
+
+The Library is the desktop's existing revisioned store, not another database.
+Manual, imported and edited versions are available without automation jobs.
+Successful automation jobs register in the app process independently of window
+focus; allow a few seconds after generation. Their existing IDs remain
+`automation-<jobId>`. Check `capabilities.library.registrationError` if absent.
+Registration receipts survive deletion, so history does not recreate removed
+assets. First startup baselines historical completed jobs without restoring
+missing records, because old deletions cannot be distinguished from results never
+imported. Recover a chosen historical output explicitly through legacy job export
+and app-owned import.
+
+If Library routes are absent, report that the running build lacks the capability.
+Do not silently switch to filesystem copies or assume the requested asset is missing.
+The old job export endpoint remains compatible, but exports the original job
+output, not edits or other Library versions.
 
 ## Multipart fields
 

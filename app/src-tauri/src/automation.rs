@@ -13,6 +13,9 @@ use tiny_http::{Header, Method, Request, Response, Server, StatusCode};
 
 use crate::config::{self, Config};
 
+#[path = "library.rs"]
+pub(crate) mod library;
+
 const MAX_REQUEST_BYTES: usize = 64 * 1024 * 1024;
 const PLANE_COLLAPSE_RATIO: f64 = 0.05;
 static JOB_COUNTER: AtomicU64 = AtomicU64::new(1);
@@ -1979,6 +1982,15 @@ fn export_job_package(
     job: DurableJob,
     destination: &Path,
 ) -> Result<ExportJobResponse, (u16, String)> {
+    export_package(job, destination, None, None)
+}
+
+fn export_package(
+    job: DurableJob,
+    destination: &Path,
+    library_manifest: Option<crate::manifest::GenerationManifest>,
+    library_metadata: Option<serde_json::Value>,
+) -> Result<ExportJobResponse, (u16, String)> {
     if job.status != JobStatus::Succeeded {
         return Err((409, "only succeeded jobs can be exported".to_string()));
     }
@@ -2049,7 +2061,9 @@ fn export_job_package(
         exported_job.source_image_path = source_name.clone();
         exported_job.output_path = Some("asset-static.glb".to_string());
         let job_target = stage.join("job.json");
-        let job_body = serde_json::to_vec_pretty(&exported_job)
+        let portable_record = library_metadata
+            .unwrap_or(serde_json::to_value(&exported_job).map_err(|e| e.to_string())?);
+        let job_body = serde_json::to_vec_pretty(&portable_record)
             .map_err(|e| format!("could not encode job record: {e}"))?;
         let mut job_file = std::fs::OpenOptions::new()
             .write(true)
@@ -2065,7 +2079,8 @@ fn export_job_package(
         drop(job_file);
         files.push(recorded_file(&job_target, "job")?);
 
-        let manifest = generation_manifest(&job, &source_name, "asset-static.glb");
+        let manifest = library_manifest
+            .unwrap_or_else(|| generation_manifest(&job, &source_name, "asset-static.glb"));
         let manifest_target = crate::manifest::write_generation_manifest_impl(
             &stage,
             manifest,
@@ -2107,6 +2122,133 @@ fn export_job_package(
         cleanup_export_stage(&stage, &source_name);
     }
     result.map_err(|error| (500, error))
+}
+
+static LIBRARY_REGISTRATION_ERROR: Mutex<Option<String>> = Mutex::new(None);
+
+fn reconcile_library(queue: &JobQueue, app: &tauri::AppHandle) {
+    let result = (|| -> Result<usize, String> {
+        let root = library::root(app)?;
+        let jobs: Vec<_> = queue
+            .data
+            .lock()
+            .unwrap()
+            .jobs
+            .values()
+            .filter(|job| job.status == JobStatus::Succeeded)
+            .map(Job::to_durable)
+            .collect();
+        library::baseline(&root, &jobs)?;
+        let mut imported = 0;
+        let mut errors = Vec::new();
+        for job in jobs {
+            match library::register(&root, &job) {
+                Ok(true) => imported += 1,
+                Ok(false) => {}
+                Err(e) => errors.push(format!("{}: {e}", job.id)),
+            }
+        }
+        if imported > 0 {
+            let _ = app.emit("library-updated", imported);
+        }
+        if errors.is_empty() {
+            Ok(imported)
+        } else {
+            Err(errors.join("; "))
+        }
+    })();
+    *LIBRARY_REGISTRATION_ERROR.lock().unwrap() = result.err();
+}
+
+fn decode_library_id(segment: &str) -> Result<String, String> {
+    if segment.len() > 1536 {
+        return Err("Library ID too long".into());
+    }
+    let mut bytes = Vec::new();
+    let mut source = segment.bytes();
+    while let Some(b) = source.next() {
+        if b == b'%' {
+            let high = source
+                .next()
+                .and_then(|c| (c as char).to_digit(16))
+                .ok_or("invalid ID encoding")?;
+            let low = source
+                .next()
+                .and_then(|c| (c as char).to_digit(16))
+                .ok_or("invalid ID encoding")?;
+            bytes.push((high * 16 + low) as u8);
+        } else {
+            bytes.push(b);
+        }
+    }
+    String::from_utf8(bytes).map_err(|e| e.to_string())
+}
+
+fn handle_library_request(mut request: Request, app: Option<&tauri::AppHandle>) {
+    let result = (|| -> Result<(u16, serde_json::Value), (u16, String)> {
+        let app = app.ok_or((503, "desktop Library unavailable".into()))?;
+        let root = library::root(app).map_err(|e| (503, e))?;
+        let path = request.url().split('?').next().unwrap_or("/").to_owned();
+        let parts: Vec<_> = path.trim_matches('/').split('/').collect();
+        if request.method() == &Method::Get && parts == ["library", "assets"] {
+            return library::list(&root, None)
+                .map(|v| (200, v))
+                .map_err(|e| (500, e));
+        }
+        if parts.len() < 3 {
+            return Err((404, "Library endpoint not found".into()));
+        }
+        let id = decode_library_id(parts[2]).map_err(|e| (400, e))?;
+        if request.method() == &Method::Get
+            && parts.len() == 4
+            && parts[1] == "assets"
+            && parts[3] == "versions"
+        {
+            return library::list(&root, Some(&id))
+                .map(|v| (200, v))
+                .map_err(|e| (500, e));
+        }
+        if request.method() == &Method::Get && parts.len() == 3 && parts[1] == "versions" {
+            return library::inspect(&root, &id)
+                .map(|v| (200, v))
+                .map_err(|e| (404, e));
+        }
+        if request.method() == &Method::Post
+            && parts.len() == 4
+            && parts[1] == "versions"
+            && parts[3] == "export"
+        {
+            #[derive(Deserialize)]
+            #[serde(rename_all = "camelCase", deny_unknown_fields)]
+            struct Input {
+                destination_path: String,
+                format: Option<String>,
+            }
+            let mut body = Vec::new();
+            request
+                .as_reader()
+                .take((MAX_EXPORT_REQUEST_BYTES + 1) as u64)
+                .read_to_end(&mut body)
+                .map_err(|e| (400, e.to_string()))?;
+            if body.len() > MAX_EXPORT_REQUEST_BYTES {
+                return Err((413, "export request too large".into()));
+            }
+            let input: Input = serde_json::from_slice(&body).map_err(|e| (400, e.to_string()))?;
+            return library::export(
+                &root,
+                &id,
+                Path::new(&input.destination_path),
+                input.format.as_deref().unwrap_or("package"),
+            )
+            .map(|v| (201, v));
+        }
+        Err((404, "Library endpoint not found".into()))
+    })();
+    let response = match result {
+        Ok((status, body)) => json_response(status, body.to_string()),
+        Err((status, error)) => error_response(status, &error),
+    };
+    let _ = request.respond(response);
 }
 
 fn export_job(mut request: Request, queue: &JobQueue, id: &str) {
@@ -2529,6 +2671,10 @@ fn handle_request(
     }
     let method = request.method().clone();
     let path = request.url().split('?').next().unwrap_or("/").to_string();
+    if method != Method::Options && path.starts_with("/library/") {
+        handle_library_request(request, app);
+        return;
+    }
     if method == Method::Options {
         let response = Response::empty(StatusCode(204))
             .with_header(header("Access-Control-Allow-Origin", "*"))
@@ -2554,7 +2700,8 @@ fn handle_request(
             "queue": { "queued": queued, "running": running, "total": total },
             "persistenceHealthy": degradation.is_none(),
             "persistenceError": degradation,
-            "endpoints": ["POST /jobs", "GET /jobs", "GET /jobs/{id}", "GET /jobs/{id}/model", "GET /jobs/{id}/image", "POST /jobs/{id}/export", "DELETE /jobs/{id}", "POST /imports", "GET /imports", "GET /imports/{id}", "POST /imports/{id}/claim", "POST /imports/{id}/complete"]
+            "library": {"available": app.is_some(), "registrationError": LIBRARY_REGISTRATION_ERROR.lock().unwrap().clone()},
+            "endpoints": ["GET /library/assets", "GET /library/assets/{id}/versions", "GET /library/versions/{id}", "POST /library/versions/{id}/export", "POST /jobs", "GET /jobs", "GET /jobs/{id}", "GET /jobs/{id}/model", "GET /jobs/{id}/image", "POST /jobs/{id}/export", "DELETE /jobs/{id}", "POST /imports", "GET /imports", "GET /imports/{id}", "POST /imports/{id}/claim", "POST /imports/{id}/complete"]
         });
         let _ = request.respond(json_response(200, body.to_string()));
         return;
@@ -3082,7 +3229,14 @@ pub fn start(
     let http_stop = stop_flag.clone();
     let http_info = info.clone();
     let http_thread = std::thread::spawn(move || {
+        let mut registration_check = std::time::Instant::now() - Duration::from_secs(3);
         while !http_stop.load(Ordering::Relaxed) {
+            if registration_check.elapsed() >= Duration::from_secs(2) {
+                if let Some(app) = app.as_ref() {
+                    reconcile_library(&http_queue, app);
+                }
+                registration_check = std::time::Instant::now();
+            }
             match http_server.recv_timeout(Duration::from_millis(500)) {
                 Ok(Some(request)) => {
                     handle_request(request, &http_queue, &http_info, &base_url, app.as_ref())

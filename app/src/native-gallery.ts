@@ -76,6 +76,7 @@ export async function loadNativeGallery(): Promise<GenRecord[]> {
   unreadableRecordCount = 0;
 
   for (const name of entries) {
+    if (!/^[0-9a-f]+$/i.test(name)) continue;
     try {
       // A record is committed through revision metadata (or its legacy
       // metadata.json); unreadable records are skipped so one bad entry
@@ -110,6 +111,13 @@ export async function deleteNativeRecords(ids: string[]): Promise<void> {
   const options = appLocalOptions(fs);
   for (const id of ids) {
     const dir = recordDirectory(id);
+    const record = await store.loadRecord(encodedIdOf(id));
+    // Persist suppression before deletion, so retries and service restarts cannot resurrect it.
+    const params = record?.operationParams;
+    const original = params?.originalIds as { jobId?: string } | undefined;
+    const jobId = params?.automationJobId ?? original?.jobId;
+    const registrationId = typeof jobId === "string" ? `automation-${jobId}` : id;
+    await fs.writeTextFile(`${ROOT}/.registered-${encodedIdOf(registrationId)}`, "deleted\n", options);
     if (await fs.exists(dir, options)) await fs.remove(dir, { ...options, recursive: true });
   }
 }
@@ -120,8 +128,10 @@ export async function clearNativeGallery(): Promise<void> {
   const options = appLocalOptions(fs);
   const entries = await fs.readDir(ROOT, options);
   for (const entry of entries) {
-    if (!entry.isDirectory || !entry.name) continue;
-    await fs.remove(`${ROOT}/${entry.name}`, { ...options, recursive: true });
+    if (!entry.isDirectory || !entry.name || !/^[0-9a-f]+$/i.test(entry.name)) continue;
+    const record = await store.loadRecord(entry.name);
+    if (!record) throw new Error("Cannot clear unreadable Library record safely");
+    await deleteNativeRecords([record.id]);
   }
 }
 
