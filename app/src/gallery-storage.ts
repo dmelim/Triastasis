@@ -35,6 +35,33 @@ export interface StoredMetadata extends Omit<VersionRecord, "input" | "glb" | "t
   revision?: number;
 }
 
+export interface GalleryMetadataPatch { label?: string; favorite?: boolean; assetLabel?: string }
+interface MetadataOverlay { label: string; favorite: boolean; assetLabel: string | null }
+
+function validOverlay(value: unknown): value is MetadataOverlay {
+  if (!value || typeof value !== "object") return false;
+  const v = value as MetadataOverlay;
+  return typeof v.label === "string" && typeof v.favorite === "boolean" && (v.assetLabel === null || typeof v.assetLabel === "string");
+}
+async function overlayDirectories(fs: GalleryFs, dir: string): Promise<string[]> {
+  if (!(await fs.exists(dir))) return [];
+  return (await fs.listDirectories(dir)).filter((name) => /^[1-9][0-9]*$/.test(name) && Number.isSafeInteger(Number(name))).sort((a, b) => Number(b) - Number(a));
+}
+async function readMetadata(fs: GalleryFs, dir: string): Promise<StoredMetadata> {
+  const metadata = JSON.parse(await fs.readTextFile(dir + "/metadata.json")) as StoredMetadata;
+  for (const name of await overlayDirectories(fs, dir + "/metadata-updates")) {
+    try {
+      const patch: unknown = JSON.parse(await fs.readTextFile(dir + "/metadata-updates/" + name + "/metadata.json"));
+      if (!validOverlay(patch)) continue;
+      metadata.label = patch.label;
+      metadata.favorite = patch.favorite;
+      if (patch.assetLabel !== null) metadata.operationParams = { ...metadata.operationParams, assetLabel: patch.assetLabel };
+      return metadata;
+    } catch { /* an interrupted metadata update leaves the previous one usable */ }
+  }
+  return metadata;
+}
+
 function recordDir(root: string, encodedId: string): string {
   return `${root}/${encodedId}`;
 }
@@ -48,6 +75,7 @@ async function buildMetadata(
   revision: number,
 ): Promise<{ metadata: StoredMetadata; input: Uint8Array; glb: Uint8Array; thumb: Uint8Array | null }> {
   const { input, glb, thumb, ...fields } = record;
+  if (!glb) throw new Error("Cannot save a Library entry without loading its model");
   return {
     metadata: {
       ...fields,
@@ -85,16 +113,22 @@ async function committedRevisions(
   return committed;
 }
 
+async function requireModelFile(fs: GalleryFs, dir: string): Promise<null> {
+  if (!(await fs.exists(dir + "/model.glb"))) throw new Error("Saved model file is missing");
+  return null;
+}
+
 async function loadFromRevision(
   fs: GalleryFs,
   dir: string,
   name: string,
+  metadataOnly = false,
 ): Promise<GenRecord> {
   const rdir = `${dir}/revisions/${name}`;
-  const metadata = JSON.parse(await fs.readTextFile(`${rdir}/metadata.json`)) as StoredMetadata;
+  const metadata = await readMetadata(fs, rdir);
   const [input, glb, thumb] = await Promise.all([
     fs.readFile(`${rdir}/input.bin`),
-    fs.readFile(`${rdir}/model.glb`),
+    metadataOnly ? requireModelFile(fs, rdir) : fs.readFile(`${rdir}/model.glb`),
     metadata.hasThumb ? fs.readFile(`${rdir}/thumb.bin`).catch(() => null) : Promise.resolve(null),
   ]);
   const { inputType, glbType, thumbType, hasThumb: _hasThumb, revision: _revision, ...record } =
@@ -102,23 +136,23 @@ async function loadFromRevision(
   return {
     ...record,
     input: new Blob([new Uint8Array(input)], { type: inputType || "application/octet-stream" }),
-    glb: new Blob([new Uint8Array(glb)], { type: glbType || "model/gltf-binary" }),
+    glb: glb ? new Blob([new Uint8Array(glb)], { type: glbType || "model/gltf-binary" }) : null,
     thumb: thumb ? new Blob([new Uint8Array(thumb)], { type: thumbType || "image/png" }) : null,
   };
 }
 
-async function loadLegacy(fs: GalleryFs, dir: string): Promise<GenRecord> {
-  const metadata = JSON.parse(await fs.readTextFile(`${dir}/metadata.json`)) as StoredMetadata;
+async function loadLegacy(fs: GalleryFs, dir: string, metadataOnly = false): Promise<GenRecord> {
+  const metadata = await readMetadata(fs, dir);
   const [input, glb, thumb] = await Promise.all([
     fs.readFile(`${dir}/input.bin`),
-    fs.readFile(`${dir}/model.glb`),
+    metadataOnly ? requireModelFile(fs, dir) : fs.readFile(`${dir}/model.glb`),
     metadata.hasThumb ? fs.readFile(`${dir}/thumb.bin`).catch(() => null) : Promise.resolve(null),
   ]);
   const { inputType, glbType, thumbType, hasThumb: _hasThumb, ...record } = metadata;
   return {
     ...record,
     input: new Blob([new Uint8Array(input)], { type: inputType || "application/octet-stream" }),
-    glb: new Blob([new Uint8Array(glb)], { type: glbType || "model/gltf-binary" }),
+    glb: glb ? new Blob([new Uint8Array(glb)], { type: glbType || "model/gltf-binary" }) : null,
     thumb: thumb ? new Blob([new Uint8Array(thumb)], { type: thumbType || "image/png" }) : null,
   };
 }
@@ -132,18 +166,25 @@ export async function loadGalleryRecord(
   fs: GalleryFs,
   root: string,
   encodedId: string,
+  loaded?: (dir: string) => void,
+  metadataOnly = false,
 ): Promise<GenRecord | null> {
   const dir = recordDir(root, encodedId);
   for (const rev of await committedRevisions(fs, dir)) {
     try {
-      return await loadFromRevision(fs, dir, rev.name);
+      const record = await loadFromRevision(fs, dir, rev.name, metadataOnly);
+      loaded?.(`${dir}/revisions/${rev.name}`);
+      return record;
     } catch (error) {
       console.warn(`Revision ${rev.name} of ${encodedId} is unreadable; trying older`, error);
     }
   }
   try {
-    return await loadLegacy(fs, dir);
-  } catch {
+    const record = await loadLegacy(fs, dir, metadataOnly);
+    loaded?.(dir);
+    return record;
+  } catch (error) {
+    console.warn(`Library record ${encodedId} could not be loaded`, error);
     return null;
   }
 }
@@ -196,7 +237,7 @@ async function writeOnce(
   root: string,
   encodedId: string,
   record: VersionRecord,
-): Promise<void> {
+): Promise<string> {
   const dir = recordDir(root, encodedId);
   await fs.mkdir(`${dir}/revisions`, true);
 
@@ -218,7 +259,7 @@ async function writeOnce(
 
   // Verify the just-committed revision reads back before trusting it.
   const verified = await loadFromRevision(fs, dir, String(revision));
-  if (!verified.glb.size) throw new Error("committed revision failed verification");
+  if (!verified.glb?.size) throw new Error("committed revision failed verification");
 
   await cleanupRevisions(fs, dir, revision);
 
@@ -228,6 +269,7 @@ async function writeOnce(
   await removeQuietly(fs, `${dir}/input.bin`, false);
   await removeQuietly(fs, `${dir}/model.glb`, false);
   await removeQuietly(fs, `${dir}/thumb.bin`, false);
+  return rdir;
 }
 
 /**
@@ -236,6 +278,7 @@ async function writeOnce(
  */
 export function createTransactionalGallery(fs: GalleryFs, root: string) {
   const locks = new Map<string, Promise<unknown>>();
+  const loadedDirs = new Map<string, string>();
   function withLock<T>(key: string, fn: () => Promise<T>): Promise<T> {
     const previous = locks.get(key) ?? Promise.resolve();
     const next = previous.then(fn, fn);
@@ -243,15 +286,50 @@ export function createTransactionalGallery(fs: GalleryFs, root: string) {
       key,
       next.catch(() => undefined),
     );
+    const settled = locks.get(key);
+    void next.finally(() => { if (locks.get(key) === settled) locks.delete(key); }).catch(() => undefined);
     return next;
   }
 
   return {
-    async writeRecord(encodedId: string, record: VersionRecord): Promise<void> {
-      await withLock(encodedId, () => writeOnce(fs, root, encodedId, record));
+    async updateMetadata(encodedId: string, patch: GalleryMetadataPatch): Promise<void> {
+      await withLock(encodedId, async () => {
+        if (!loadedDirs.has(encodedId)) {
+          const record = await loadGalleryRecord(fs, root, encodedId, (dir) => loadedDirs.set(encodedId, dir), true);
+          if (!record) throw new Error("Cannot update an unreadable Library record");
+        }
+        const dir = loadedDirs.get(encodedId)!;
+        const current = await readMetadata(fs, dir);
+        const updates = dir + "/metadata-updates";
+        const names = await overlayDirectories(fs, updates);
+        const next = Number(names[0] ?? 0) + 1;
+        if (!Number.isSafeInteger(next)) throw new Error("Metadata revision limit reached");
+        const destination = updates + "/" + next;
+        await fs.mkdir(destination, true);
+        const overlay: MetadataOverlay = {
+          label: patch.label ?? current.label ?? current.name ?? "Untitled model",
+          favorite: patch.favorite ?? current.favorite === true,
+          assetLabel: patch.assetLabel ?? (typeof current.operationParams?.assetLabel === "string" ? current.operationParams.assetLabel : null),
+        };
+        if (!validOverlay(overlay)) throw new Error("Invalid Library metadata update");
+        const serialized = JSON.stringify(overlay);
+        await fs.writeTextFile(destination + "/metadata.json", serialized);
+        if (await fs.readTextFile(destination + "/metadata.json") !== serialized) throw new Error("Metadata verification failed");
+        // Retain the last verified update and one fallback; originals stay untouched.
+        let keptFallback = false;
+        for (const old of names) {
+          let valid = false;
+          try { valid = validOverlay(JSON.parse(await fs.readTextFile(updates + "/" + old + "/metadata.json"))); } catch { /* incomplete */ }
+          if (valid && !keptFallback) { keptFallback = true; continue; }
+          await removeQuietly(fs, updates + "/" + old);
+        }
+      });
     },
-    async loadRecord(encodedId: string): Promise<GenRecord | null> {
-      return loadGalleryRecord(fs, root, encodedId);
+    async writeRecord(encodedId: string, record: VersionRecord): Promise<void> {
+      await withLock(encodedId, async () => { loadedDirs.set(encodedId, await writeOnce(fs, root, encodedId, record)); });
+    },
+    async loadRecord(encodedId: string, metadataOnly = false): Promise<GenRecord | null> {
+      return loadGalleryRecord(fs, root, encodedId, (dir) => loadedDirs.set(encodedId, dir), metadataOnly);
     },
   };
 }

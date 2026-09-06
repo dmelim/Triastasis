@@ -1090,7 +1090,7 @@ input:focus-visible,
 }
 .candidate:hover:not(:disabled) { border-color: var(--border-focus); background: var(--surface-control-hover); }
 .candidate.active { border-color: var(--content-accent); box-shadow: 0 0 0 1px var(--content-accent); }
-.candidate:disabled { cursor: default; }
+.candidate:disabled { cursor: default; opacity: 1; }
 .candidate-preview {
   display: flex; align-items: center; justify-content: center; height: 88px;
   background: var(--surface-inset); color: var(--content-secondary); font-size: var(--font-size-caption); text-transform: capitalize;
@@ -1849,3 +1849,33 @@ input:focus-visible,
 .bundle-row.active { border-color: rgba(63,208,140,.5); }
 .bundle-row-main { display: flex; flex-direction: column; gap: 2px; }
 .bundle-row-main span { font-size: .84rem; opacity: .75; }
+
+.unsaved-dialog { max-width: 440px; padding: 24px; background: var(--surface-control); color: var(--content-primary); border: 1px solid var(--border-default); border-radius: var(--radius-card); }
+.unsaved-dialog::backdrop { background: #0009; }
+.unsaved-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 20px; }
+.candidate { flex-direction: column; align-items: stretch; justify-content: flex-start; white-space: normal; }
+.candidate-preview { flex: 0 0 88px; width: 100%; }
+.candidate-meta { flex-direction: column; align-items: flex-start; overflow-wrap: anywhere; }
+
+/* Reserve the asset-card shape while the Library is loading. */
+.asset-skeleton {
+  flex: 0 0 290px; width: 100%; min-width: 0; box-sizing: border-box;
+  padding: 10px 8px; border: 1px solid var(--border-default);
+  border-radius: var(--radius-card); background: var(--surface-control);
+}
+.skeleton-block {
+  background: var(--border-strong); border-radius: 4px;
+  animation: asset-skeleton-pulse 1.8s ease-in-out infinite;
+}
+.asset-skeleton-title { width: 42%; height: 12px; margin: 5px 0 16px; }
+.asset-skeleton-body { display: flex; align-items: center; gap: 8px; }
+.asset-skeleton-preview { flex: 0 0 54px; height: 54px; }
+.asset-skeleton-lines { flex: 1; min-width: 0; }
+.asset-skeleton-lines .skeleton-block { height: 9px; width: 42%; }
+.asset-skeleton-lines .skeleton-block + .skeleton-block { margin-top: 12px; width: 78%; }
+.asset-loading-status {
+  position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+  overflow: hidden; clip-path: inset(50%); white-space: nowrap;
+}
+@keyframes asset-skeleton-pulse { 0%, 100% { opacity: .45; } 50% { opacity: .85; } }
+@media (prefers-reduced-motion: reduce) { .skeleton-block { animation: none; opacity: .6; } }

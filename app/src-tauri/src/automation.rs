@@ -2195,6 +2195,39 @@ fn handle_library_request(mut request: Request, app: Option<&tauri::AppHandle>) 
                 .map(|v| (200, v))
                 .map_err(|e| (500, e));
         }
+        if request.method() == &Method::Post
+            && parts.len() == 3
+            && parts[1] == "recovery"
+            && (parts[2] == "scan" || parts[2] == "recover")
+        {
+            #[derive(Deserialize)]
+            #[serde(rename_all = "camelCase", deny_unknown_fields)]
+            struct RecoveryInput {
+                source_path: String,
+                #[serde(default)]
+                records: Vec<library::recovery::Selection>,
+            }
+            let mut body = Vec::new();
+            request
+                .as_reader()
+                .take(65537)
+                .read_to_end(&mut body)
+                .map_err(|e| (400, e.to_string()))?;
+            if body.len() > 65536 {
+                return Err((413, "recovery request too large".into()));
+            }
+            let input: RecoveryInput =
+                serde_json::from_slice(&body).map_err(|e| (400, e.to_string()))?;
+            let result = if parts[2] == "scan" {
+                library::recovery::scan(&root, Path::new(&input.source_path))
+            } else {
+                library::recovery::recover(&root, Path::new(&input.source_path), &input.records)
+            };
+            if parts[2] == "recover" && result.is_ok() {
+                let _ = app.emit("library-updated", 1);
+            }
+            return result.map(|v| (200, v)).map_err(|e| (400, e));
+        }
         if parts.len() < 3 {
             return Err((404, "Library endpoint not found".into()));
         }
@@ -2701,7 +2734,7 @@ fn handle_request(
             "persistenceHealthy": degradation.is_none(),
             "persistenceError": degradation,
             "library": {"available": app.is_some(), "registrationError": LIBRARY_REGISTRATION_ERROR.lock().unwrap().clone()},
-            "endpoints": ["GET /library/assets", "GET /library/assets/{id}/versions", "GET /library/versions/{id}", "POST /library/versions/{id}/export", "POST /jobs", "GET /jobs", "GET /jobs/{id}", "GET /jobs/{id}/model", "GET /jobs/{id}/image", "POST /jobs/{id}/export", "DELETE /jobs/{id}", "POST /imports", "GET /imports", "GET /imports/{id}", "POST /imports/{id}/claim", "POST /imports/{id}/complete"]
+            "endpoints": ["POST /library/recovery/scan", "POST /library/recovery/recover", "GET /library/assets", "GET /library/assets/{id}/versions", "GET /library/versions/{id}", "POST /library/versions/{id}/export", "POST /jobs", "GET /jobs", "GET /jobs/{id}", "GET /jobs/{id}/model", "GET /jobs/{id}/image", "POST /jobs/{id}/export", "DELETE /jobs/{id}", "POST /imports", "GET /imports", "GET /imports/{id}", "POST /imports/{id}/claim", "POST /imports/{id}/complete"]
         });
         let _ = request.respond(json_response(200, body.to_string()));
         return;

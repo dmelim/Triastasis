@@ -38,3 +38,9 @@ gallery-load-errors.log
 *.log
 triastasis-pilot-*.png
 triastasis-pilot-*.jpg
+
+# Personal planning and session reviews (keep local)
+/PIXAL3D-FUTURE-PLAN.md
+/docs/future-plans.md
+/docs/app-improvement-review.md
+/local-notes/

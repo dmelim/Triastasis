@@ -1,5 +1,5 @@
 import type { GenRecord, VersionRecord } from "./types";
-import { createTransactionalGallery, type GalleryFs } from "./gallery-storage";
+import { createTransactionalGallery, type GalleryFs, type GalleryMetadataPatch } from "./gallery-storage";
 
 const ROOT = "triastasis/gallery-v1";
 const MIGRATION_MARKER = `${ROOT}/indexeddb-migrated`;
@@ -81,7 +81,7 @@ export async function loadNativeGallery(): Promise<GenRecord[]> {
       // A record is committed through revision metadata (or its legacy
       // metadata.json); unreadable records are skipped so one bad entry
       // cannot hide the whole gallery.
-      const record = await store.loadRecord(name);
+      const record = await store.loadRecord(name, true);
       if (record) records.push(record);
       else unreadableRecordCount += 1;
     } catch (error) {
@@ -102,6 +102,10 @@ export async function writeNativeRecord(record: VersionRecord): Promise<void> {
   await store.writeRecord(encodedIdOf(record.id), record);
 }
 
+export async function updateNativeMetadata(id: string, patch: GalleryMetadataPatch): Promise<void> {
+  await store.updateMetadata(encodedIdOf(id), patch);
+}
+
 function encodedIdOf(id: string): string {
   return recordDirectory(id).slice(ROOT.length + 1);
 }
@@ -111,7 +115,7 @@ export async function deleteNativeRecords(ids: string[]): Promise<void> {
   const options = appLocalOptions(fs);
   for (const id of ids) {
     const dir = recordDirectory(id);
-    const record = await store.loadRecord(encodedIdOf(id));
+    const record = await store.loadRecord(encodedIdOf(id), true);
     // Persist suppression before deletion, so retries and service restarts cannot resurrect it.
     const params = record?.operationParams;
     const original = params?.originalIds as { jobId?: string } | undefined;
@@ -129,7 +133,7 @@ export async function clearNativeGallery(): Promise<void> {
   const entries = await fs.readDir(ROOT, options);
   for (const entry of entries) {
     if (!entry.isDirectory || !entry.name || !/^[0-9a-f]+$/i.test(entry.name)) continue;
-    const record = await store.loadRecord(entry.name);
+    const record = await store.loadRecord(entry.name, true);
     if (!record) throw new Error("Cannot clear unreadable Library record safely");
     await deleteNativeRecords([record.id]);
   }
@@ -148,4 +152,11 @@ export async function markNativeMigrationCompleted(): Promise<void> {
     "IndexedDB gallery migrated to app-local storage.\n",
     appLocalOptions(fs),
   );
+}
+
+/** Read model bytes only for an explicitly opened/exported version. */
+export async function loadNativeRecord(id: string): Promise<GenRecord> {
+  const record = await store.loadRecord(encodedIdOf(id));
+  if (!record?.glb) throw new Error("Saved model could not be loaded. Its files remain on disk.");
+  return record;
 }

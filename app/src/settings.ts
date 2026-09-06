@@ -1,3 +1,4 @@
+import { runtimeNumbers, saveAndRestart } from "./settings-actions";
 // Settings page: shows the resolved config and lets the user adjust the bits
 // that make sense per environment. In Tauri, saving hands the config to the shell
 // (which restarts the server); in the browser we only expose host/port.
@@ -167,7 +168,7 @@ function section(id: string, title: string, description: string, content: string
 
 export async function renderSettings(
   body: HTMLElement,
-  onSaved: () => void,
+  onSaved: (message: string) => void,
 ): Promise<void> {
   const [cfg, hardware, version] = await Promise.all([
     loadConfig(true),
@@ -263,7 +264,6 @@ export async function renderSettings(
       if (picked) outputInput.value = picked;
     };
     (body.querySelector("#set-output-open") as HTMLButtonElement).onclick = async () => {
-      await saveConfig({ outputDir: outputInput.value.trim() });
       try {
         await openOutputDir();
       } catch (e) {
@@ -271,32 +271,35 @@ export async function renderSettings(
       }
     };
 
-    const save = async () => {
-      const modelsDir = (body.querySelector("#set-models") as HTMLInputElement).value.trim();
-      const gpu = parseInt((body.querySelector("#set-gpu") as HTMLInputElement).value, 10);
-      const port = parseInt((body.querySelector("#set-port") as HTMLInputElement).value, 10);
-      await saveConfig({
-        modelsDir,
-        gpu: isNaN(gpu) ? 0 : gpu,
-        port: isNaN(port) ? 8080 : port,
-        outputDir: outputInput.value.trim(),
-      });
+    const feedback = document.createElement("p");
+    feedback.setAttribute("role", "status");
+    body.querySelector(".settings-actions")!.append(feedback);
+    let applying = false;
+    const apply = async (saveDraft: boolean) => {
+      if (applying) return;
+      applying = true;
+      const buttons = body.querySelectorAll<HTMLButtonElement>("#set-save, #set-restart");
+      buttons.forEach((button) => { button.disabled = true; });
+      feedback.textContent = saveDraft ? "Saving settings…" : "Requesting restart…";
       try {
-        await invoke("restart_server");
-      } catch {
-        /* shell will surface its own error; status polling reflects it */
+        const patch = saveDraft ? {
+          ...runtimeNumbers((body.querySelector("#set-gpu") as HTMLInputElement).value, (body.querySelector("#set-port") as HTMLInputElement).value),
+          modelsDir: (body.querySelector("#set-models") as HTMLInputElement).value.trim(),
+          outputDir: outputInput.value.trim(),
+        } : null;
+        const message = await saveAndRestart(patch ? () => saveConfig(patch) : null, () => invoke("restart_server"));
+        feedback.textContent = message;
+        onSaved(message);
+      } catch (error) {
+        feedback.textContent = error instanceof Error ? error.message : String(error);
+      } finally {
+        applying = false;
+        buttons.forEach((button) => { button.disabled = false; });
       }
-      onSaved();
     };
-    (body.querySelector("#set-save") as HTMLButtonElement).onclick = save;
-    (body.querySelector("#set-restart") as HTMLButtonElement).onclick = async () => {
-      try {
-        await invoke("restart_server");
-      } catch {
-        /* ignore */
-      }
-      onSaved();
-    };
+    (body.querySelector("#set-save") as HTMLButtonElement).onclick = () => { void apply(true); };
+    (body.querySelector("#set-restart") as HTMLButtonElement).onclick = () => { void apply(false); };
+
   } else {
     replaceSettingsContent(body, `
       <div class="settings-layout">
@@ -345,9 +348,12 @@ export async function renderSettings(
     bindHardwareRecommendation(body);
     (body.querySelector("#set-save") as HTMLButtonElement).onclick = async () => {
       const host = (body.querySelector("#set-host") as HTMLInputElement).value.trim() || "127.0.0.1";
-      const port = parseInt((body.querySelector("#set-port") as HTMLInputElement).value, 10);
-      await saveConfig({ host, port: isNaN(port) ? 8080 : port });
-      onSaved();
+      const port = (body.querySelector("#set-port") as HTMLInputElement).value;
+      try {
+        const validated = runtimeNumbers("0", port);
+        await saveConfig({ host, port: validated.port });
+        onSaved("Connection settings saved");
+      } catch (error) { alert(error instanceof Error ? error.message : String(error)); }
     };
   }
 }

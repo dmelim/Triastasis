@@ -140,3 +140,32 @@ Use a stable layout:
 Record the prompt, seed, resolution, Triastasis parameters, Blender version, scale, forward axis, license notes, and known defects in `manifest.json`. Describe the output as a static asset. Do not claim it is rigged, skinned, or animation-ready.
 
 Treat integration as a copy operation. Keep the source package and Triastasis job outputs intact unless the user explicitly asks to remove them after verifying the integrated copy. Committing or pushing the destination files does not authorize cleanup of their source locations.
+
+## Recover an old internal Library
+
+Use the app-owned recovery API for a gallery-v1 directory containing hexadecimal
+record folders, metadata.json, and optionally revisions/. Do not convert or copy
+these records with Codex filesystem scripts.
+
+Scan first (read-only; saves a new report outside application data):
+
+```bash
+python .agents/skills/triastasis-assets/scripts/triastasis_recover.py scan \
+  --source-dir "C:/path/to/old/gallery-v1" --report "recovery-scan.json"
+```
+
+Review missing, duplicate, conflict and warning entries. Recover a pilot missing
+record by its actual ID from the report (not the hexadecimal folder name):
+
+```bash
+python .agents/skills/triastasis-assets/scripts/triastasis_recover.py recover \
+  --report "recovery-scan.json" --id "record-id"
+```
+
+After verifying the pilot in the consuming app, recover the remaining missing
+records with --all-missing instead of --id. The backend rechecks source fingerprints,
+checksums, identity conflicts and destination existence. Sources stay untouched;
+conflicts are never overwritten. Keep reports and user paths out of Git. If the
+routes return 404, restart with a build exposing the recovery API. Never substitute
+manual writes into app-local storage. Do not claim successful recovery until the
+app shows the records and opens a recovered model.

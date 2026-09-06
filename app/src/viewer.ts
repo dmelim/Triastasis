@@ -67,6 +67,7 @@ type MaterialRecord = Record<string, unknown>;
 
 interface TopologyLines {
   mesh: THREE.Mesh;
+  geometry: THREE.BufferGeometry;
   coarse: THREE.LineSegments | null;
   full: THREE.LineSegments | null;
 }
@@ -197,6 +198,25 @@ export class Viewer {
   private orthoHeight = 2;
   private stats: ViewerStats = { ...EMPTY_STATS };
   private animationFrame = 0;
+  private renderDirty = true;
+  private active = true;
+  private readonly visibilityChanged = (): void => {
+    if (document.hidden) { cancelAnimationFrame(this.animationFrame); this.animationFrame = 0; }
+    else this.requestRender();
+  };
+
+  setActive(active: boolean): void {
+    this.active = active;
+    if (!active) { cancelAnimationFrame(this.animationFrame); this.animationFrame = 0; }
+    else this.requestRender();
+  }
+
+  private requestRender(): void {
+    this.renderDirty = true;
+    if (!this.disposed && this.active && !document.hidden && !this.animationFrame) {
+      this.animationFrame = requestAnimationFrame(this.animate);
+    }
+  }
   private disposed = false;
 
   constructor(mount: HTMLElement) {
@@ -230,12 +250,14 @@ export class Viewer {
     this.resizeObserver = new ResizeObserver(() => this.resize());
     this.resizeObserver.observe(mount);
     this.resize();
-    this.animationFrame = window.requestAnimationFrame(this.animate);
+    document.addEventListener("visibilitychange", this.visibilityChanged);
+    this.requestRender();
   }
 
-  async load(glb: Blob): Promise<ViewerStats> {
+  async load(glb: Blob, beforeAdopt: () => void = () => { }): Promise<ViewerStats> {
     const buffer = await glb.arrayBuffer();
     const result = await this.loader.parseAsync(buffer, "");
+    try { beforeAdopt(); } catch (error) { this.disposeObjectResources(result.scene); throw error; }
     return this.loadRoot(result.scene, glb.size, result.animations.length);
   }
 
@@ -386,6 +408,7 @@ export class Viewer {
   }
 
   clear(): void {
+    this.requestRender();
     this.clearModel();
     this.stats = { ...EMPTY_STATS };
   }
@@ -399,6 +422,7 @@ export class Viewer {
     this.disposed = true;
     window.cancelAnimationFrame(this.animationFrame);
     this.resizeObserver.disconnect();
+    document.removeEventListener("visibilitychange", this.visibilityChanged);
     this.controls.dispose();
     this.clearModel();
     this.releaseObjectUrls();
@@ -439,6 +463,7 @@ export class Viewer {
   }
 
   setDisplayMode(mode: DisplayMode): void {
+    this.requestRender();
     this.displayMode = normalizedDisplayMode(mode);
     this.restoreOriginalMaterials();
 
@@ -471,6 +496,7 @@ export class Viewer {
   }
 
   setTopologyDetail(detail: TopologyDetail): void {
+    this.requestRender();
     this.topologyDetail = detail;
     this.updateTopologyVisibility();
   }
@@ -480,29 +506,35 @@ export class Viewer {
   }
 
   setGridVisible(visible: boolean): void {
+    this.requestRender();
     this.gridVisible = visible;
     if (this.grid) this.grid.visible = visible;
   }
 
   setAxesVisible(visible: boolean): void {
+    this.requestRender();
     this.axesVisible = visible;
     if (this.axes) this.axes.visible = visible;
   }
 
   setAutoRotate(enabled: boolean): void {
+    this.requestRender();
     this.controls.autoRotate = enabled;
     this.controls.autoRotateSpeed = 1.4;
   }
 
   setBackground(color: string): void {
+    this.requestRender();
     this.scene.background = new THREE.Color(color);
   }
 
   setExposure(exposure: number): void {
+    this.requestRender();
     this.renderer.toneMappingExposure = Math.max(0.25, Math.min(2.5, exposure));
   }
 
   setShadows(enabled: boolean): void {
+    this.requestRender();
     this.shadowsEnabled = enabled;
     this.renderer.shadowMap.enabled = enabled;
     this.keyLight.castShadow = enabled;
@@ -517,6 +549,7 @@ export class Viewer {
   }
 
   setCameraType(type: CameraType): void {
+    this.requestRender();
     if (type === this.cameraType) return;
     const previousPosition = this.activeCamera.position.clone();
     const previousQuaternion = this.activeCamera.quaternion.clone();
@@ -623,6 +656,7 @@ export class Viewer {
 
   /** Select a mesh primitive directly, useful for list-based inspector UIs. */
   selectMesh(mesh: THREE.Mesh | null, triangleIndex: number | null = null): ViewerSelection | null {
+    this.requestRender();
     if (!mesh || !this.meshes.includes(mesh)) {
       this.clearSelection();
       return null;
@@ -661,6 +695,7 @@ export class Viewer {
   }
 
   clearSelection(): void {
+    this.requestRender();
     if (!this.selection) return;
     this.selection = null;
     if (this.selectionHelper) this.selectionHelper.visible = false;
@@ -673,6 +708,7 @@ export class Viewer {
   }
 
   setMeshVisible(mesh: THREE.Mesh, visible: boolean): boolean {
+    this.requestRender();
     if (!this.meshes.includes(mesh)) return false;
     if (visible) {
       this.hiddenMeshes.delete(mesh);
@@ -694,6 +730,7 @@ export class Viewer {
   }
 
   isolateSelection(): boolean {
+    this.requestRender();
     const selected = this.selection?.mesh;
     if (!selected) return false;
     for (const mesh of this.meshes) {
@@ -711,6 +748,7 @@ export class Viewer {
   }
 
   showAll(): void {
+    this.requestRender();
     this.hiddenMeshes.clear();
     for (const mesh of this.meshes) this.initialVisibility.set(mesh, true);
     this.updateDisplayVisibility();
@@ -762,10 +800,12 @@ export class Viewer {
   }
 
   private readonly handleControlsChange = (): void => {
+    this.requestRender();
     this.updateTopologyVisibility();
   };
 
   private resize(): void {
+    this.requestRender();
     const width = Math.max(1, this.mount.clientWidth);
     const height = Math.max(1, this.mount.clientHeight);
     this.perspectiveCamera.aspect = width / height;
@@ -864,15 +904,19 @@ export class Viewer {
   }
 
   private animate = (): void => {
-    if (this.disposed) return;
-    this.controls.update();
-    this.updateTopologyTransforms();
-    if (this.selectionHelper && this.selection) {
-      this.selectionHelper.update();
-      this.selectionHelper.visible = !this.hiddenMeshes.has(this.selection.mesh);
+    this.animationFrame = 0;
+    if (this.disposed || !this.active || document.hidden || !this.mount.clientWidth || !this.mount.clientHeight) return;
+    const moving = this.controls.update();
+    if (this.renderDirty || moving) {
+      this.updateTopologyTransforms();
+      if (this.selectionHelper && this.selection) {
+        this.selectionHelper.update();
+        this.selectionHelper.visible = !this.hiddenMeshes.has(this.selection.mesh);
+      }
+      this.renderer.render(this.scene, this.activeCamera);
+      this.renderDirty = false;
     }
-    this.renderer.render(this.scene, this.activeCamera);
-    this.animationFrame = window.requestAnimationFrame(this.animate);
+    if (moving || this.controls.autoRotate) this.requestRender();
   };
 
   private makeNormalsMaterials(original: MaterialValue): MaterialValue {
@@ -1009,12 +1053,10 @@ export class Viewer {
   }
 
   private buildTopologyLines(): void {
+    if (this.topologyLines.length === this.meshes.length &&
+      this.topologyLines.every((entry, index) => entry.mesh === this.meshes[index] && entry.geometry === entry.mesh.geometry)) return;
     this.removeTopologyLinesFromScene();
-    this.topologyLines = this.meshes.map((mesh) => ({
-      mesh,
-      coarse: this.makeTopologyLine(mesh, false),
-      full: null,
-    }));
+    this.topologyLines = this.meshes.map((mesh) => ({ mesh, geometry: mesh.geometry, coarse: null, full: null }));
     this.updateTopologyTransforms();
   }
 
@@ -1033,17 +1075,16 @@ export class Viewer {
     if (!triangles) return null;
     const triangleBudget = full ? triangles : 24000;
     const stride = full ? 1 : Math.max(1, Math.ceil(triangles / triangleBudget));
-    const values: number[] = [];
+    const values = new Float32Array(Math.ceil(triangles / stride) * 18);
+    let cursor = 0;
 
     const addEdge = (a: number, b: number): void => {
-      values.push(
-        position.getX(a),
-        position.getY(a),
-        position.getZ(a),
-        position.getX(b),
-        position.getY(b),
-        position.getZ(b),
-      );
+      values[cursor++] = position.getX(a);
+      values[cursor++] = position.getY(a);
+      values[cursor++] = position.getZ(a);
+      values[cursor++] = position.getX(b);
+      values[cursor++] = position.getY(b);
+      values[cursor++] = position.getZ(b);
     };
 
     for (let triangle = 0; triangle < triangles; triangle += stride) {
@@ -1057,7 +1098,7 @@ export class Viewer {
     }
 
     const lineGeometry = new THREE.BufferGeometry();
-    lineGeometry.setAttribute("position", new THREE.Float32BufferAttribute(values, 3));
+    lineGeometry.setAttribute("position", new THREE.BufferAttribute(values, 3));
     const line = new THREE.LineSegments(
       lineGeometry,
       full ? this.fullTopologyMaterial : this.coarseTopologyMaterial,
@@ -1094,6 +1135,7 @@ export class Viewer {
       const useFull =
         this.topologyDetail === "full" ||
         (this.topologyDetail === "adaptive" && closeEnoughForFull);
+      if (enabled && !useFull && !topology.coarse) topology.coarse = this.makeTopologyLine(topology.mesh, false);
       if (enabled && useFull && !topology.full) topology.full = this.makeTopologyLine(topology.mesh, true);
       if (topology.coarse) topology.coarse.visible = enabled && !useFull;
       if (topology.full) topology.full.visible = enabled && useFull;

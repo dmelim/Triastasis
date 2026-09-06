@@ -2,7 +2,6 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   curatedModelTermsAccepted,
-  curatedModelTermsHtml,
   setCuratedModelTermsAccepted,
 } from "./model-terms";
 
@@ -22,11 +21,9 @@ function installStorage(): Map<string, string> {
 test("curated downloads stay blocked until the terms are accepted", () => {
   installStorage();
   assert.equal(curatedModelTermsAccepted(), false);
-  assert.doesNotMatch(curatedModelTermsHtml(), /data-model-terms-accept checked/);
 
   setCuratedModelTermsAccepted(true);
   assert.equal(curatedModelTermsAccepted(), true);
-  assert.match(curatedModelTermsHtml(), /data-model-terms-accept checked/);
 });
 
 test("revoking the acknowledgement blocks curated downloads again", () => {

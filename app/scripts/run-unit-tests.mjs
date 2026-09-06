@@ -27,6 +27,7 @@ for (const file of testFiles) {
       "--bundle",
       "--format=esm",
       "--platform=node",
+      "--external:esbuild",
       `--outfile=${outfile}`,
     ],
     { stdio: "inherit" },

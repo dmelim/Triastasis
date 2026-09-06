@@ -17,6 +17,10 @@ guide.
 
 ## Implementation details
 
+- [Library storage and validation](library-storage.md) describes current save
+  outcomes, metadata snapshots, compatibility, and regression-check commands.
+
+
 For current implementation behavior, use the application and native runtime
 source together with their automated tests. The inherited porting plans and
 model-inspection dumps are preserved in the [native-port archive]

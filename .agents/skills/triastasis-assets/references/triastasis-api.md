@@ -140,3 +140,30 @@ Triastasis keeps the native server and queued API resident when its window is cl
 - Query `/capabilities` before submission.
 - Respect `maxConcurrency` even if future hardware differs.
 - Do not start another GPU-heavy model while Triastasis occupies VRAM.
+
+## Internal Library recovery
+
+POST /library/recovery/scan accepts {"sourcePath":"C:/absolute/old/gallery-v1"}.
+It reads the selected directory with the app's permissions, resolves committed
+revisions and metadata overlays, and returns canonical sourcePath/destinationPath,
+records and source/destination warnings. Each record includes id, label, status
+(missing, duplicate, conflict), matchingId, fingerprint, modelSha256 and inputSha256.
+A duplicate has equal model and source bytes; existing labels/metadata win. An ID
+or version-ID collision with different bytes is a conflict. An unreadable existing
+record directory is also a conflict. Source and destination must be separate roots.
+
+POST /library/recovery/recover accepts sourcePath plus records:[{id,fingerprint}]
+selected from a scan. It rechecks the source and destination, validates the GLB,
+copies verified blobs to a private staging directory, writes metadata last, then
+publishes the new record. It preserves IDs, lineage and optional thumbnails and
+never writes to the source. Only the chosen readable revision is recovered, not
+its obsolete physical revisions. The response has per-record results with status
+imported, duplicate, conflict, or failed and error details. Partial outcomes use
+HTTP 200; callers must inspect each result. Requests are limited to 64 KB and 500
+selected records; large recoveries should use batches. A library-updated event
+refreshes the desktop after recovery. These operations run on the native HTTP
+thread, not the frontend JavaScript thread; large scans can occupy the automation
+HTTP service while checksums are calculated.
+
+Use scripts/triastasis_recover.py; scan creates a new report, recover requires
+explicit --id selections or --all-missing. No direct filesystem fallback exists.

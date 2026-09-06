@@ -73,3 +73,17 @@ npm run tauri build    # produces the platform's configured Tauri packages
 
 The supported alpha package is `triastasis-windows-x64-setup.exe`. Linux build
 outputs are development artifacts while Linux support is in progress.
+
+## Regression validation
+
+Run npm test for the frontend regression suite and npm run build for type checking
+and production output. The optional browser integration check is:
+
+```bash
+node --experimental-websocket scripts/check-ui.mjs
+```
+
+It uses synthetic assets and an isolated Chromium profile, with output under the
+ignored src-tauri/target/ui-review directory. Set TRIASTASIS_TEST_BROWSER to a
+Chromium executable when the default Windows Chrome path is unavailable. Test hooks
+exist only in this script's Vite server. See [Library storage and validation](../docs/library-storage.md) for persistence behavior and the Rust test command.

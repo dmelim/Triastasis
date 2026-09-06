@@ -20,7 +20,6 @@ export {
   type WindingOptions,
 } from "./geometry";
 export {
-  disposeGeometrySnapshot,
   EditHistory,
   type EditCommand,
   type EditHistoryOptions,

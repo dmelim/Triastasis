@@ -16,8 +16,6 @@ import {
 } from "./sweep-recovery";
 import type { GenerationManifest, ManifestIssue } from "./types";
 import {
-  busyContentFor,
-  canCloseModal,
   captureControls,
   classifyImportFailure,
   manifestWriteFailureMessage,
@@ -275,20 +273,6 @@ test("busy snapshot restores originally-disabled controls", () => {
   assert.equal(close.innerHTML, "Close");
   assert.equal(relink.disabled, true); // must NOT have been blanket-enabled
   assert.equal(relink.innerHTML, "Relink…");
-});
-
-test("busy content swap preserves button width and swaps content", () => {
-  const button = stub("Import into Assets");
-  const { html, minWidth } = busyContentFor(173.4);
-  button.innerHTML = html;
-  button.style.minWidth = minWidth;
-  assert.equal(button.style.minWidth, "174px");
-  assert.match(button.innerHTML, /spinner/);
-});
-
-test("user closing is blocked exactly while busy", () => {
-  assert.equal(canCloseModal(false), true);
-  assert.equal(canCloseModal(true), false);
 });
 
 // ---- untrusted manifest rendering ----

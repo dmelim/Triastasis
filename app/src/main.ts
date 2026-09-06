@@ -1,3 +1,6 @@
+import { loadVersionModel } from "./store";
+import { OperationQueue } from "./operation-queue";
+import { SharedResources } from "./editing/shared-resources";
 import "./ui.css";
 
 // Keep browser tooling available during tauri dev, but never expose the
@@ -12,7 +15,6 @@ import { createButton } from "./design-system/button";
 import { destroySelect, enhanceSelect, refreshSelect } from "./design-system/select";
 import {
   busyContentFor,
-  canCloseModal,
   captureControls,
   classifyImportFailure,
   manifestWriteFailureMessage,
@@ -84,11 +86,11 @@ import {
   del as removeRecord,
   galleryLoadFailed,
   galleryRecoveryCount,
-  isEphemeral,
-  listAssetVersions,
   newId,
   put,
   renameVersion,
+  renameAssetLabel,
+  versionNeedsMemoryExport,
   refreshNativeLibrary,
   setVersionFavorite,
 } from "./store";
@@ -383,6 +385,64 @@ renameModal.addEventListener("keydown", (event) => {
 // ---- state ----
 let viewer: Viewer | null = null;
 let viewerPromise: Promise<Viewer> | null = null;
+const modelOperations = new OperationQueue(() => renderEditorActions());
+const snapshotGeometries = new SharedResources<BufferGeometry>();
+const componentCache = new WeakMap<BufferGeometry, ComponentAnalysis>();
+
+async function exportSelectedVersion(versionId: string, name: string, bytes: Uint8Array): Promise<boolean> {
+  return versionNeedsMemoryExport(versionId) ? saveBytes(name, bytes) : saveLibraryGlb(versionId, name, bytes);
+}
+
+async function removeAssetRecords(records: VersionRecord[]): Promise<void> {
+  await modelOperations.run(async () => {
+    if (generating) { toast("Wait for generation to finish before removing assets", "err"); return; }
+    const replacesCurrent = records.some((record) => record.id === activeId);
+    if (replacesCurrent && !(await resolveUnsavedEdits())) return;
+    if (!confirm(`Remove this asset and its ${records.length} version(s)?`)) return;
+    const before = await all();
+    const ids = new Set(records.flatMap((record) => [record.id, record.versionId]));
+    if (before.some((record) => !ids.has(record.id) && record.parentVersionId && ids.has(record.parentVersionId))) {
+      toast("Remove dependent versions before removing this asset", "err"); return;
+    }
+    for (const record of records) await removeRecord(record.id);
+    if (replacesCurrent) { clearCurrentModelState(); viewer?.clear(); if (viewer) renderMeshParts(viewer); }
+    selectedAssetId = null;
+    await refreshGallery();
+  }).catch((error) => toast((error as Error).message || "Could not remove asset", "err"));
+}
+
+function runEditorAction(action: () => Promise<unknown>): void {
+  void modelOperations.run(action).catch((error) => toast(String(error instanceof Error ? error.message : error), "err"));
+}
+
+async function resolveUnsavedEdits(): Promise<boolean> {
+  if (!editorSession?.history.dirty) return true;
+  const dialog = document.createElement("dialog");
+  dialog.className = "unsaved-dialog";
+  dialog.innerHTML = '<h2>Unsaved edits</h2><p>Save your edit copy before replacing this model?</p><div class="unsaved-actions"><button class="button button--primary" value="save">Save derived version</button><button class="button button--secondary" value="discard">Discard edits</button><button class="button button--secondary" value="cancel">Cancel</button></div>';
+  if (!activeId) dialog.querySelector('button[value="save"]')!.textContent = "Export edited GLB";
+  document.body.appendChild(dialog);
+  const choice = await new Promise<string>((resolve) => {
+    dialog.addEventListener("click", (event) => {
+      const target = (event.target as HTMLElement).closest<HTMLButtonElement>("button[value]");
+      if (target) dialog.close(target.value);
+    });
+    dialog.addEventListener("close", () => resolve(dialog.returnValue || "cancel"), { once: true });
+    dialog.showModal();
+    dialog.querySelector<HTMLButtonElement>('button[value="cancel"]')!.focus();
+  });
+  dialog.remove();
+  if (choice === "discard") return true;
+  if (choice !== "save") return false;
+  return activeId ? saveEditedDerivedVersion() : exportEditedModel();
+}
+
+async function replaceModel<T>(operation: () => Promise<T>): Promise<T> {
+  return modelOperations.run(async () => {
+    if (!(await resolveUnsavedEdits())) throw new Error("Model change cancelled; edits kept");
+    return operation();
+  });
+}
 
 async function getViewer(): Promise<Viewer> {
   if (viewer) return viewer;
@@ -391,6 +451,7 @@ async function getViewer(): Promise<Viewer> {
       .then(({ Viewer: ViewerClass }) => {
         viewer = new ViewerClass(viewerMount);
         applyViewerPreferences(viewer);
+        viewer.setActive(workspaceMode === "generate" || workspaceMode === "view");
         viewer.onSelectionChanged((selection) => renderSelection(selection));
         return viewer!;
       })
@@ -534,6 +595,7 @@ function syncViewerReference(): void {
 
 function setWorkspaceMode(mode: WorkspaceMode): void {
   workspaceMode = mode;
+  viewer?.setActive(mode === "generate" || mode === "view");
   const generatingMode = mode === "generate";
   const viewingMode = mode === "view";
   const libraryMode = mode === "library";
@@ -743,7 +805,8 @@ async function captureEditorState(root: Object3D, operations: Array<Record<strin
     transforms.set(object.uuid, sceneEditsModule!.captureTransformSnapshot(object));
     const candidate = object as Mesh & { geometry?: BufferGeometry };
     if (candidate.geometry && typeof candidate.geometry.clone === "function") {
-      geometryByUuid.set(object.uuid, candidate.geometry.clone());
+      const geometry = snapshotGeometries.has(candidate.geometry) ? candidate.geometry : candidate.geometry.clone();
+      geometryByUuid.set(object.uuid, snapshotGeometries.retain(geometry));
     }
   });
   const materials = await withEditorOriginalMaterials(
@@ -759,8 +822,8 @@ async function captureEditorState(root: Object3D, operations: Array<Record<strin
 }
 
 function disposeEditorState(state: EditorState): void {
-  const geometries = new Set(state.geometryByUuid.values());
-  for (const geometry of geometries) geometry.dispose();
+  const geometries = state.geometryByUuid.values();
+  for (const geometry of geometries) snapshotGeometries.release(geometry);
 }
 
 async function applyEditorState(root: Object3D, state: EditorState): Promise<void> {
@@ -899,11 +962,13 @@ function refreshComponentList(): void {
     renderComponentOptions();
     return;
   }
-  componentAnalysis = editingModule.analyzeConnectedComponents(mesh.geometry);
+  componentAnalysis = componentCache.get(mesh.geometry) ?? editingModule.analyzeConnectedComponents(mesh.geometry);
+  componentCache.set(mesh.geometry, componentAnalysis);
   renderComponentOptions();
 }
 
 function renderEditorActions(): void {
+  editControls.querySelectorAll<HTMLInputElement | HTMLSelectElement>("input,select").forEach((control) => { control.disabled = false; });
   const session = editorSession;
   const mesh = currentEditableMesh();
   const hasMesh = Boolean(mesh);
@@ -924,6 +989,13 @@ function renderEditorActions(): void {
   editRedoBtn.disabled = !session || !session.history.canRedo;
   editExportBtn.disabled = !session || hasAnimationClips;
   editSaveDerivedBtn.disabled = !session || hasAnimationClips || !session.history.dirty || !activeId;
+  if (modelOperations.busy) {
+    editControls.querySelectorAll<HTMLButtonElement | HTMLInputElement | HTMLSelectElement>("button,input,select").forEach((control) => { control.disabled = true; });
+    editStartBtn.disabled = true;
+    editSaveDerivedBtn.disabled = true;
+    editExportBtn.disabled = true;
+    return;
+  }
   renderTransformFields(mesh);
   void renderMaterialFields(mesh).catch(() => undefined);
 }
@@ -1203,35 +1275,43 @@ async function exportEditedBlob(): Promise<Blob> {
   return exporter.exportGlb(root, { onlyVisible: false });
 }
 
-async function exportEditedModel(): Promise<void> {
+async function exportEditedModel(): Promise<boolean> {
   try {
     const blob = await exportEditedBlob();
     const bytes = new Uint8Array(await blob.arrayBuffer());
     const base = (activeLabel || inputName).replace(/\.[^.]+$/, "") || "model";
-    if (await saveBytes(`${base}_edited.glb`, bytes)) toast("Edited GLB exported", "ok");
+    const saved = await saveBytes(`${base}_edited.glb`, bytes);
+    if (saved) toast("Edited GLB exported", "ok");
+    return saved;
   } catch (error) {
     toast((error as Error).message || "Edited GLB export failed", "err");
+    return false;
   }
 }
 
-async function saveEditedDerivedVersion(): Promise<void> {
+async function saveEditedDerivedVersion(): Promise<boolean> {
   const session = editorSession;
-  if (!session || !activeId) return;
+  if (!session || !activeId) return false;
+  const parentId = activeId;
+  const savedState = session.history.current;
+  const savedInput = inputImage;
+  const savedParams = activeParams;
+  const savedLabel = activeLabel || inputName.replace(/\.[^.]+$/, "") || "Model";
   try {
     const blob = await exportEditedBlob();
     const thumb = viewer ? await viewer.thumbnail() : null;
     const stats = viewer?.getStats() ?? activeStats;
     const metrics = stats ? { ...statsToMetrics(stats), fileSize: blob.size } : { fileSize: blob.size };
-    const parentLabel = activeLabel || inputName.replace(/\.[^.]+$/, "") || "Model";
-    const derived = await createDerivedVersion(activeId, {
+    const parentLabel = savedLabel;
+    const derived = await createDerivedVersion(parentId, {
       glb: blob,
       thumb,
-      input: inputImage ?? undefined,
-      params: activeParams ?? undefined,
+      input: savedInput ?? undefined,
+      params: savedParams ?? undefined,
       metrics,
       operation: "edited",
       operationParams: {
-        commands: session.history.current.operations.map((operation) => ({ ...operation })),
+        commands: savedState.operations.map((operation) => ({ ...operation })),
         undoDepth: session.history.undoDepth,
       },
       label: `${parentLabel} (edited)`,
@@ -1243,13 +1323,15 @@ async function saveEditedDerivedVersion(): Promise<void> {
       const refreshedStats = viewer.refresh(blob.size, viewer.getStats().animations);
       renderViewerStats(refreshedStats, activeParams);
     }
-    session.history.markClean();
+    if (editorSession === session && session.history.current === savedState) session.history.markClean();
     updateViewerCaption();
     await refreshGallery();
     renderEditorActions();
     toast("Derived version saved", "ok");
+    return true;
   } catch (error) {
     toast((error as Error).message || "Could not save derived version", "err");
+    return false;
   }
 }
 
@@ -1335,22 +1417,22 @@ meshPartSelect.addEventListener("change", () => {
   runViewer((instance) => instance.selectMesh(instance.getMeshParts()[index] ?? null));
 });
 editStartBtn.addEventListener("click", () => {
-  void startEditing();
+  runEditorAction(startEditing);
 });
 editComponentSelect.addEventListener("change", () => {
   selectedComponentId = editComponentSelect.value || null;
   renderComponentOptions();
   renderEditorActions();
 });
-editApplyTransformBtn.addEventListener("click", () => { void applyTransformEdit(); });
-editApplyMaterialBtn.addEventListener("click", () => { void applyMaterialEditToSelection(); });
-editDeleteComponentBtn.addEventListener("click", () => { void deleteSelectedComponent(); });
-editRecomputeNormalsBtn.addEventListener("click", () => { void repairSelectedNormals(); });
-editReverseWindingBtn.addEventListener("click", () => { void reverseSelectedWinding(); });
-editUndoBtn.addEventListener("click", () => { void applyEditorHistory("undo"); });
-editRedoBtn.addEventListener("click", () => { void applyEditorHistory("redo"); });
-editExportBtn.addEventListener("click", () => { void exportEditedModel(); });
-editSaveDerivedBtn.addEventListener("click", () => { void saveEditedDerivedVersion(); });
+editApplyTransformBtn.addEventListener("click", () => { runEditorAction(applyTransformEdit); });
+editApplyMaterialBtn.addEventListener("click", () => { runEditorAction(applyMaterialEditToSelection); });
+editDeleteComponentBtn.addEventListener("click", () => { runEditorAction(deleteSelectedComponent); });
+editRecomputeNormalsBtn.addEventListener("click", () => { runEditorAction(repairSelectedNormals); });
+editReverseWindingBtn.addEventListener("click", () => { runEditorAction(reverseSelectedWinding); });
+editUndoBtn.addEventListener("click", () => { runEditorAction(() => applyEditorHistory("undo")); });
+editRedoBtn.addEventListener("click", () => { runEditorAction(() => applyEditorHistory("redo")); });
+editExportBtn.addEventListener("click", () => { runEditorAction(exportEditedModel); });
+editSaveDerivedBtn.addEventListener("click", () => { runEditorAction(saveEditedDerivedVersion); });
 $<HTMLInputElement>("edit-metalness").addEventListener("input", (event) => {
   $("edit-metalness-value").textContent = Number((event.currentTarget as HTMLInputElement).value).toFixed(2);
 });
@@ -2242,11 +2324,11 @@ async function generateRecord(
     }
   }
 
-  await put(rec);
-  if (isEphemeral() && !warnedEphemeral) {
+  const librarySave = await put(rec);
+  if (!librarySave.persisted && !warnedEphemeral) {
     warnedEphemeral = true;
     toast(
-      "Gallery will not persist across restarts (IndexedDB unavailable), but every generation is saved to the output folder.",
+      savedPath ? "Library saving failed. This generation is saved in the output folder." : "This generation is only in memory. Export its GLB now to keep it across restarts.",
       "err",
     );
   }
@@ -2272,7 +2354,8 @@ async function generateRecord(
             },
       );
     } catch (manifestError) {
-      noteManifestWriteFailure(manifestError, "asset-persisted");
+      if (librarySave.persisted) noteManifestWriteFailure(manifestError, "asset-persisted");
+      else toast("The portable record could not be finalized. Export the model to keep a copy.", "err");
     }
   }
 
@@ -2288,7 +2371,7 @@ async function generateRecord(
     if (savedPath) {
       parts.push(`Saved to ${savedPath}.`);
     } else if (autosaveError) {
-      parts.push(`Output-folder saving failed (${autosaveError}); the model remains in the app gallery.`);
+      parts.push(`Output-folder saving failed (${autosaveError}); the model remains ${librarySave.persisted ? "saved in the Library" : "in memory only; export it now"}.`);
       severity = "err";
     } else if (!rec.qualityWarning) {
       parts.push("Generation complete");
@@ -2296,10 +2379,11 @@ async function generateRecord(
     toast(parts.join(" "), severity);
   }
 
-  if (autoOpen && !activeId && !currentGlb) try {
+  if (autoOpen) try {
+    await modelOperations.run(async () => {
+      if (activeId || currentGlb) return;
     const instance = await getViewer();
-    disposeEditorSession();
-    const stats = await instance.load(glb);
+      const stats = await instance.load(glb, disposeEditorSession);
     rec.metrics = statsToMetrics(stats);
     currentGlb = glb;
     activeId = rec.id;
@@ -2318,8 +2402,9 @@ async function generateRecord(
       await put(rec);
       await refreshGallery();
     }
+    });
   } catch (e) {
-    toast(`3D preview could not render (the result is still saved): ${(e as Error).message}`, "err");
+    toast(`3D preview could not render (the result remains available): ${(e as Error).message}`, "err");
   }
   return rec;
 }
@@ -2604,12 +2689,17 @@ versionDockToggle.addEventListener("click", () => {
 });
 
 async function loadRecordData(rec: VersionRecord): Promise<void> {
+  try { await replaceModel(() => loadRecordDataNow(rec)); }
+  catch (error) { toast((error as Error).message, "err"); }
+}
+async function loadRecordDataNow(rec: VersionRecord): Promise<void> {
   let stats: ViewerStats;
   let instance: Viewer;
   try {
     instance = await getViewer();
-    disposeEditorSession();
-    stats = await instance.load(rec.glb);
+    const loaded = await loadVersionModel(rec);
+    rec = loaded;
+    stats = await instance.load(loaded.glb, disposeEditorSession);
   } catch (e) {
     toast((e as Error).message, "err");
     return;
@@ -2658,15 +2748,20 @@ async function loadRecordData(rec: VersionRecord): Promise<void> {
 }
 
 function renderCandidates(): void {
+  const focusedSeed = candidateGallery.contains(document.activeElement) ? (document.activeElement as HTMLElement).dataset.seed : undefined;
   candidateUrls.forEach((url) => URL.revokeObjectURL(url));
   candidateUrls = [];
   candidateGallery.innerHTML = "";
   const hasPendingOrFailedCandidate = candidates.some((slot) => slot.status !== "ready");
   candidateWrap.classList.toggle("hidden", candidates.length === 0 || !hasPendingOrFailedCandidate);
-  if (!candidates.length || !hasPendingOrFailedCandidate) return;
+  if (!candidates.length || !hasPendingOrFailedCandidate) {
+    if (focusedSeed) (versionGalleryEl.querySelector<HTMLElement>(".version-item.active") ?? versionDockToggle).focus();
+    return;
+  }
 
-  const complete = candidates.filter((slot) => slot.status === "ready" || slot.status === "failed").length;
-  candidateSummary.textContent = `${complete}/${candidates.length} complete. Click a result to select its seed.`;
+  const ready = candidates.filter((slot) => slot.status === "ready").length;
+  const failed = candidates.filter((slot) => slot.status === "failed").length;
+  candidateSummary.textContent = `${ready} ready, ${failed} failed, ${candidates.length - ready - failed} pending. Select a result to use its seed.`;
 
   for (const slot of candidates) {
     const item = createButton({
@@ -2675,6 +2770,7 @@ function renderCandidates(): void {
       variant: "secondary",
       className: `candidate ${slot.status}${slot.record?.id === activeId ? " active" : ""}${slot.record?.qualityWarning ? " quality-warning" : ""}`,
     });
+    item.dataset.seed = String(slot.seed);
     item.disabled = !slot.record;
     item.title = slot.error || `Seed ${slot.seed}`;
 
@@ -2704,7 +2800,10 @@ function renderCandidates(): void {
       : slot.record?.id === activeId
       ? "Selected"
       : slot.status === "ready" ? "Select" : slot.status;
+    item.setAttribute("aria-label", `Seed ${slot.seed}, ${status.textContent}${slot.error ? ", " + slot.error : ""}`);
+    item.setAttribute("aria-pressed", String(slot.record?.id === activeId));
     meta.append(seed, status);
+    if (slot.error) { const error = document.createElement("span"); error.textContent = slot.error; meta.append(error); }
     item.appendChild(meta);
 
     if (slot.record) {
@@ -2714,6 +2813,7 @@ function renderCandidates(): void {
       });
     }
     candidateGallery.appendChild(item);
+    if (focusedSeed === String(slot.seed) && !item.disabled) item.focus();
   }
 }
 
@@ -2775,8 +2875,8 @@ function renderLibraryAsset(asset: AssetGroup): HTMLElement {
   exportBtn.addEventListener("click", async (event) => {
     event.stopPropagation();
     try {
-      const bytes = new Uint8Array(await representative.glb.arrayBuffer());
-      const ok = await saveLibraryGlb(representative.versionId, `${safeStem(assetName)}.glb`, bytes);
+      const bytes = new Uint8Array(await (await loadVersionModel(representative)).glb.arrayBuffer());
+      const ok = await exportSelectedVersion(representative.versionId, `${safeStem(assetName)}.glb`, bytes);
       if (ok) toast("GLB exported", "ok");
     } catch (error) {
       toast((error as Error).message || "GLB export failed", "err");
@@ -2816,10 +2916,7 @@ function renderLibraryAsset(asset: AssetGroup): HTMLElement {
     if (nextLabel === null) return;
     try {
       for (const record of records) {
-        await put({
-          ...record,
-          operationParams: { ...record.operationParams, assetLabel: nextLabel },
-        });
+        await renameAssetLabel(record.versionId, nextLabel);
       }
       await refreshGallery();
     } catch (error) {
@@ -2837,32 +2934,7 @@ function renderLibraryAsset(asset: AssetGroup): HTMLElement {
   });
   removeBtn.addEventListener("click", async (event) => {
     event.stopPropagation();
-    if (generating) {
-      toast("Wait for generation to finish before removing assets", "err");
-      return;
-    }
-    if (!confirm(`Remove this asset and its ${records.length} version${records.length === 1 ? "" : "s"}?`)) return;
-    try {
-      const recordsBeforeDelete = await all();
-      const targetIds = new Set(records.flatMap((record) => [record.id, record.versionId]));
-      const externalDependent = recordsBeforeDelete.find(
-        (record) => !targetIds.has(record.id) && record.parentVersionId && targetIds.has(record.parentVersionId),
-      );
-      if (externalDependent) {
-        toast("Remove dependent versions before removing this asset", "err");
-        return;
-      }
-      for (const record of records) await removeRecord(record.id);
-      if (records.some((record) => record.id === activeId)) {
-        clearCurrentModelState();
-        viewer?.clear();
-        if (viewer) renderMeshParts(viewer);
-      }
-      selectedAssetId = null;
-      await refreshGallery();
-    } catch (error) {
-      toast((error as Error).message || "Could not remove asset", "err");
-    }
+    await removeAssetRecords(records);
   });
   actions.appendChild(removeBtn);
   itemHead.append(name, actions);
@@ -2896,6 +2968,23 @@ function renderLibraryAsset(asset: AssetGroup): HTMLElement {
   return item;
 }
 
+function renderAssetSkeletons(container: HTMLElement): void {
+  const fragment = document.createDocumentFragment();
+  const status = document.createElement("span");
+  status.className = "asset-loading-status";
+  status.setAttribute("role", "status");
+  status.textContent = "Loading saved assets…";
+  fragment.append(status);
+  for (let index = 0; index < 6; index += 1) {
+    const card = document.createElement("div");
+    card.className = "asset-skeleton";
+    card.setAttribute("aria-hidden", "true");
+    card.innerHTML = '<div class="asset-skeleton-title skeleton-block"></div><div class="asset-skeleton-body"><div class="asset-skeleton-preview skeleton-block"></div><div class="asset-skeleton-lines"><div class="skeleton-block"></div><div class="skeleton-block"></div></div></div>';
+    fragment.append(card);
+  }
+  container.replaceChildren(fragment);
+}
+
 function renderLibraryView(): void {
   libraryUrls.forEach((url) => URL.revokeObjectURL(url));
   libraryUrls = [];
@@ -2922,10 +3011,18 @@ function renderLibraryView(): void {
   const totalVersions = currentAssetGroups.reduce((sum, asset) => sum + asset.records.length, 0);
   libraryModeSummary.textContent = `${currentAssetGroups.length} asset${currentAssetGroups.length === 1 ? "" : "s"}, ${totalVersions} version${totalVersions === 1 ? "" : "s"}`;
   libraryResultsSummary.textContent = `${filtered.length} result${filtered.length === 1 ? "" : "s"}`;
+  if (libraryReadState === "loading" && !currentAssetGroups.length) {
+    libraryModeSummary.textContent = "Loading saved assets…";
+    libraryResultsSummary.textContent = "";
+    renderAssetSkeletons(libraryGrid);
+    return;
+  }
   if (!filtered.length) {
     const empty = document.createElement("div");
     empty.className = "library-grid-empty";
-    empty.textContent = currentAssetGroups.length
+    empty.textContent = libraryReadState === "loading" ? "Loading saved assets…"
+      : libraryReadState === "failed" ? "Saved assets could not be loaded. Your files remain on disk. Restart Triastasis to retry."
+        : currentAssetGroups.length
       ? "No assets match the current search and filters."
       : "No assets yet. Generate a model to start your library.";
     libraryGrid.appendChild(empty);
@@ -2943,10 +3040,35 @@ dockFavoritesToggle.addEventListener("click", () => {
   void refreshGallery();
 });
 
+let libraryReadState: "loading" | "ready" | "failed" = "loading";
+let libraryRefresh: Promise<void> | null = null;
 async function refreshGallery(): Promise<void> {
+  if (libraryRefresh) { await libraryRefresh; return refreshGallery(); }
+  galleryEl.setAttribute("aria-busy", "true");
+  libraryGrid.setAttribute("aria-busy", "true");
+  if (!currentAssetGroups.length) {
+    libraryReadState = "loading";
+    renderAssetSkeletons(galleryEl);
+    renderLibraryView();
+  }
+  libraryRefresh = refreshGalleryNow();
+  try { await libraryRefresh; }
+  catch (error) {
+    libraryReadState = "failed";
+    if (!currentAssetGroups.length) galleryEl.textContent = "Saved assets could not be loaded. Your files remain on disk.";
+    renderLibraryView();
+    toast((error as Error).message || "Library loading failed", "err");
+  } finally {
+    libraryRefresh = null;
+    galleryEl.setAttribute("aria-busy", "false");
+    libraryGrid.setAttribute("aria-busy", "false");
+  }
+}
+async function refreshGalleryNow(): Promise<void> {
+  const recs = await all();
   galleryUrls.forEach((u) => URL.revokeObjectURL(u));
   galleryUrls = [];
-  const recs = await all();
+  libraryReadState = galleryLoadFailed() && !recs.length ? "failed" : "ready";
   const recoveryCount = galleryRecoveryCount();
   galleryRecoveryBanner.classList.toggle("hidden", recoveryCount === 0);
   if (recoveryCount > 0) {
@@ -2975,11 +3097,13 @@ async function refreshGallery(): Promise<void> {
   }
   dockFavoritesToggle.disabled = false;
   clearGalleryBtn.disabled = generating;
-  const assetIds = [...new Set(recs.map((record) => record.assetId))];
-  const assetGroups: AssetGroup[] = await Promise.all(assetIds.map(async (assetId) => ({
-    assetId,
-    records: (await listAssetVersions(assetId)).sort((a, b) => b.createdAt - a.createdAt),
-  })));
+  const grouped = new Map<string, VersionRecord[]>();
+  for (const record of recs) {
+    const versions = grouped.get(record.assetId) ?? [];
+    versions.push(record); // all() already returns newest first
+    grouped.set(record.assetId, versions);
+  }
+  const assetGroups: AssetGroup[] = [...grouped].map(([assetId, records]) => ({ assetId, records }));
   currentAssetGroups = assetGroups;
   const dockAssetGroups = dockFavoritesOnly
     ? assetGroups.filter((asset) => assetIsFavorite(asset.records))
@@ -3024,8 +3148,8 @@ async function refreshGallery(): Promise<void> {
     exportBtn.addEventListener("click", async (event) => {
       event.stopPropagation();
       try {
-        const bytes = new Uint8Array(await representative.glb.arrayBuffer());
-        const ok = await saveLibraryGlb(representative.versionId, `${safeStem(assetName)}.glb`, bytes);
+        const bytes = new Uint8Array(await (await loadVersionModel(representative)).glb.arrayBuffer());
+        const ok = await exportSelectedVersion(representative.versionId, `${safeStem(assetName)}.glb`, bytes);
         if (ok) toast("GLB exported", "ok");
       } catch (error) {
         toast((error as Error).message || "GLB export failed", "err");
@@ -3065,10 +3189,7 @@ async function refreshGallery(): Promise<void> {
       if (nextLabel === null) return;
       try {
         for (const record of records) {
-          await put({
-            ...record,
-            operationParams: { ...record.operationParams, assetLabel: nextLabel },
-          });
+          await renameAssetLabel(record.versionId, nextLabel);
         }
         await refreshGallery();
       } catch (error) {
@@ -3086,32 +3207,7 @@ async function refreshGallery(): Promise<void> {
     });
     removeBtn.addEventListener("click", async (event) => {
       event.stopPropagation();
-      if (generating) {
-        toast("Wait for generation to finish before removing assets", "err");
-        return;
-      }
-      if (!confirm(`Remove this asset and its ${records.length} version${records.length === 1 ? "" : "s"}?`)) return;
-      try {
-        const recordsBeforeDelete = await all();
-        const targetIds = new Set(records.flatMap((record) => [record.id, record.versionId]));
-        const externalDependent = recordsBeforeDelete.find(
-          (record) => !targetIds.has(record.id) && record.parentVersionId && targetIds.has(record.parentVersionId),
-        );
-        if (externalDependent) {
-          toast("Remove dependent versions before removing this asset", "err");
-          return;
-        }
-        for (const record of records) await removeRecord(record.id);
-        if (records.some((record) => record.id === activeId)) {
-          clearCurrentModelState();
-          viewer?.clear();
-          if (viewer) renderMeshParts(viewer);
-        }
-        selectedAssetId = null;
-        await refreshGallery();
-      } catch (error) {
-        toast((error as Error).message || "Could not remove asset", "err");
-      }
+      await removeAssetRecords(records);
     });
     actions.appendChild(removeBtn);
     itemHead.append(name, actions);
@@ -3232,9 +3328,9 @@ async function refreshGallery(): Promise<void> {
       exportBtn.addEventListener("click", async (event) => {
         event.stopPropagation();
         try {
-          const bytes = new Uint8Array(await representative.glb.arrayBuffer());
+          const bytes = new Uint8Array(await (await loadVersionModel(representative)).glb.arrayBuffer());
           const base = safeStem(representative.label || representative.name);
-          const ok = await saveLibraryGlb(representative.versionId, `${base}.glb`, bytes);
+          const ok = await exportSelectedVersion(representative.versionId, `${base}.glb`, bytes);
           if (ok) toast("GLB exported", "ok");
         } catch (error) {
           toast((error as Error).message || "GLB export failed", "err");
@@ -3373,6 +3469,9 @@ function syncAutomationImportRequests(apiUrl?: string): Promise<number> {
 }
 
 clearGalleryBtn.addEventListener("click", async () => {
+  await modelOperations.run(async () => {
+    if (!(await resolveUnsavedEdits())) return;
+
   if (generating) {
     toast("Wait for generation to finish before clearing the gallery", "err");
     return;
@@ -3389,16 +3488,18 @@ clearGalleryBtn.addEventListener("click", async () => {
   } catch (error) {
     toast((error as Error).message || "Could not clear the gallery", "err");
   }
+
+ }).catch((error) => toast((error as Error).message, "err"));
 });
 
 // ---- settings page ----
 async function renderSettingsPage(): Promise<void> {
   settingsBody.setAttribute("aria-busy", "true");
   try {
-    await renderSettings(settingsBody, () => {
+    await renderSettings(settingsBody, (message) => {
       pollHealth();
       void refreshHardwareGuardrails();
-      toast("Settings applied");
+      toast(message);
       void renderSettingsPage();
     });
   } catch (error) {
@@ -3634,7 +3735,7 @@ function placeholderImage(): Blob {
 function closeManifestModal(): void {
   // Every user close path (Escape, backdrop, header, footer) is blocked while
   // an import/requeue is in flight. Success uses completeManifestSuccess().
-  if (!canCloseModal(manifestBusy)) return;
+  if (manifestBusy) return;
   manifestModal.classList.add("hidden");
   cleanupManifestModal();
   const opener = manifestOpener;
@@ -3942,6 +4043,12 @@ function activateLoadedRecord(
  * problems rather than offering an import retry.
  */
 async function importManifestFlow(
+  path: string, timings: StageTiming, onPersisted: () => void,
+  refreshAfterImport = true, preloaded?: ImportedGeneration,
+): Promise<VersionRecord> {
+  return replaceModel(() => importManifestFlowNow(path, timings, onPersisted, refreshAfterImport, preloaded));
+}
+async function importManifestFlowNow(
   path: string,
   timings: StageTiming,
   onPersisted: () => void,
@@ -3995,12 +4102,11 @@ async function importManifestFlow(
   timings.mark("to-blob");
 
   const instance = await getViewer();
-  disposeEditorSession();
-  const stats = await instance.load(rec.glb);
+  const stats = await instance.load((await loadVersionModel(rec)).glb, disposeEditorSession);
   timings.mark("viewer-render");
   activateLoadedRecord(instance, stats, rec);
 
-  await put(rec);
+  await put(rec, true);
   onPersisted();
   timings.mark("persist-record");
   if (refreshAfterImport) {
@@ -4172,13 +4278,16 @@ function clearStandaloneView(): void {
 }
 
 async function viewGlbFile(glbPath: string): Promise<void> {
+  try { await replaceModel(() => viewGlbFileNow(glbPath)); }
+  catch (error) { toast((error as Error).message, "err"); }
+}
+async function viewGlbFileNow(glbPath: string): Promise<void> {
   try {
     const { readFile } = await import("@tauri-apps/plugin-fs");
     const bytes = await readFile(glbPath);
     const blob = new Blob([bytes], { type: "model/gltf-binary" });
     const instance = await getViewer();
-    disposeEditorSession();
-    const stats = await instance.load(blob);
+    const stats = await instance.load(blob, disposeEditorSession);
     setWorkspaceMode("view");
     activeParams = null;
     activeLabel = "";
@@ -4491,6 +4600,7 @@ async function boot(): Promise<void> {
   renderViewerStats(null);
   setWorkspaceMode("generate");
   initDockPreference();
+  await refreshGallery();
   await initModelDownloadState(isTauri());
   await initModelSetup();
   await refreshHardwareGuardrails();
@@ -4512,4 +4622,11 @@ async function boot(): Promise<void> {
 }
 void boot().catch((error) => {
   console.error("Triastasis boot failed", error);
+  toast(`Startup could not finish: ${(error as Error).message}. Open Settings to review setup; saved assets remain available in Library.`, "err");
+  setupBanner.classList.remove("hidden");
+  setupBanner.setAttribute("role", "alert");
+  setupBanner.querySelector("span")!.textContent = "Startup could not finish: " + (error as Error).message;
+  setupBanner.dataset.action = "settings";
+  setupBannerButton.disabled = false;
+  setupBannerButton.textContent = "Open settings";
 });

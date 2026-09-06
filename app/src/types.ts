@@ -353,7 +353,7 @@ export interface GenRecord {
   name: string;
   params: GenParams;
   input: Blob; // source image
-  glb: Blob; // resulting model/gltf-binary
+  glb: Blob | null; // null for a desktop Library entry whose model is not loaded
   thumb: Blob | null; // rendered snapshot for the gallery
   /** Present when this record is one candidate inside a seed sweep. */
   sweepGroupId?: string;

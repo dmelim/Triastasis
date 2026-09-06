@@ -2,6 +2,8 @@
 use super::*;
 use serde_json::{json, Value};
 use tauri::Manager;
+#[path = "library_recovery.rs"]
+pub(crate) mod recovery;
 
 pub(crate) fn root(app: &tauri::AppHandle) -> Result<PathBuf, String> {
     let root = app
@@ -23,7 +25,11 @@ fn encoded(id: &str) -> Result<String, String> {
 fn contained(root: &Path, path: &Path) -> Result<PathBuf, String> {
     let canonical = std::fs::canonicalize(path).map_err(|e| e.to_string())?;
     if !canonical.starts_with(root) {
-        return Err("Library path escapes its root".into());
+        return Err(format!(
+            "Library path escapes its root (root={}, resolved={})",
+            root.display(),
+            canonical.display()
+        ));
     }
     Ok(canonical)
 }
@@ -32,6 +38,65 @@ pub(crate) struct Record {
     pub metadata: Value,
     input: PathBuf,
     model: PathBuf,
+}
+
+// Small immutable metadata snapshots share the original version's blobs.
+// Ignore partial/invalid updates and preserve the same fallback order as the UI.
+fn apply_metadata_updates(dir: &Path, metadata: &mut Value) {
+    let Ok(updates) = contained(dir, &dir.join("metadata-updates")) else {
+        return;
+    };
+    let Ok(entries) = std::fs::read_dir(&updates) else {
+        return;
+    };
+    let mut revisions: Vec<_> = entries
+        .flatten()
+        .filter_map(|entry| {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if name.starts_with('0') || !name.bytes().all(|b| b.is_ascii_digit()) {
+                return None;
+            }
+            name.parse::<u64>()
+                .ok()
+                .filter(|n| *n <= 9_007_199_254_740_991)
+                .map(|n| (n, entry.path()))
+        })
+        .collect();
+    revisions.sort_by(|a, b| b.0.cmp(&a.0));
+    for (_, path) in revisions {
+        let Ok(file) = contained(dir, &path.join("metadata.json")) else {
+            continue;
+        };
+        if std::fs::metadata(&file)
+            .map(|m| m.len() > 1024 * 1024)
+            .unwrap_or(true)
+        {
+            continue;
+        }
+        let Ok(bytes) = std::fs::read(file) else {
+            continue;
+        };
+        let Ok(patch) = serde_json::from_slice::<Value>(&bytes) else {
+            continue;
+        };
+        if !patch["label"].is_string()
+            || !patch["favorite"].is_boolean()
+            || !(patch
+                .get("assetLabel")
+                .is_some_and(|v| v.is_null() || v.is_string()))
+        {
+            continue;
+        }
+        metadata["label"] = patch["label"].clone();
+        metadata["favorite"] = patch["favorite"].clone();
+        if patch["assetLabel"].is_string() {
+            if !metadata["operationParams"].is_object() {
+                metadata["operationParams"] = json!({});
+            }
+            metadata["operationParams"]["assetLabel"] = patch["assetLabel"].clone();
+        }
+        break;
+    }
 }
 
 fn read_revision(root: &Path, dir: &Path, expected: &str) -> Result<Record, String> {
@@ -43,6 +108,7 @@ fn read_revision(root: &Path, dir: &Path, expected: &str) -> Result<Record, Stri
     let mut metadata: Value =
         serde_json::from_slice(&std::fs::read(meta).map_err(|e| e.to_string())?)
             .map_err(|e| e.to_string())?;
+    apply_metadata_updates(&dir, &mut metadata);
     let id = metadata["id"]
         .as_str()
         .ok_or("Library record has no ID")?
@@ -466,6 +532,26 @@ mod tests {
         assert_eq!(inspect(&f.0, "v").unwrap()["label"], "newest");
     }
     #[test]
+    fn metadata_updates_preserve_blobs_and_ignore_partial_updates() {
+        let f = Fixture::new();
+        let source = record(&f.0, "v", Some(1), metadata("v"));
+        let before = sha256_file(&source.join("model.glb")).unwrap();
+        let updates = source.join("metadata-updates");
+        std::fs::create_dir_all(updates.join("1")).unwrap();
+        std::fs::write(
+            updates.join("1/metadata.json"),
+            br#"{"label":"Renamed","favorite":true,"assetLabel":"Props"}"#,
+        )
+        .unwrap();
+        std::fs::create_dir_all(updates.join("2")).unwrap();
+        std::fs::write(updates.join("2/metadata.json"), br#"{"label":"#).unwrap();
+        let info = inspect(&f.0, "v").unwrap();
+        assert_eq!(info["label"], "Renamed");
+        assert_eq!(info["favorite"], true);
+        assert_eq!(info["operationParams"]["assetLabel"], "Props");
+        assert_eq!(sha256_file(&source.join("model.glb")).unwrap(), before);
+    }
+    #[test]
     fn export_preserves_selected_version_lineage_and_hashes() {
         let f = Fixture::new();
         let source = record(&f.0, "v", Some(1), metadata("v"));
@@ -592,6 +678,90 @@ mod tests {
         let target = f.0.join("bad.glb");
         assert_eq!(export(&f.0, "v", &target, "glb").unwrap_err().0, 422);
         assert!(!target.exists());
+    }
+    #[test]
+    fn recovery_scans_copies_and_retries_without_overwriting() {
+        let source = Fixture::new();
+        let dest = Fixture::new();
+        record(&source.0, "recover", Some(2), metadata("recover"));
+        let scan = recovery::scan(&dest.0, &source.0).unwrap();
+        assert_eq!(scan["records"][0]["status"], "missing");
+        let selection = recovery::Selection {
+            id: "recover".into(),
+            fingerprint: scan["records"][0]["fingerprint"].as_str().unwrap().into(),
+        };
+        let original = sha256_file(
+            &source
+                .0
+                .join(encoded("recover").unwrap())
+                .join("revisions/2/model.glb"),
+        )
+        .unwrap();
+        let result = recovery::recover(&dest.0, &source.0, &[selection]).unwrap();
+        assert_eq!(result["results"][0]["status"], "imported");
+        assert_eq!(
+            version(&dest.0, "recover").unwrap().metadata["parentVersionId"],
+            "base"
+        );
+        assert_eq!(
+            sha256_file(&version(&dest.0, "recover").unwrap().model).unwrap(),
+            original
+        );
+        assert_eq!(
+            sha256_file(&version(&source.0, "recover").unwrap().model).unwrap(),
+            original
+        );
+        let retry = recovery::recover(
+            &dest.0,
+            &source.0,
+            &[recovery::Selection {
+                id: "recover".into(),
+                fingerprint: "old".into(),
+            }],
+        )
+        .unwrap();
+        assert_eq!(retry["results"][0]["status"], "duplicate");
+        assert!(recovery::scan(&dest.0, &dest.0).is_err());
+    }
+    #[test]
+    fn recovery_rejects_changed_sources_conflicts_and_invalid_models() {
+        let source = Fixture::new();
+        let dest = Fixture::new();
+        let dir = record(&source.0, "recover", None, metadata("recover"));
+        let scan = recovery::scan(&dest.0, &source.0).unwrap();
+        let selection = recovery::Selection {
+            id: "recover".into(),
+            fingerprint: scan["records"][0]["fingerprint"].as_str().unwrap().into(),
+        };
+        std::fs::write(dir.join("input.bin"), b"changed").unwrap();
+        let result = recovery::recover(&dest.0, &source.0, &[selection]).unwrap();
+        assert_eq!(result["results"][0]["status"], "failed");
+        assert!(!dest.0.join(encoded("recover").unwrap()).exists());
+        record(&dest.0, "recover", None, metadata("recover"));
+        assert_eq!(
+            recovery::scan(&dest.0, &source.0).unwrap()["records"][0]["status"],
+            "conflict"
+        );
+        let bad = record(&source.0, "invalid", None, metadata("invalid"));
+        std::fs::write(bad.join("model.glb"), b"invalid").unwrap();
+        let scan = recovery::scan(&dest.0, &source.0).unwrap();
+        let entry = scan["records"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|r| r["id"] == "invalid")
+            .unwrap();
+        let result = recovery::recover(
+            &dest.0,
+            &source.0,
+            &[recovery::Selection {
+                id: "invalid".into(),
+                fingerprint: entry["fingerprint"].as_str().unwrap().into(),
+            }],
+        )
+        .unwrap();
+        assert_eq!(result["results"][0]["status"], "failed");
+        assert!(!dest.0.join(encoded("invalid").unwrap()).exists());
     }
 }
 

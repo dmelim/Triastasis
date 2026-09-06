@@ -291,3 +291,77 @@ test("concurrent writes to one record serialize instead of racing", async () => 
   assert.ok(loaded);
   assert.ok(["A", "B", "C"].includes(loaded.label));
 });
+
+
+test("rename and favourite update metadata without rewriting or reading model blobs", async () => {
+  const fs = new MemoryFs();
+  const store = createTransactionalGallery(fs, ROOT);
+  await store.writeRecord("r1", makeRecord());
+  let reads = 0, writes = 0;
+  const originalRead = fs.readFile.bind(fs), originalWrite = fs.writeFile.bind(fs);
+  fs.readFile = async (path) => { reads++; return originalRead(path); };
+  fs.writeFile = async (path, data) => { writes++; return originalWrite(path, data); };
+  await store.updateMetadata("r1", { label: "Renamed" });
+  await store.updateMetadata("r1", { favorite: true, assetLabel: "Collection name" });
+  assert.equal(reads, 0); assert.equal(writes, 0);
+  const reopened = await createTransactionalGallery(fs, ROOT).loadRecord("r1");
+  assert.equal(reopened?.label, "Renamed"); assert.equal(reopened?.favorite, true);
+  assert.equal(reopened?.operationParams?.assetLabel, "Collection name");
+});
+test("interrupted metadata updates preserve the last complete label and model", async () => {
+  const fs = new MemoryFs(); const store = createTransactionalGallery(fs, ROOT);
+  await store.writeRecord("r1", makeRecord());
+  await store.updateMetadata("r1", { label: "Saved name" });
+  const incomplete = ROOT + "/r1/revisions/1/metadata-updates/2";
+  await fs.mkdir(incomplete, true); await fs.writeTextFile(incomplete + "/metadata.json", '{"label":');
+  assert.equal((await store.loadRecord("r1"))?.label, "Saved name");
+  await store.updateMetadata("r1", { favorite: true });
+  assert.equal((await store.loadRecord("r1"))?.label, "Saved name");
+});
+
+
+test("metadata cleanup retains a valid fallback even after a partial write", async () => {
+  const fs = new MemoryFs(); const store = createTransactionalGallery(fs, ROOT);
+  await store.writeRecord("r1", makeRecord());
+  await store.updateMetadata("r1", { label: "Keep this" });
+  const updates = ROOT + "/r1/revisions/1/metadata-updates";
+  await fs.mkdir(updates + "/2", true); await fs.writeTextFile(updates + "/2/metadata.json", "{");
+  await store.updateMetadata("r1", { label: "Newer" });
+  await fs.writeTextFile(updates + "/3/metadata.json", "{");
+  assert.equal((await store.loadRecord("r1"))?.label, "Keep this");
+});
+
+
+test("Library listing defers GLBs, preserves metadata edits, and loads bytes on demand", async () => {
+  const fs = new MemoryFs();
+  const store = createTransactionalGallery(fs, ROOT);
+  const source = makeRecord();
+  await store.writeRecord("lazy", source);
+  const read = fs.readFile.bind(fs);
+  let modelReads = 0;
+  fs.readFile = async (path) => { if (path.endsWith("/model.glb")) modelReads += 1; return read(path); };
+  const entry = await store.loadRecord("lazy", true);
+  assert.ok(entry);
+  assert.equal(entry.glb, null);
+  assert.equal(modelReads, 0);
+  await store.updateMetadata("lazy", {label: "Renamed", favorite: true});
+  assert.equal(modelReads, 0);
+  await assert.rejects(store.writeRecord("unloaded", entry as VersionRecord), /without loading/);
+  const opened = await store.loadRecord("lazy");
+  assert.equal(modelReads, 1);
+  assert.equal(opened?.label, "Renamed");
+  assert.equal(opened?.favorite, true);
+  assert.equal(await opened?.glb?.text(), await source.glb?.text());
+});
+
+test("deferred listing skips revisions whose model file is missing", async () => {
+  const fs = new MemoryFs();
+  const store = createTransactionalGallery(fs, ROOT);
+  await store.writeRecord("lazy", makeRecord({label: "Original"}));
+  await store.writeRecord("lazy", makeRecord({label: "New"}));
+  const models = [...fs.files.keys()].filter(path => path.endsWith("/model.glb")).sort();
+  fs.files.delete(models[models.length - 1]);
+  const entry = await store.loadRecord("lazy", true);
+  assert.equal(entry?.label, "Original");
+  assert.equal(entry?.glb, null);
+});

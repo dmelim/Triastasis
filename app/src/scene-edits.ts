@@ -245,11 +245,6 @@ export function cloneEditableScene(sourceRoot: THREE.Object3D): EditableScene {
   return new EditableScene(sourceRoot, root, ownedGeometries, ownedMaterials, ownedTextures);
 }
 
-/** Idempotent cleanup helper for callers that do not retain the class instance. */
-export function disposeEditableScene(scene: EditableScene): void {
-  scene.dispose();
-}
-
 export interface TransformSnapshot {
   objectUuid: string;
   position: Vector3Tuple;
@@ -405,7 +400,6 @@ export function captureMaterialSnapshots(root: THREE.Object3D): MaterialSnapshot
   return snapshots;
 }
 
-export const captureMaterialSnapshot = captureMaterialSnapshots;
 
 function clampUnit(field: string, value: unknown, limitations: Set<string>): number {
   if (typeof value !== "number" || !Number.isFinite(value)) {

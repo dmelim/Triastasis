@@ -1,5 +1,3 @@
-import type { BufferGeometry } from "three";
-
 export interface EditCommand<TState> {
   label: string;
   /** Return the next immutable/snapshot state from the current state. */
@@ -62,10 +60,6 @@ export class EditHistory<TState> {
 
   get dirty(): boolean {
     return this.cleanPosition === null || this.cleanPosition !== this.position;
-  }
-
-  isDirty(): boolean {
-    return this.dirty;
   }
 
   /** Apply a command and discard any redo branch after the current cursor. */
@@ -144,9 +138,4 @@ export class EditHistory<TState> {
     this.disposeSnapshot?.(entry.snapshot);
     entry.command?.dispose?.();
   }
-}
-
-/** Disposal hook suitable for geometry-only snapshots. */
-export function disposeGeometrySnapshot(geometry: BufferGeometry): void {
-  geometry.dispose();
 }

@@ -1,3 +1,4 @@
+import type { GalleryMetadataPatch } from "./gallery-storage";
 // Persistent gallery of past generations. The desktop app stores records in
 // Tauri's app-local data directory so development and packaged webview origins
 // see the same assets. Plain-browser builds retain the IndexedDB backend.
@@ -22,10 +23,12 @@ import {
   clearNativeGallery,
   deleteNativeRecords,
   loadNativeGallery,
+  loadNativeRecord,
   nativeGalleryRecoveryCount,
   markNativeMigrationCompleted,
   nativeMigrationWasCompleted,
   writeNativeRecord,
+  updateNativeMetadata,
 } from "./native-gallery";
 
 const DB_NAME = "trellis-studio";
@@ -42,8 +45,12 @@ let persistentDbFailure: unknown = null;
 let nativeInitialization: Promise<boolean> | null = null;
 let nativePersistenceFailure: unknown = null;
 const mem = new Map<string, VersionRecord>();
+const memoryOnlyVersions = new Set<string>();
 
-export type DestructiveStoreOperation = "delete" | "clear";
+/** A failed save must export the retained bytes rather than query a missing disk record. */
+export function versionNeedsMemoryExport(id: string): boolean { return memoryOnlyVersions.has(id); }
+
+export type DestructiveStoreOperation = "delete" | "clear" | "save";
 
 /**
  * A destructive gallery operation could not be confirmed against persistent storage.
@@ -58,7 +65,7 @@ export class GalleryPersistenceError extends Error {
   constructor(operation: DestructiveStoreOperation, cause: unknown) {
     const detail = cause instanceof Error && cause.message ? ` (${cause.message})` : "";
     super(
-      `Could not ${operation === "clear" ? "clear the persistent gallery" : "delete the saved model"} ` +
+      `Could not ${operation === "save" ? "save the model" : operation === "clear" ? "clear the persistent gallery" : "delete the saved model"} ` +
         `from disk. The persistent records were not confirmed changed. ` +
         `Reload Triastasis and retry; if the problem continues, check the app's storage permissions${detail}.`,
     );
@@ -240,7 +247,7 @@ async function initializeNativeStore(): Promise<boolean> {
   nativeInitialization = (async () => {
     const nativeRecords = (await loadNativeGallery()).map(normalizeRecord);
     mem.clear();
-    for (const record of nativeRecords) mem.set(record.id, record);
+    for (const record of nativeRecords) { mem.set(record.id, record); memoryOnlyVersions.delete(record.versionId); }
 
     if (!(await nativeMigrationWasCompleted())) {
       let legacyRecords: VersionRecord[];
@@ -258,11 +265,14 @@ async function initializeNativeStore(): Promise<boolean> {
         // Populate the session cache first. If an already-running old shell has
         // not picked up the new filesystem capability yet, the user still sees
         // every legacy asset and destructive actions remain safely disabled.
-        for (const record of legacyRecords) mem.set(record.id, record);
+        for (const record of legacyRecords) {
+          if (!mem.has(record.id)) { mem.set(record.id, record); memoryOnlyVersions.add(record.versionId); }
+        }
         try {
           for (const record of legacyRecords) {
             if (!nativeRecords.some((nativeRecord) => nativeRecord.id === record.id)) {
               await writeNativeRecord(record);
+              memoryOnlyVersions.delete(record.versionId);
             }
           }
           await markNativeMigrationCompleted();
@@ -312,28 +322,36 @@ export function newId(): string {
 }
 
 /** Store a record while retaining the legacy `id`, fields, and blobs. */
-export async function put(rec: GenRecord): Promise<void> {
+export interface SaveOutcome { persisted: boolean; error?: unknown }
+
+export async function put(rec: GenRecord, requirePersistent = false): Promise<SaveOutcome> {
   const normalized = normalizeRecord(rec);
-  if (await initializeNativeStore()) {
-    try {
+  try {
+    if (await initializeNativeStore()) {
       await writeNativeRecord(normalized);
       mem.set(normalized.id, normalized);
-    } catch (error) {
-      nativePersistenceFailure = error;
-      fallback(error);
-      mem.set(normalized.id, normalized);
+      memoryOnlyVersions.delete(normalized.versionId);
+      return { persisted: true };
     }
-    return;
-  }
-  if (useMemory) {
+    if (useMemory) throw nativePersistenceFailure ?? persistentDbFailure ?? new Error("Persistent storage unavailable");
+    const database = await db();
+    await new Promise<void>((resolve, reject) => {
+      const transaction = database.transaction(STORE, "readwrite");
+      transaction.oncomplete = () => resolve();
+      transaction.onerror = () => reject(transaction.error ?? new Error("Gallery write failed"));
+      transaction.onabort = () => reject(transaction.error ?? new Error("Gallery write aborted"));
+      transaction.objectStore(STORE).put(normalized);
+    });
     mem.set(normalized.id, normalized);
-    return;
-  }
-  try {
-    await wrap((await tx("readwrite")).put(normalized));
-  } catch (e) {
-    fallback(e);
+    memoryOnlyVersions.delete(normalized.versionId);
+    return { persisted: true };
+  } catch (error) {
+    if (isTauri()) nativePersistenceFailure = error;
+    fallback(error);
+    if (requirePersistent) throw new GalleryPersistenceError("save", error);
     mem.set(normalized.id, normalized);
+    memoryOnlyVersions.add(normalized.versionId);
+    return { persisted: false, error };
   }
 }
 
@@ -400,20 +418,6 @@ export async function getVersion(versionId: string): Promise<VersionRecord | und
   return findVersion(versionId);
 }
 
-// Named aliases keep callers that use the higher-level generation vocabulary
-// source-compatible while the underlying records gain version semantics.
-export async function saveGeneration(rec: GenRecord): Promise<void> {
-  await put(rec);
-}
-
-export async function listGenerations(): Promise<VersionRecord[]> {
-  return all();
-}
-
-export async function getGeneration(id: string): Promise<VersionRecord | undefined> {
-  return get(id);
-}
-
 export interface DerivedVersionInput {
   /** The edited or otherwise derived GLB. */
   glb: Blob;
@@ -463,18 +467,33 @@ export async function createDerivedVersion(
     thumb: input.thumb ?? null,
     metrics: input.metrics ?? null,
   };
-  await put(record);
+  await put(record, true);
   return record;
 }
 
-async function updateVersion(
+const metadataWrites = new Map<string, Promise<unknown>>();
+async function updateVersion(versionId: string, patch: GalleryMetadataPatch): Promise<VersionRecord> {
+  const prior = metadataWrites.get(versionId) ?? Promise.resolve();
+  const next = prior.then(() => updateVersionNow(versionId, patch), () => updateVersionNow(versionId, patch));
+  metadataWrites.set(versionId, next);
+  return next.finally(() => { if (metadataWrites.get(versionId) === next) metadataWrites.delete(versionId); });
+}
+async function updateVersionNow(
   versionId: string,
-  update: (record: VersionRecord) => VersionRecord,
+  patch: GalleryMetadataPatch,
 ): Promise<VersionRecord> {
   const record = await findVersion(versionId);
   if (!record) throw new Error(`Version not found: ${versionId}`);
-  const updated = normalizeRecord(update(record));
-  await put(updated);
+  const updated = normalizeRecord({
+    ...record,
+    ...(patch.label === undefined ? {} : { label: patch.label }),
+    ...(patch.favorite === undefined ? {} : { favorite: patch.favorite }),
+    ...(patch.assetLabel === undefined ? {} : { operationParams: { ...record.operationParams, assetLabel: patch.assetLabel } }),
+  });
+  if (await initializeNativeStore()) {
+    try { await updateNativeMetadata(record.id, patch); mem.set(record.id, updated); }
+    catch (error) { nativePersistenceFailure = error; throw new GalleryPersistenceError("save", error); }
+  } else await put(updated, true);
   return updated;
 }
 
@@ -482,7 +501,12 @@ async function updateVersion(
 export async function renameVersion(versionId: string, label: string): Promise<VersionRecord> {
   const nextLabel = label.trim();
   if (!nextLabel) throw new Error("Version label cannot be empty");
-  return updateVersion(versionId, (record) => ({ ...record, label: nextLabel }));
+  return updateVersion(versionId, { label: nextLabel });
+}
+
+export async function renameAssetLabel(versionId: string, label: string): Promise<VersionRecord> {
+  if (!label.trim()) throw new Error("Asset label cannot be empty");
+  return updateVersion(versionId, { assetLabel: label.trim() });
 }
 
 /** Mark or unmark a version as a user favorite. */
@@ -490,7 +514,7 @@ export async function setVersionFavorite(
   versionId: string,
   favorite: boolean,
 ): Promise<VersionRecord> {
-  return updateVersion(versionId, (record) => ({ ...record, favorite }));
+  return updateVersion(versionId, { favorite });
 }
 
 async function deleteIds(ids: string[]): Promise<void> {
@@ -589,9 +613,6 @@ export async function del(id: string): Promise<void> {
   await deleteVersion(id);
 }
 
-export async function deleteGeneration(id: string): Promise<void> {
-  await del(id);
-}
 
 export async function clear(): Promise<void> {
   assertDestructivePersistenceAvailable("clear");
@@ -654,4 +675,12 @@ export function galleryLoadFailed(): boolean {
 /** Saved native records omitted because neither a committed nor legacy copy was readable. */
 export function galleryRecoveryCount(): number {
   return nativeGalleryRecoveryCount();
+}
+
+/** Hydrate only the selected record; do not retain all opened GLBs in the Library cache. */
+export async function loadVersionModel(record: VersionRecord): Promise<VersionRecord & { glb: Blob }> {
+  if (record.glb) return { ...record, glb: record.glb };
+  const loaded = normalizeRecord(await loadNativeRecord(record.id));
+  if (!loaded.glb) throw new Error("Saved model could not be loaded");
+  return { ...loaded, glb: loaded.glb };
 }

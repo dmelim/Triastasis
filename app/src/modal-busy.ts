@@ -54,11 +54,6 @@ export function busyContentFor(rectWidth: number): { html: string; minWidth: str
   };
 }
 
-/** User close attempts are meaningless while an operation is in flight. */
-export function canCloseModal(busy: boolean): boolean {
-  return !busy;
-}
-
 /** Classifies an import failure by whether the record already persisted. */
 export function classifyImportFailure(persisted: boolean): "retryable" | "post-persistence" {
   return persisted ? "post-persistence" : "retryable";
