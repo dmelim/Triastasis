@@ -14,7 +14,7 @@
 set -euo pipefail
 
 REPO="dmelim/Triastasis"
-RELEASE_TAG="${TRIASTASIS_RELEASE_TAG:-triastasis-v0.0.1-alpha.1}"
+RELEASE_TAG="${TRIASTASIS_RELEASE_TAG:-triastasis-v0.0.2}"
 HF_BASE="https://huggingface.co/ilintar/trellis2-gguf/resolve/main"
 MODELS=(birefnet.gguf dinov3.gguf ss_flow.gguf ss_dec.gguf \
         shape_flow_512.gguf shape_flow_1024.gguf shape_dec.gguf \
