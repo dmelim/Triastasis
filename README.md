@@ -45,7 +45,7 @@ app detects the GPU, installs a verified native runtime, and guides you through
 credits, model terms, storage, and a verified model-bundle download. No terminal
 or PowerShell command is required.
 
-See [Getting started](docs/getting-started.md) for portable installations,
+See [Getting started](docs/getting-started.md) for installation,
 storage locations, backend selection, installer options, and troubleshooting.
 
 ## Desktop workspace
@@ -76,7 +76,7 @@ in-app download.
 
 Settings controls model storage, the output folder, GPU index, runtime port, and
 server diagnostics. See [`docs/getting-started.md`](docs/getting-started.md) for
-the full onboarding flow, portable setup, storage locations, and troubleshooting.
+the full onboarding flow, storage locations, and troubleshooting.
 Browser-only development is documented in [`app/README.md`](app/README.md).
 
 ### Model download verification and recovery

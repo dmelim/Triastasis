@@ -272,6 +272,7 @@ async function initializeNativeStore(): Promise<boolean> {
           for (const record of legacyRecords) {
             if (!nativeRecords.some((nativeRecord) => nativeRecord.id === record.id)) {
               await writeNativeRecord(record);
+              mem.set(record.id, { ...record, glb: null });
               memoryOnlyVersions.delete(record.versionId);
             }
           }
@@ -329,7 +330,8 @@ export async function put(rec: GenRecord, requirePersistent = false): Promise<Sa
   try {
     if (await initializeNativeStore()) {
       await writeNativeRecord(normalized);
-      mem.set(normalized.id, normalized);
+      // The caller/viewer retains its model; the Library reloads saved bytes on demand.
+      mem.set(normalized.id, { ...normalized, glb: null });
       memoryOnlyVersions.delete(normalized.versionId);
       return { persisted: true };
     }

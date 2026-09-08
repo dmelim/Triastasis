@@ -12,7 +12,7 @@ Release candidate for the Windows desktop application.
 
 ## Packages and release gate
 
-The Windows x64 installer and portable ZIP require matching SHA-256 sidecars.
+This release ships the Windows x64 installer with a SHA-256 sidecar. Portable distribution is deferred until its Library storage is isolated.
 The release tag is `triastasis-v0.0.2`; runtime downloads use that tag.
 CUDA, CUDA 12 compatibility, and Vulkan runtime archives and their checksums
 must be built by the release workflow and available before publication is

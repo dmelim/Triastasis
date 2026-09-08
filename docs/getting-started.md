@@ -99,18 +99,10 @@ therefore carry forward without making the old directory the active location.
 Vulkan is the safest fallback if automatic detection chooses an unsuitable
 backend or ROCm cannot start.
 
-## Portable installation
+## Portable availability
 
-Download the portable application archive from the release page:
-
-- `triastasis-windows-x64-portable.zip`
-
-Extract it to a writable directory and keep the included `portable.dat` marker
-beside the executable. Launch the app and complete the same first-run
-onboarding. Triastasis installs the selected runtime into the portable
-`runtime/` directory and curated model bundles into the portable `models/`
-directory by default. Configuration, output, logs, and app-managed data remain
-under the portable folder.
+Version 0.0.2 ships as a Windows installer only. Portable distribution is deferred
+until Library storage is isolated from installed application data.
 
 ## Advanced installer options
 

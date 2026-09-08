@@ -22,7 +22,7 @@ async function store(fixture: Fixture): Promise<typeof import("./store")> {
           loader: "js", contents: args.path.endsWith("tauri") ? "export function isTauri(){return true;}" : `export async function loadNativeRecord(id){return globalThis.fixture.native.find(record=>record.id===id);}
 export async function loadNativeGallery(){return globalThis.fixture.native;}
 export async function nativeMigrationWasCompleted(){return globalThis.fixture.migrated;}
-export async function writeNativeRecord(){globalThis.fixture.writes++; if(globalThis.fixture.fail) throw new Error('synthetic write failure');}
+export async function writeNativeRecord(record){globalThis.fixture.writes++; if(globalThis.fixture.fail) throw new Error('synthetic write failure'); globalThis.fixture.native = globalThis.fixture.native.filter(r=>r.id!==record.id).concat(record);}
 export async function updateNativeMetadata(){if(globalThis.fixture.fail) throw new Error('synthetic write failure');}
 export function nativeGalleryRecoveryCount(){return 0;}
 export async function markNativeMigrationCompleted(){}
@@ -67,4 +67,30 @@ test("concurrent rename and favourite preserve both updates in the session cache
   const updated = await api.get("same");
   assert.equal(updated?.label, "renamed");
   assert.equal(updated?.favorite, true);
+});
+
+test("saved models reload for opening and export without accumulating in the Library cache", async () => {
+  const api = await store({ native: [], legacy: [], migrated: true, fail: false, writes: 0 });
+  for (let i = 0; i < 5; i++) {
+    const source = { ...record("saved"), id: `saved-${i}`, versionId: `saved-${i}` };
+    assert.equal((await api.put(source)).persisted, true);
+    assert.equal(await source.glb.text(), "model", "saving must not mutate the caller's active model");
+    const cached = (await api.get(source.id))!;
+    assert.equal(cached.glb, null);
+    assert.equal(await (await api.loadVersionModel(cached)).glb.text(), "model");
+  }
+  assert.ok((await api.all()).every(item => item.glb === null));
+});
+
+test("failed save remains exportable until a successful retry releases cached bytes", async () => {
+  const fixture = { native: [], legacy: [], migrated: true, fail: true, writes: 0 };
+  const api = await store(fixture);
+  await api.put(record("unsaved"));
+  const unsaved = (await api.get("same"))!;
+  assert.equal(await (await api.loadVersionModel(unsaved)).glb.text(), "model");
+  assert.equal(api.versionNeedsMemoryExport("same"), true);
+  fixture.fail = false;
+  assert.equal((await api.put(unsaved)).persisted, true);
+  assert.equal((await api.get("same"))!.glb, null);
+  assert.equal(api.versionNeedsMemoryExport("same"), false);
 });
