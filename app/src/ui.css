@@ -1677,6 +1677,7 @@ input:focus-visible,
 .onboarding-progress [aria-current="step"] { color: var(--content-primary); }
 .onboarding-stage { flex: 1; }
 .onboarding-intro {
+  font-family: "Segoe UI", system-ui, sans-serif;
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -1838,15 +1839,6 @@ input:focus-visible,
 }
 .onboarding-shell--welcome .onboarding-start-action { animation: onboarding-reveal 160ms ease-out; }
 .onboarding-start-action .button { min-width: 160px; min-height: 44px; }
-.onboarding-spinner {
-  width: 16px;
-  height: 16px;
-  border: 2px solid var(--border-default);
-  border-top-color: var(--content-accent);
-  border-radius: 50%;
-  animation: onboarding-spin 900ms linear infinite;
-}
-@keyframes onboarding-spin { to { transform: rotate(360deg); } }
 @keyframes onboarding-reveal { from { opacity: 0; } to { opacity: 1; } }
 .banner.err span { color: #ff8080; }
 

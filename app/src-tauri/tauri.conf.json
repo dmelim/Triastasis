@@ -12,6 +12,8 @@
     "windows": [
       {
         "title": "Triastasis",
+        "backgroundColor": "#0f1115",
+        "visible": false,
         "width": 1200,
         "height": 820,
         "minWidth": 900,

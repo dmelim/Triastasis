@@ -14,6 +14,7 @@ mod manifest;
 mod models;
 mod runtime;
 mod server;
+mod startup;
 mod tray;
 
 use automation::AutomationState;
@@ -591,6 +592,11 @@ fn main() {
     }
 
     tauri::Builder::default()
+        .on_page_load(|webview, payload| {
+            if payload.event() == tauri::webview::PageLoadEvent::Finished {
+                startup::reveal(webview.app_handle());
+            }
+        })
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
             tray::show_main_window(app);
         }))
@@ -603,6 +609,7 @@ fn main() {
         .manage(downloader::DownloadControl::default())
         .manage(LifecycleState::default())
         .invoke_handler(tauri::generate_handler![
+            startup::reveal_startup_window,
             get_config,
             save_config,
             default_output_dir,
@@ -647,6 +654,7 @@ fn main() {
             remove_model_bundle
         ])
         .setup(|app| {
+            startup::schedule_fallback(app.handle().clone());
             // Auto-launch the server if the installer already wrote a usable config.
             if let Some(cfg) = config::load() {
                 if !cfg.server_bin.is_empty() {

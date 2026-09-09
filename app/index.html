@@ -5,8 +5,39 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <link rel="icon" type="image/png" href="/brand/triastasis-mark.png" />
     <title>Triastasis</title>
+    <style>
+      /* First paint must not depend on the app bundle, CSS, or web fonts. */
+      html { background: #0f1115; color-scheme: dark; }
+      body { margin: 0; height: 100dvh; overflow: hidden; }
+      body.startup-pending > :not(#model-setup) { visibility: hidden; }
+      #model-setup { position: fixed; inset: 0; z-index: 100; overflow-y: auto; background: #0f1115; padding: clamp(18px, 4vw, 48px); box-sizing: border-box; }
+      #model-setup .onboarding-shell--loading { width: min(960px, 100%); min-height: calc(100dvh - clamp(36px, 8vw, 96px)); margin: 0 auto; display: flex; flex-direction: column; justify-content: center; background: radial-gradient(ellipse at center, rgba(0, 200, 180, 0.06), transparent 65%); }
+      #model-setup .onboarding-shell--loading .onboarding-intro { box-sizing: border-box; width: 100%; max-width: 720px; margin: 0 auto; padding-block: 64px; display: flex; flex-direction: column; align-items: center; gap: 28px; text-align: center; color: #f0f4f8; font-family: "Segoe UI", system-ui, sans-serif; }
+      #model-setup .onboarding-shell--loading .onboarding-logo { width: clamp(96px, 14vw, 136px); height: clamp(96px, 14vw, 136px); object-fit: contain; }
+      #model-setup .onboarding-shell--loading h1 { margin: 0 0 12px; font-size: clamp(28px, 4vw, 42px); line-height: 1.08; }
+      #model-setup .onboarding-shell--loading p { margin: 0; color: #a8bbcc; font-size: clamp(15px, 2vw, 18px); line-height: 1.5; }
+      #model-setup .onboarding-shell--loading .onboarding-start-action { min-height: 44px; display: flex; align-items: center; justify-content: center; gap: 8px; font-size: 14px; line-height: 1.5; color: #a8bbcc; }
+      .startup-paint-brush { stroke-dasharray: 1; stroke-dashoffset: 1; animation: startup-paint 3500ms linear infinite; }
+      .startup-paint-finish { animation: startup-paint-finish 3500ms linear infinite; }
+      @keyframes startup-paint { 0% { stroke-dashoffset: 1; } 68.571%, 100% { stroke-dashoffset: 0; } }
+      @keyframes startup-paint-finish { 0%, 63.086% { opacity: 0; } 68.571%, 100% { opacity: 1; } }
+      @media (max-width: 760px) {
+        #model-setup { padding: 18px 16px 28px; }
+        #model-setup .onboarding-shell--loading { min-height: calc(100dvh - 46px); }
+        #model-setup .onboarding-shell--loading h1 { font-size: 30px; }
+      }
+      @media (max-height: 680px) {
+        #model-setup { padding-block: 14px; }
+        #model-setup .onboarding-shell--loading { min-height: calc(100dvh - 28px); }
+        #model-setup .onboarding-shell--loading .onboarding-logo { width: 88px; height: 88px; }
+      }
+      @media (prefers-reduced-motion: reduce) {
+        #model-setup .startup-paint-brush { animation: none; stroke-dashoffset: 0; }
+        #model-setup .startup-paint-finish { animation: none; opacity: 1; }
+      }
+    </style>
   </head>
-  <body>
+  <body class="startup-pending">
     <nav class="mode-rail" role="tablist" aria-label="Workspace navigation" aria-orientation="vertical">
       <div class="rail-brand" title="Triastasis">
         <img src="/brand/triastasis-mark.png" alt="" />
@@ -33,12 +64,41 @@
 
     <section
       id="model-setup"
-      class="model-setup hidden"
+      class="model-setup"
       role="dialog"
       aria-modal="true"
       aria-labelledby="model-setup-title"
       tabindex="-1"
-    ></section>
+    >
+      <div class="onboarding-shell onboarding-shell--loading">
+        <header class="onboarding-intro onboarding-stage">
+          <svg class="onboarding-logo" viewBox="0 0 1120 1120" aria-hidden="true" focusable="false">
+<defs><mask id="startup-paint-mask" maskUnits="userSpaceOnUse" x="0" y="0" width="1120" height="1120"><path class="startup-paint-brush" pathLength="1" d="M 349 196 L 432 125 C 483 90 548 146 560 195 C 588 273 498 341 402 369 C 326 402 261 473 263 522 C 266 579 317 620 368 606 C 452 586 480 486 549 435 C 598 392 644 395 678 439 C 720 491 673 552 630 600 C 590 663 533 739 479 736 C 422 734 397 681 433 627 C 473 569 546 554 610 558 C 698 553 750 503 813 553 C 877 601 881 661 827 717 C 791 754 744 778 706 790 C 622 828 566 886 567 939 C 568 988 620 1024 663 1004 C 699 989 724 960 750 934" fill="none" stroke="white" stroke-width="150" stroke-linecap="butt" stroke-linejoin="round"/></mask></defs>
+<image href="/brand/triastasis-mark.png" width="1120" height="1120" opacity=".085"/>
+<image href="/brand/triastasis-mark.png" width="1120" height="1120" mask="url(#startup-paint-mask)"/>
+<image class="startup-paint-finish" href="/brand/triastasis-mark.png" width="1120" height="1120" opacity="0"/>
+</svg>
+          <div>
+            <h1 id="model-setup-title">Triastasis</h1>
+            <p>Create 3D assets on your computer.</p>
+          </div>
+          <div class="onboarding-start-action" role="status" aria-live="polite">
+
+            <span>Preparing your workspace…</span>
+          </div>
+        </header>
+      </div>
+    </section>
+    <script>
+      // Reveal as soon as the splash exists. Waiting for paint while hidden can
+      // deadlock on a throttled webview; native fallbacks cover unavailable IPC.
+      try {
+        var internals = window.__TAURI_INTERNALS__;
+        if (internals && typeof internals.invoke === "function") {
+          void internals.invoke("reveal_startup_window").catch(function () {});
+        }
+      } catch (_) {}
+    </script>
 
     <div id="setup-banner" class="banner hidden">
       <span></span>

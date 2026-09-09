@@ -4603,6 +4603,7 @@ async function boot(): Promise<void> {
   await refreshGallery();
   await initModelDownloadState(isTauri());
   await initModelSetup();
+  document.body.classList.remove("startup-pending");
   await refreshHardwareGuardrails();
   subscribeModelStorageRefresh();
   const cfg = await loadConfig(true);
@@ -4621,6 +4622,14 @@ async function boot(): Promise<void> {
   }
 }
 void boot().catch((error) => {
+  if (document.body.classList.contains("startup-pending")) {
+    document.body.classList.remove("startup-pending", "model-setup-active");
+    $("model-setup").classList.add("hidden");
+    document.querySelectorAll<HTMLElement>(".mode-rail, #setup-banner, #recovery-banner, #workspace").forEach((element) => {
+      element.inert = false;
+      element.removeAttribute("aria-hidden");
+    });
+  }
   console.error("Triastasis boot failed", error);
   toast(`Startup could not finish: ${(error as Error).message}. Open Settings to review setup; saved assets remain available in Library.`, "err");
   setupBanner.classList.remove("hidden");

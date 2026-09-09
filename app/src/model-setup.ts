@@ -92,16 +92,23 @@ function setSetupVisible(visible: boolean): void {
 
 function renderSetupLoading(root: HTMLElement): void {
   root.setAttribute("aria-labelledby", "model-setup-title");
+  // Keep the first-paint logo alive so its animation does not restart at handoff.
+  if (root.querySelector(".onboarding-shell--loading")) return;
   root.innerHTML = `
     <div class="onboarding-shell onboarding-shell--loading">
       <header class="onboarding-intro onboarding-stage">
-        <img class="onboarding-logo" src="/brand/triastasis-mark.png" alt="" />
+        <svg class="onboarding-logo" viewBox="0 0 1120 1120" aria-hidden="true" focusable="false">
+<defs><mask id="startup-paint-mask" maskUnits="userSpaceOnUse" x="0" y="0" width="1120" height="1120"><path class="startup-paint-brush" pathLength="1" d="M 349 196 L 432 125 C 483 90 548 146 560 195 C 588 273 498 341 402 369 C 326 402 261 473 263 522 C 266 579 317 620 368 606 C 452 586 480 486 549 435 C 598 392 644 395 678 439 C 720 491 673 552 630 600 C 590 663 533 739 479 736 C 422 734 397 681 433 627 C 473 569 546 554 610 558 C 698 553 750 503 813 553 C 877 601 881 661 827 717 C 791 754 744 778 706 790 C 622 828 566 886 567 939 C 568 988 620 1024 663 1004 C 699 989 724 960 750 934" fill="none" stroke="white" stroke-width="150" stroke-linecap="butt" stroke-linejoin="round"/></mask></defs>
+<image href="/brand/triastasis-mark.png" width="1120" height="1120" opacity=".085"/>
+<image href="/brand/triastasis-mark.png" width="1120" height="1120" mask="url(#startup-paint-mask)"/>
+<image class="startup-paint-finish" href="/brand/triastasis-mark.png" width="1120" height="1120" opacity="0"/>
+</svg>
         <div>
           <h1 id="model-setup-title">Triastasis</h1>
           <p>Create 3D assets on your computer.</p>
         </div>
         <div class="onboarding-start-action" role="status" aria-live="polite">
-          <span class="onboarding-spinner" aria-hidden="true"></span>
+
           <span>Preparing your workspace…</span>
         </div>
       </header>
