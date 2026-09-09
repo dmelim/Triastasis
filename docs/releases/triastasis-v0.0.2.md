@@ -2,6 +2,13 @@
 
 Release candidate for the Windows desktop application.
 
+## Prerelease installer correction
+
+The 0.0.2 installer is updated in place for the branded startup correction:
+centered logo and tagline, a consistent loading-to-welcome layout, and a
+"Get started" action without an artificial startup delay. The installer checksum
+changes; download it again to test this correction. Runtime archives are unchanged.
+
 ## Changes
 
 - Library loading placeholders and on-demand GLB loading reduce startup work.

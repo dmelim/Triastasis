@@ -91,13 +91,20 @@ function setSetupVisible(visible: boolean): void {
 }
 
 function renderSetupLoading(root: HTMLElement): void {
+  root.setAttribute("aria-labelledby", "model-setup-title");
   root.innerHTML = `
-    <div class="onboarding-shell onboarding-shell--loading" role="status" aria-live="polite">
-      <img class="onboarding-logo" src="/brand/triastasis-mark.png" alt="" />
-      <div class="onboarding-loading-copy">
-        <strong id="model-setup-title">Checking your local setup</strong>
-        <span>Checking the generation runtime and model bundles on this computer.</span>
-      </div>
+    <div class="onboarding-shell onboarding-shell--loading">
+      <header class="onboarding-intro onboarding-stage">
+        <img class="onboarding-logo" src="/brand/triastasis-mark.png" alt="" />
+        <div>
+          <h1 id="model-setup-title">Triastasis</h1>
+          <p>Create 3D assets on your computer.</p>
+        </div>
+        <div class="onboarding-start-action" role="status" aria-live="polite">
+          <span class="onboarding-spinner" aria-hidden="true"></span>
+          <span>Preparing your workspace…</span>
+        </div>
+      </header>
     </div>`;
 }
 
@@ -671,11 +678,14 @@ async function renderSetup(
         </nav>` : ""}
       ${step === "welcome" ? `
         <header class="onboarding-intro onboarding-stage">
+          <img class="onboarding-logo" src="/brand/triastasis-mark.png" alt="" />
           <div>
             <h1 id="model-setup-title">Welcome to Triastasis</h1>
-            <p>Create a textured 3D model from a single image, entirely on your computer.</p>
+            <p>Create 3D assets on your computer.</p>
           </div>
-          <img class="onboarding-logo" src="/brand/triastasis-mark.png" alt="Triastasis logo" />
+          <div class="onboarding-start-action">
+            <button class="button button--primary" type="button" data-act="next-step">Get started</button>
+          </div>
         </header>` : ""}
       ${step === "runtime" ? runtimeContent : ""}
       ${step === "credits" ? `
@@ -691,7 +701,6 @@ async function renderSetup(
         </div>
         <div class="onboarding-nav-action">
           ${navigationReason ? `<span id="onboarding-action-reason" class="onboarding-nav-reason" role="status">${escapeHtml(navigationReason)}</span>` : ""}
-          ${step === "welcome" ? '<button class="button button--primary" type="button" data-act="next-step">Next</button>' : ""}
           ${step === "credits" ? `<button class="button button--primary" type="button" data-act="next-step"${termsAccepted ? "" : ' disabled aria-describedby="onboarding-action-reason"'}>Next</button>` : ""}
           ${step === "runtime" && runtime.installed ? '<button class="button button--primary" type="button" data-act="next-step">Next</button>' : ""}
           ${step === "models" ? `<button class="button button--primary" type="button" data-act="start"${startReason ? ' disabled aria-describedby="onboarding-action-reason"' : ""}>Start Triastasis</button>` : ""}
