@@ -1365,16 +1365,20 @@ document.querySelectorAll<HTMLButtonElement>("[data-display-mode]").forEach((but
 });
 
 $<HTMLInputElement>("view-grid").addEventListener("change", (event) => {
-  runViewer((instance) => instance.setGridVisible((event.currentTarget as HTMLInputElement).checked));
+  const checked = (event.currentTarget as HTMLInputElement).checked;
+  runViewer((instance) => instance.setGridVisible(checked));
 });
 $<HTMLInputElement>("view-axes").addEventListener("change", (event) => {
-  runViewer((instance) => instance.setAxesVisible((event.currentTarget as HTMLInputElement).checked));
+  const checked = (event.currentTarget as HTMLInputElement).checked;
+  runViewer((instance) => instance.setAxesVisible(checked));
 });
 $<HTMLInputElement>("view-rotate").addEventListener("change", (event) => {
-  runViewer((instance) => instance.setAutoRotate((event.currentTarget as HTMLInputElement).checked));
+  const checked = (event.currentTarget as HTMLInputElement).checked;
+  runViewer((instance) => instance.setAutoRotate(checked));
 });
 $<HTMLInputElement>("view-shadows").addEventListener("change", (event) => {
-  runViewer((instance) => instance.setShadows((event.currentTarget as HTMLInputElement).checked));
+  const checked = (event.currentTarget as HTMLInputElement).checked;
+  runViewer((instance) => instance.setShadows(checked));
 });
 $<HTMLInputElement>("view-exposure").addEventListener("input", (event) => {
   const value = Number((event.currentTarget as HTMLInputElement).value);
@@ -1382,7 +1386,8 @@ $<HTMLInputElement>("view-exposure").addEventListener("input", (event) => {
   runViewer((instance) => instance.setExposure(value));
 });
 $<HTMLSelectElement>("view-background").addEventListener("change", (event) => {
-  runViewer((instance) => instance.setBackground((event.currentTarget as HTMLSelectElement).value));
+  const value = (event.currentTarget as HTMLSelectElement).value;
+  runViewer((instance) => instance.setBackground(value));
 });
 document.querySelectorAll<HTMLButtonElement>("[data-camera]").forEach((button) => {
   button.addEventListener("click", () => {
@@ -1691,7 +1696,10 @@ function showInputPreview(which: "source" | "mask"): void {
   maskTab.tabIndex = showMask ? 0 : -1;
 }
 
+let maskPreviewRequest = 0;
+
 function clearMaskPreview(): void {
+  ++maskPreviewRequest;
   if (maskObjectUrl) URL.revokeObjectURL(maskObjectUrl);
   maskObjectUrl = null;
   maskPreview.removeAttribute("src");
@@ -1739,11 +1747,13 @@ previewMaskBtn.addEventListener("click", async () => {
     return;
   }
   previewMaskBtn.disabled = true;
+  const request = ++maskPreviewRequest;
   previewMaskBtn.textContent = "Building mask...";
   maskHelp.textContent = "Running the same background-removal path used by TRELLIS.";
   maskHelp.classList.remove("hidden");
   try {
     const blob = await previewAlpha(inputImage, params.bgRemoval);
+    if (request !== maskPreviewRequest) return;
     if (maskObjectUrl) URL.revokeObjectURL(maskObjectUrl);
     maskObjectUrl = URL.createObjectURL(blob);
     maskPreview.src = maskObjectUrl;
@@ -1751,11 +1761,14 @@ previewMaskBtn.addEventListener("click", async () => {
     showInputPreview("mask");
     maskHelp.textContent = "This square, black-backed cutout is the image conditioning seen by TRELLIS.";
   } catch (e) {
+    if (request !== maskPreviewRequest) return;
     maskHelp.textContent = "Mask preview failed. Generation is still available.";
     toast((e as Error).message || "mask preview failed", "err");
   } finally {
-    previewMaskBtn.textContent = "Refresh mask";
-    previewMaskBtn.disabled = !inputImage || generating;
+    if (request === maskPreviewRequest) {
+      previewMaskBtn.textContent = "Refresh mask";
+      previewMaskBtn.disabled = !inputImage || generating;
+    }
   }
 });
 
@@ -1821,7 +1834,7 @@ window.addEventListener("paste", async (e: ClipboardEvent) => {
   }
   // WebKitGTK can omit image data from ClipboardEvent. Since paste was
   // user-triggered, try reading the clipboard item list for an image.
-  const items = await navigator.clipboard.read().catch(() => []);
+  const items = await navigator.clipboard?.read?.().catch(() => []) ?? [];
   for (const item of items) {
     const type = item.types.find((type) => type.startsWith("image/"));
     if (type) {
@@ -4258,15 +4271,16 @@ async function requeueFromManifest(path: string, m?: GenerationManifest): Promis
 
 // ---- standalone GLB viewing ----
 function updateStandaloneActions(): void {
-  const show = Boolean(standaloneView);
+  const view = standaloneView;
+  const show = Boolean(view);
   $("standalone-actions").classList.toggle("hidden", !show);
-  if (!show) return;
+  if (!view) return;
   const linked = $("import-linked-manifest");
   linked.classList.add("hidden");
-  findLinkedManifest(standaloneView!.glbPath ?? "")
+  findLinkedManifest(view.glbPath ?? "")
     .then((path) => {
-      if (!standaloneView) return;
-      standaloneView.linkedPath = path;
+      if (standaloneView !== view) return;
+      view.linkedPath = path;
       linked.classList.toggle("hidden", !path);
     })
     .catch(() => {});
@@ -4316,6 +4330,14 @@ $("open-glb-btn").addEventListener("click", async () => {
   }
 });
 $("add-viewed-to-assets").addEventListener("click", async () => {
+  try {
+    await modelOperations.run(addViewedToAssets);
+  } catch (error) {
+    toast((error as Error).message || "Could not add to Assets", "err");
+  }
+});
+
+async function addViewedToAssets(): Promise<void> {
   if (!currentGlb || !viewer || !standaloneView) return;
   try {
     const stats = viewer.getStats();
@@ -4350,7 +4372,7 @@ $("add-viewed-to-assets").addEventListener("click", async () => {
   } catch (error) {
     toast((error as Error).message || "Could not add to Assets", "err");
   }
-});
+}
 $("import-linked-manifest").addEventListener("click", () => {
   const path = standaloneView?.linkedPath;
   if (path) void openManifestPreview(path);
