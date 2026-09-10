@@ -80,14 +80,15 @@ unless a concrete failure makes it necessary.
   target directory when validating a clean package build, and stage local test
   artifacts only under ignored build output such as
   `app/src-tauri/target/local-release/`.
-- Generate a SHA-256 sidecar for every installer, portable package, and runtime
-  archive. A sidecar contains the lowercase digest followed by two spaces and
-  the exact artifact filename.
+- Publish one `SHA256SUMS` file covering every installer, portable package, and
+  runtime archive in the release. Each line contains the lowercase SHA-256 digest
+  followed by two spaces and the exact artifact filename. Do not publish separate
+  per-artifact checksum sidecars; keep the release asset list easy to navigate.
 - Use `.github/workflows/release.yml` for the Vulkan, CUDA, CUDA 12
   compatibility, and experimental ROCm runtime archives. The workflow may also
   rebuild the desktop packages; that redundant clean build is desirable.
 - Publish the version tag as a quiet GitHub prerelease and verify that the NSIS
-  installer, portable ZIP, required runtime archives, and all checksum files are
+  installer, portable ZIP, required runtime archives, and the single `SHA256SUMS` file are
   present. ROCm is experimental and is not a release blocker; Vulkan, CUDA, and
   CUDA 12 compatibility are required.
 - Treat a clean Windows installation as the acceptance gate. Test installation,
