@@ -619,7 +619,7 @@ function setWorkspaceMode(mode: WorkspaceMode): void {
   viewerPanel.classList.toggle("hidden", fullPageMode);
   libraryModePanel.classList.toggle("hidden", !libraryMode);
   settingsModePanel.classList.toggle("hidden", !settingsMode);
-  assetDock.classList.toggle("hidden", settingsMode);
+  assetDock.classList.toggle("hidden", fullPageMode);
   workspace.classList.toggle("is-library-mode", libraryMode);
   workspace.classList.toggle("is-settings-mode", settingsMode);
   syncViewerReference();
@@ -2701,9 +2701,38 @@ versionDockToggle.addEventListener("click", () => {
   if (collapsed) userCollapsedVersionsThisSession = true;
 });
 
+let recordSelectionRequest = 0;
+let pendingRecordId: string | null = null;
+
+function updateVersionSelection(): void {
+  const selectedId = pendingRecordId ?? activeId;
+  for (const item of versionGalleryEl.querySelectorAll<HTMLElement>(".version-item")) {
+    const selected = item.dataset.recordId === selectedId;
+    item.classList.toggle("active", selected);
+    item.setAttribute("aria-pressed", String(selected));
+    item.setAttribute("aria-busy", String(selected && pendingRecordId !== null));
+  }
+}
+
 async function loadRecordData(rec: VersionRecord): Promise<void> {
-  try { await replaceModel(() => loadRecordDataNow(rec)); }
+  const request = ++recordSelectionRequest;
+  pendingRecordId = rec.id;
+  updateVersionSelection();
+  try {
+    await modelOperations.run(async () => {
+      if (request !== recordSelectionRequest) return;
+      if (!(await resolveUnsavedEdits())) throw new Error("Model change cancelled; edits kept");
+      if (request !== recordSelectionRequest) return;
+      await loadRecordDataNow(rec);
+    });
+  }
   catch (error) { toast((error as Error).message, "err"); }
+  finally {
+    if (request === recordSelectionRequest) {
+      pendingRecordId = null;
+      updateVersionSelection();
+    }
+  }
 }
 async function loadRecordDataNow(rec: VersionRecord): Promise<void> {
   let stats: ViewerStats;
@@ -2733,6 +2762,7 @@ async function loadRecordDataNow(rec: VersionRecord): Promise<void> {
   currentGlb = rec.glb;
   activeId = rec.id;
   activeLabel = rec.label;
+  updateVersionSelection();
   setViewerTools(true);
   updateViewerCaption();
   updateGenerateEnabled();
@@ -3282,6 +3312,7 @@ async function refreshGalleryNow(): Promise<void> {
         .filter((warning) => warning !== null && warning !== undefined);
       const item = document.createElement("article");
       item.className = `version-item${versionRecords.some((candidate) => candidate.id === activeId) ? " active" : ""}${warnings.length ? " quality-warning" : ""}`;
+      item.dataset.recordId = representative.id;
       item.tabIndex = 0;
       item.setAttribute("role", "button");
 
@@ -3388,6 +3419,7 @@ async function refreshGalleryNow(): Promise<void> {
       });
       versionGalleryEl.appendChild(item);
   }
+  updateVersionSelection();
 }
 
 let automationSync: Promise<number> | null = null;
@@ -4249,6 +4281,9 @@ async function requeueFromManifest(path: string, m?: GenerationManifest): Promis
   const bytes = await readManifestAsset(path, "sourceImage");
   const blob = new Blob([new Uint8Array(bytes)], { type: "image/png" });
   const name = `${safeStem(manifest.label || "resumed")}.png`;
+  if (isRecoveryEntryActive({ path, manifest })) {
+    throw new Error("This generation is already queued or running");
+  }
   queueJob({
     image: blob,
     name,
@@ -4381,6 +4416,21 @@ $("import-linked-manifest").addEventListener("click", () => {
 // ---- interrupted-generation recovery ----
 interface InterruptedEntry extends RecoveryCandidate {}
 let interruptedManifests: InterruptedEntry[] = [];
+const restoringSweeps = new Set<string>();
+
+function isSweepActive(groupId: string): boolean {
+  return restoringSweeps.has(groupId) ||
+    [currentJob, ...generationQueue].some((job) =>
+      job?.sweep?.id === groupId || job?.resumeManifest?.assetId === groupId);
+}
+
+function isRecoveryEntryActive(entry: InterruptedEntry): boolean {
+  const groupId = entry.manifest.sweep?.groupId;
+  if (groupId && isSweepActive(groupId)) return true;
+  const normalizedPath = entry.path.replace(/\\/g, "/").toLowerCase();
+  return [currentJob, ...generationQueue].some((job) =>
+    job?.resumeManifest?.path.replace(/\\/g, "/").toLowerCase() === normalizedPath);
+}
 
 function groupInterrupted(
   entries: InterruptedEntry[],
@@ -4434,7 +4484,8 @@ async function checkInterruptedManifests(): Promise<void> {
   if (!isTauri()) return;
   try {
     const found = await scanInterruptedManifests();
-    interruptedManifests = found.map(([path, manifest]) => ({ path, manifest }));
+    interruptedManifests = found.map(([path, manifest]) => ({ path, manifest }))
+      .filter((entry) => !isRecoveryEntryActive(entry));
     recoveryBanner.classList.toggle("hidden", interruptedManifests.length === 0);
     if (interruptedManifests.length) {
       const { singles, sweeps } = groupInterrupted(interruptedManifests);
@@ -4462,6 +4513,11 @@ async function openSweepRecoveryView(groupId: string, anchorPath: string): Promi
     return;
   }
   const ordered = sortBySweepIndex(candidates);
+  if (isSweepActive(groupId)) {
+    toast("This seed sweep is already queued or running");
+    void checkInterruptedManifests();
+    return;
+  }
   const total = ordered[0]?.manifest.sweep?.count ?? ordered.length;
   const queueable = queueableCandidates(ordered);
 
@@ -4505,13 +4561,20 @@ async function openSweepRecoveryView(groupId: string, anchorPath: string): Promi
 
   manifestBody.querySelector("#manifest-cancel")?.addEventListener("click", closeManifestModal);
   manifestBody.querySelector("#sweep-requeue")?.addEventListener("click", async () => {
+    if (isSweepActive(groupId)) {
+      toast("This seed sweep is already queued or running");
+      closeManifestModal();
+      void checkInterruptedManifests();
+      return;
+    }
+    restoringSweeps.add(groupId);
     const button = manifestBody.querySelector<HTMLButtonElement>("#sweep-requeue")!;
     button.disabled = true;
     button.textContent = "Queueing…";
     try {
       // Pure preflight: eligible candidates in original sweep.index order,
       // each with its normalized source identity.
-      const planned = planRecoveryQueue(candidates);
+      const planned = planRecoveryQueue(await loadSweepCandidates(anchorPath, groupId));
       if (!planned.length) {
         toast("Nothing to restore: every candidate is already finished or excluded", "err");
         closeManifestModal();
@@ -4567,13 +4630,16 @@ async function openSweepRecoveryView(groupId: string, anchorPath: string): Promi
       toast(`Sweep was not restored (nothing queued): ${(error as Error).message || error}`, "err");
       button.disabled = false;
       button.textContent = "Requeue sweep";
+    } finally {
+      restoringSweeps.delete(groupId);
+      void checkInterruptedManifests();
     }
   });
 }
 
 
 $("recovery-review").addEventListener("click", () => {
-  const { singles, sweeps } = groupInterrupted(interruptedManifests);
+  const { singles, sweeps } = groupInterrupted(interruptedManifests.filter((entry) => !isRecoveryEntryActive(entry)));
   const firstSweep = [...sweeps.entries()][0];
   if (firstSweep && !singles.length) {
     void openSweepRecoveryView(firstSweep[0], firstSweep[1][0].path);
