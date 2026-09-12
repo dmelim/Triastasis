@@ -1,4 +1,6 @@
 #include "flow_runner.h"
+#include "trellis_diagnostics.h"
+#include <algorithm>
 #include "trellis_model.h"
 #include "ggml.h"
 #include "ggml-backend.h"
@@ -142,6 +144,11 @@ std::vector<float> sample_flow(const FlowFwd& fwd, std::vector<float> sample,
     std::vector<float> pos, neg, pred(Nst);
     static const bool dbg_step = std::getenv("TRELLIS_DBG_STEP") != nullptr;
     static const bool no_fix   = std::getenv("TRELLIS_NOFIX") != nullptr;  // robustness guards ON by default
+    const bool measure = diagnostics::enabled();
+    diagnostics::event("sampler_settings", {{"steps", sp.steps}, {"guidance", sp.guidance_strength},
+        {"guidance_rescale", sp.guidance_rescale}, {"interval_start", sp.gi0}, {"interval_end", sp.gi1},
+        {"time_rescale", sp.rescale_t}, {"sigma_min", sp.sigma_min}, {"guards_enabled", !no_fix},
+        {"state_values", Nst}});
     const auto tflow0 = std::chrono::steady_clock::now();
     int n_fwd = 0;
     auto fstats = [](const std::vector<float>& v, size_t& bad, double& mx) {
@@ -171,6 +178,12 @@ std::vector<float> sample_flow(const FlowFwd& fwd, std::vector<float> sample,
     };
     progress(0);
     for (int i = 0; i < sp.steps; ++i) {
+        const auto diagnostic_step_start = std::chrono::steady_clock::now();
+        uint64_t nonfinite_velocity = 0;
+        bool ratio_corrected = false;
+        bool ratio_evaluated = false;
+        double ratio_raw = std::nan(""), ratio_applied = std::nan("");
+        const char* ratio_reason = "not_evaluated";
         const float t = ts[i], tprev = ts[i + 1];
         const float gs = (sp.gi0 <= t && t <= sp.gi1) ? sp.guidance_strength : 1.0f;
         const float tscaled = 1000.0f * t;
@@ -194,20 +207,49 @@ std::vector<float> sample_flow(const FlowFwd& fwd, std::vector<float> sample,
                 double vp = 0, vc = 0;
                 for (size_t k = 0; k < Nst; ++k) { vp += (x0p[k]-mp)*(x0p[k]-mp); vc += (x0c[k]-mc)*(x0c[k]-mc); }
                 float ratio = vc > 0 ? (float)(std::sqrt(vp/(Nst-1)) / std::sqrt(vc/(Nst-1))) : 1.0f;
+                if (measure) {
+                    ratio_evaluated = true;
+                    ratio_raw = ratio;
+                    ratio_reason = no_fix ? "guards_disabled" :
+                        (!std::isfinite(ratio) ? "nonfinite_to_one" :
+                         (ratio < 0.2f ? "lower_bound" : (ratio > 5.0f ? "upper_bound" :
+                          (vc > 0 ? "unchanged" : "variance_fallback_to_one"))));
+                }
+                if (measure) ratio_corrected = !no_fix && (!std::isfinite(ratio) || ratio < 0.2f || ratio > 5.0f);
                 // OOD inputs (e.g. a thin figure at HR) can make vc tiny -> ratio explodes -> the
                 // rescaled velocity blows the latent past representable range over the 12 steps ->
                 // all-NaN SLAT. Clamp ratio to a sane band: it sits at ~1.0 for in-distribution
                 // props (a no-op there), and only bites on the pathological tail. (TRELLIS_NOFIX=1
                 // restores the raw behaviour for A/B.)
                 if (!no_fix) { if (!std::isfinite(ratio)) ratio = 1.0f; ratio = fminf(fmaxf(ratio, 0.2f), 5.0f); }
+                if (measure) ratio_applied = ratio;
                 float gr = sp.guidance_rescale;
                 for (size_t k = 0; k < Nst; ++k) { float x0r = x0c[k]*ratio; float x0 = gr*x0r + (1-gr)*x0c[k]; pred[k] = (a*sample[k] - x0) / b; }
             }
         }
         // Safety net: never integrate a non-finite velocity (one poisoned tap would spread to the
         // whole latent on the next attention). A no-op when everything is finite.
-        if (!no_fix) for (size_t k = 0; k < Nst; ++k) if (!std::isfinite(pred[k])) pred[k] = 0.0f;
+        if (!no_fix) for (size_t k = 0; k < Nst; ++k) if (!std::isfinite(pred[k])) {
+            if (measure) ++nonfinite_velocity;
+            pred[k] = 0.0f;
+        }
+        if (measure && no_fix) for (float v : pred) nonfinite_velocity += !std::isfinite(v);
         for (size_t k = 0; k < Nst; ++k) sample[k] -= (t - tprev) * pred[k];
+        if (measure) {
+            uint64_t invalid_state = 0;
+            double max_abs = 0;
+            for (float v : sample) {
+                if (!std::isfinite(v)) ++invalid_state;
+                else max_abs = std::max(max_abs, std::fabs(double(v)));
+            }
+            diagnostics::event("sampler_step", {{"step", i+1}, {"t", t}, {"guidance", gs},
+                {"nonfinite_velocity", nonfinite_velocity}, {"replaced_velocity", no_fix ? 0 : nonfinite_velocity},
+                {"guidance_ratio_corrected", ratio_corrected}, {"nonfinite_state", invalid_state},
+                {"guidance_ratio_evaluated", ratio_evaluated}, {"guidance_ratio_raw", ratio_raw},
+                {"guidance_ratio_applied", ratio_applied}, {"guidance_ratio_reason", ratio_reason},
+                {"state_max_abs", max_abs}, {"wall_ms", std::chrono::duration<double, std::milli>(
+                    std::chrono::steady_clock::now() - diagnostic_step_start).count()}});
+        }
         progress(i + 1);
         if (dbg_step) { size_t pb, sb; double pm, sm2; fstats(pred, pb, pm); fstats(sample, sb, sm2);
             if (tty) printf("\n");
@@ -218,6 +260,7 @@ std::vector<float> sample_flow(const FlowFwd& fwd, std::vector<float> sample,
     printf("      [flow] %d steps, %d forwards, %.1fs\n", sp.steps, n_fwd,
            std::chrono::duration<double>(std::chrono::steady_clock::now() - tflow0).count());
     fflush(stdout);
+    diagnostics::event("sampler_end", {{"steps", sp.steps}, {"forwards", n_fwd}});
     return sample;
 }
 

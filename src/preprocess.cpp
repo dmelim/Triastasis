@@ -1,4 +1,5 @@
 #include "preprocess.h"
+#include "trellis_diagnostics.h"
 #include "birefnet.h"
 #include "trellis_model.h"
 #include <cstdio>
@@ -14,6 +15,7 @@
 namespace trellis {
 
 std::vector<float> normalize_cutout(const std::vector<unsigned char>& rgb, int sz, int S) {
+    diagnostics::Stage stage("preprocess_normalize_cutout");
     const size_t pixels = (size_t)sz * sz;
     const int channels = rgb.size() == pixels * 4 ? 4 : 3;
     if (sz <= 0 || S <= 0 || rgb.size() != pixels * channels) return {};
@@ -37,6 +39,15 @@ static std::vector<unsigned char> alpha_to_cutout(const unsigned char* rgba, int
     if (xmax < 0) { xmin=0; ymin=0; xmax=W-1; ymax=H-1; }
     int cx=(xmin+xmax)/2, cy=(ymin+ymax)/2;
     int half=(int)((std::max(xmax-xmin, ymax-ymin)/2 + 1) * 1.10f);
+    if (diagnostics::enabled()) {
+        size_t foreground = 0;
+        diagnostics::Stats alpha_stats;
+        for (float a : alpha) { foreground += a > 0.8f; alpha_stats.add(a); }
+        diagnostics::event("input_mask", {{"width", W}, {"height", H},
+            {"foreground_pixels_gt_0_8", foreground}, {"total_pixels", alpha.size()},
+            {"empty_foreground_fallback", foreground == 0}, {"crop_size", 2*half}});
+        alpha_stats.log("input_mask", "alpha");
+    }
     sz = 2*half;
     std::vector<unsigned char> crop((size_t)sz*sz*4, 0);
     for (int y = 0; y < sz; ++y) for (int x = 0; x < sz; ++x) {
@@ -73,6 +84,7 @@ std::vector<unsigned char> threshold_cutout(const std::string& path, int& sz) {
         if (has_alpha) alpha[i] = img[4*i+3] / 255.0f;
         else { int mn = std::min({img[4*i], img[4*i+1], img[4*i+2]}); alpha[i] = mn < 232 ? 1.0f : 0.0f; }
     }
+    diagnostics::event("background_method", {{"effective", has_alpha ? "input_alpha" : "white_threshold"}});
     std::vector<unsigned char> crop = alpha_to_cutout(img, W, H, alpha, sz);
     stbi_image_free(img);
     return crop;
@@ -86,6 +98,7 @@ std::vector<float> preprocess_image(const std::string& path, int S) {
 }
 
 std::vector<unsigned char> birefnet_cutout(const std::string& path, const Model& bm, int gpu, int& sz) {
+    diagnostics::Stage prepare("matte_image_load_and_normalize");
     int W, H, ch;
     unsigned char* img = stbi_load(path.c_str(), &W, &H, &ch, 4);
     if (!img) { fprintf(stderr, "birefnet_cutout: cannot load %s\n", path.c_str()); sz = 0; return {}; }
@@ -100,7 +113,11 @@ std::vector<unsigned char> birefnet_cutout(const std::string& path, const Model&
     std::vector<float> chw((size_t)3*R*R);
     for (int c = 0; c < 3; ++c) for (int i = 0; i < R*R; ++i)
         chw[(size_t)c*R*R + i] = (r1024[(size_t)i*4 + c] / 255.0f - mean[c]) / std[c];
+    prepare.end();
+    diagnostics::Stage inference("matte_inference");
     std::vector<float> logits = birefnet_matte(bm, chw, gpu);   // [R*R]
+    inference.end();
+    diagnostics::Stage crop_stage("matte_resize_and_crop");
     std::vector<float> alpha1024((size_t)R*R);
     for (size_t i = 0; i < alpha1024.size(); ++i) alpha1024[i] = 1.0f / (1.0f + std::exp(-logits[i]));
     std::vector<float> alpha((size_t)W*H);

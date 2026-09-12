@@ -1,4 +1,5 @@
 #include "mesh_glb.h"
+#include "trellis_diagnostics.h"
 #include <cmath>
 #include <cstdio>
 #include <cstring>
@@ -22,6 +23,7 @@
 
 #ifdef TRELLIS_HAVE_WEBP
 #include <webp/encode.h>
+#include <webp/decode.h>
 #endif
 
 #ifndef TRELLIS_GIT_COMMIT
@@ -53,6 +55,34 @@ static void png_collect(void* ctx, void* data, int size) {
     auto* v = (std::vector<uint8_t>*)ctx;
     v->insert(v->end(), (uint8_t*)data, (uint8_t*)data + size);
 }
+
+#ifdef TRELLIS_HAVE_WEBP
+// Diagnostics-only roundtrip: measure codec loss against the exact baked bytes.
+static void log_webp_error(const char* texture, const unsigned char* original,
+                           const std::vector<uint8_t>& encoded, int T) {
+    if (!diagnostics::enabled()) return;
+    int w = 0, h = 0;
+    uint8_t* decoded = WebPDecodeRGBA(encoded.data(), encoded.size(), &w, &h);
+    if (!decoded || w != T || h != T) {
+        diagnostics::event("diagnostic_error", {{"stage", "encoding_roundtrip"}, {"texture", texture}});
+        WebPFree(decoded); return;
+    }
+    const size_t pixels = size_t(T)*T;
+    const char* channels[] = {"r", "g", "b", "a"};
+    for (int k = 0; k < 4; ++k) {
+        double sum = 0, squared = 0, max_error = 0;
+        for (size_t i = 0; i < pixels; ++i) {
+            const double error = std::abs(int(original[4*i+k]) - int(decoded[4*i+k])) / 255.0;
+            sum += error; squared += error*error; max_error = std::max(max_error, error);
+        }
+        diagnostics::event("encoding_error", {{"texture", texture}, {"channel", channels[k]},
+            {"pixels", pixels}, {"mae", pixels ? sum/pixels : 0},
+            {"rmse", pixels ? std::sqrt(squared/pixels) : 0}, {"max_error", max_error},
+            {"population", "whole_atlas_including_gutters"}});
+    }
+    WebPFree(decoded);
+}
+#endif
 
 static void w_u32(std::vector<uint8_t>& o, uint32_t v) {
     o.push_back(v & 0xff); o.push_back((v >> 8) & 0xff);
@@ -357,6 +387,17 @@ bool write_glb_textured(const char* path, const float* verts, int64_t V, const f
         stbi_write_png_to_func(png_collect, &pngB, T, T, 4, base_rgba, T*4);
         stbi_write_png_to_func(png_collect, &pngM, T, T, 4, mr_rgba, T*4);
     }
+    diagnostics::event("texture_encoding", {{"requested_webp", use_webp},
+        {"effective", webp ? "webp" : "png"}, {"webp_quality", webp ? 80 : 0},
+        {"base_bytes", pngB.size()}, {"mr_bytes", pngM.size()}, {"atlas_size", T},
+        {"metallic_channel", "blue"}, {"roughness_channel", "green"},
+        {"alpha_mode", "OPAQUE"}, {"double_sided", double_sided}});
+#ifdef TRELLIS_HAVE_WEBP
+    if (webp) {
+        log_webp_error("base", base_rgba, pngB, T);
+        log_webp_error("metallic_roughness", mr_rgba, pngM, T);
+    }
+#endif
 
     auto pad4=[](std::vector<uint8_t>&b){ while(b.size()%4) b.push_back(0); };
     const uint32_t posB=(uint32_t)(V*12), nrmB=(uint32_t)(V*12), uvB=(uint32_t)(V*8), idxB=(uint32_t)(F*12);

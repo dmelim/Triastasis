@@ -31,8 +31,23 @@ struct VoxelPbr {
     const std::vector<float>* feats = nullptr;
     int res = 0;
     const TriBvh* snap = nullptr;
+    // Research replay only: try the bounded surface projection before direct
+    // sampling. Production callers keep false; this is not reference parity.
+    bool project_first = false;
     bool ok() const { return coords && feats && res > 0 && !coords->empty(); }
 };
+
+// Offline research probes only. Values are pre-quantization RGB/metal/rough/alpha.
+// Support is the sum of populated trilinear corner weights before normalization;
+// successful sampling with low support does not establish correct layer alignment.
+struct VoxelSampleProbe {
+    bool direct_valid = false, projected_valid = false;
+    float direct[6] = {}, projected[6] = {}, projected_point[3] = {};
+    float direct_support = 0, projected_support = 0, distance_voxels = -1;
+    int direct_corners = 0, projected_corners = 0, projected_face = -1;
+};
+std::vector<VoxelSampleProbe> probe_voxel_samples(
+    const VoxelPbr& vox, const std::vector<std::array<float,3>>& points);
 
 // Vertex-clustering decimation: snap verts to a `grid`-cell lattice over [-0.5,0.5]^3, average
 // position + pbr per cell, drop degenerate faces. Reduces a dense voxel-surface mesh enough for

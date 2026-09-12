@@ -17,8 +17,16 @@ guide.
 
 ## Implementation details
 
+- [Research backlog](research-backlog.md) is the starting point for future runtime,
+  material-quality and performance investigations, with controlled experiments
+  and their current status.
+
 - [Library storage and validation](library-storage.md) describes current save
   outcomes, metadata snapshots, compatibility, and regression-check commands.
+- [TRELLIS.2 material research](trellis-material-research.md) traces the model,
+  upstream appearance reports, and the experiments needed to isolate dark materials.
+- [Material diagnostics](material-diagnostics.md) explains opt-in persistent
+  runtime measurements and offline analysis.
 
 
 For current implementation behavior, use the application and native runtime

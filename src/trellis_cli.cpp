@@ -15,6 +15,7 @@
 #include "stb_image_write.h"
 #include "trellis_run.h"
 #include "trellis_progress.h"
+#include "trellis_diagnostics.h"
 
 #include <cstdio>
 #include <random>
@@ -26,6 +27,7 @@
 #include <cmath>
 
 using std::vector;
+namespace diag = trellis::diagnostics;
 static double now() { return std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count(); }
 // [dbg] overall stats of a flat tensor — used to compare LR vs HR shape-SLAT in decode space.
 static void slat_stats(const char* tag, const vector<float>& v) {
@@ -46,7 +48,7 @@ static const float SHAPE_STD[32]={5.972266f,4.706852f,5.445010f,5.209927f,5.3202
 static const float TEX_MEAN[32]={3.501659f,2.212398f,2.226094f,0.251093f,-0.026248f,-0.687364f,0.439898f,-0.928075f,0.029398f,-0.339596f,-0.869527f,1.038479f,-0.972385f,0.126042f,-1.129303f,0.455149f,-1.209521f,2.069067f,0.544735f,2.569128f,-0.323407f,2.293000f,-1.925608f,-1.217717f,1.213905f,0.971588f,-0.023631f,0.106750f,2.021786f,0.250524f,-0.662387f,-0.768862f};
 static const float TEX_STD[32]={2.665652f,2.743913f,2.765121f,2.595319f,3.037293f,2.291316f,2.144656f,2.911822f,2.969419f,2.501689f,2.154811f,3.163343f,2.621215f,2.381943f,3.186697f,3.021588f,2.295916f,3.234985f,3.233086f,2.260140f,2.874801f,2.810596f,3.292720f,2.674999f,2.680878f,2.372054f,2.451546f,2.353556f,2.995195f,2.379849f,2.786195f,2.775190f};
 
-int trellis_run(const trellis::TrellisParams& cfg) {
+int trellis_run(const trellis::TrellisParams& cfg, const std::string& diagnostic_request_id) {
     // Unbuffered, not line-buffered: MSVCRT treats _IOLBF as full buffering, which
     // swallows stage progress when piped (e.g. under Lemonade) if the process crashes.
     setvbuf(stdout, nullptr, _IONBF, 0);
@@ -60,6 +62,18 @@ int trellis_run(const trellis::TrellisParams& cfg) {
     } else {
         fprintf(stderr, "[trellis] generating model with seed %u\n", run_seed);
     }
+    diag::Session diagnostics(run_seed, cfg.output);
+    if (diag::enabled()) {
+        const auto separator = cfg.output.find_last_of("/\\");
+        diag::event("correlation", {{"native_request_id", diagnostic_request_id},
+            {"output_filename", cfg.output.substr(separator == std::string::npos ? 0 : separator+1)}});
+    }
+    diag::event("requested_settings", {{"resolution", cfg.cascade ? cfg.hr_res : 512},
+        {"texture", cfg.texture}, {"texture_resolution", cfg.tex_res}, {"atlas_size", cfg.tex},
+        {"max_tokens", cfg.max_tokens}, {"target_faces", cfg.target_faces}, {"cluster_grid", cfg.decim},
+        {"remesh_band", cfg.band}, {"uv", cfg.xatlas ? "xatlas" : "box"}, {"webp", cfg.webp},
+        {"background", cfg.birefnet}, {"gpu", cfg.gpu}, {"sparse_f32", cfg.f32},
+        {"disable_flash_attention", cfg.no_fa}, {"require_gpu", cfg.require_gpu}, {"threads", cfg.threads}});
     // Publish the cross-module flags this run wants (modules read them with an env fallback).
     const bool F32 = cfg.f32; trellis::g_sparse_cast_f32 = F32;  // f16 default (rope bug was the real issue)
     trellis::g_no_fa = cfg.no_fa;
@@ -92,6 +106,7 @@ int trellis_run(const trellis::TrellisParams& cfg) {
     };
 
     bool birefnet = cfg.birefnet == 1;
+    diag::Stage preprocess_stage("preprocess");
     if (cfg.birefnet < 0) {
         // Auto bg-removal. A pre-matted image keeps its own alpha (threshold path uses it
         // as-is). Otherwise prefer the neural matte: the white-threshold rule reads specular
@@ -114,20 +129,25 @@ int trellis_run(const trellis::TrellisParams& cfg) {
         printf("[1/6] preprocess %s (BiRefNet bg removal, %s)\n", img.c_str(), cascade ? "1024 cascade" : "512");
         // Full BiRefNet (Swin-L backbone + deformable-conv decoder) runs on the GPU. Cutout computed
         // once, normalized for 512 and 1024.
+        diag::Stage matte_load("matte_model_load");
         trellis::Model bm = trellis::Model::load(M + "/birefnet.gguf", gpu);
+        matte_load.end();
         cutout = trellis::birefnet_cutout(img, bm, gpu < 0 ? 0 : gpu, cut_sz);
-        bm.free();
-        if (cutout.empty()) return 1;
+        { diag::Stage matte_release("matte_model_release"); bm.free(); }
+        if (cutout.empty()) { preprocess_stage.end(); diagnostics.finish("failed"); return 1; }
         chw = trellis::normalize_cutout(cutout, cut_sz, 512);
         if (cascade) chw1024 = trellis::normalize_cutout(cutout, cut_sz, 1024);
     } else {
         printf("[1/6] preprocess %s (%s)\n", img.c_str(), cascade ? "1024 cascade" : "512");
         cutout = trellis::threshold_cutout(img, cut_sz);
-        if (cutout.empty()) return 1;
+        if (cutout.empty()) { preprocess_stage.end(); diagnostics.finish("failed"); return 1; }
         chw = trellis::normalize_cutout(cutout, cut_sz, 512);
         if (cascade) chw1024 = trellis::normalize_cutout(cutout, cut_sz, 1024);
     }
 
+    diag::event("conditioning_input", {{"background", birefnet ? "birefnet" : "alpha_or_threshold"},
+        {"cutout_size", cut_sz}, {"cutout_channels", cut_sz > 0 && cutout.size() == size_t(cut_sz)*cut_sz*4 ? 4 : 3}});
+    preprocess_stage.end();
     // --dump-bg: write the bg-removal cutout next to the output; --bg-only: stop here.
     if (cfg.dump_bg || cfg.bg_only) {
         const std::string cut_png = outglb.substr(0, outglb.find_last_of('.')) + "_cutout.png";
@@ -137,12 +157,13 @@ int trellis_run(const trellis::TrellisParams& cfg) {
             printf("      bg-removal cutout -> %s\n", cut_png.c_str());
         else
             fprintf(stderr, "      [warn] could not write bg-removal cutout to %s\n", cut_png.c_str());
-        if (cfg.bg_only) { printf("[bg-only] done (%.1fs)\n", now() - t0); return 0; }
+        if (cfg.bg_only) { diagnostics.finish("background_only"); printf("[bg-only] done (%.1fs)\n", now() - t0); return 0; }
     }
 
     printf("[2/6] DINOv3 conditioning\n");
     trellis::report_progress("condition", 0, 0, 0, 0, -1.0);
     vector<float> cond, cond1024;
+    diag::Stage condition_stage("condition");
     { trellis::Model m = trellis::Model::load(M + "/dinov3.gguf", gpu);
       cond = trellis::dinov3_encode(m, chw, 512);
       if (cascade) cond1024 = trellis::dinov3_encode(m, chw1024, 1024);
@@ -154,11 +175,15 @@ int trellis_run(const trellis::TrellisParams& cfg) {
     printf("      cond tokens=%d%s\n", Lc, cascade ? (" / 1024-cond tokens=" + std::to_string(Lc1024)).c_str() : "");
     slat_stats("cond_512 (DINOv3@512)", cond);
     if (cascade) slat_stats("cond_1024 (DINOv3@1024)", cond1024);
+    diag::tensor("condition_512", cond);
+    if (cascade) diag::tensor("condition_1024", cond1024);
+    condition_stage.end();
 
     printf("[3/6] sparse-structure flow + decode\n");
     trellis::report_progress("sparse_structure", 0, 0, 0, 0, -1.0);
     vector<std::array<int,3>> coords;
     {
+        diag::Stage stage("sparse_structure");
         trellis::Model m = trellis::Model::load(M + "/ss_flow.gguf", gpu);
         trellis::DiTParams p; p.in_ch = 8; p.out_ch = 8; p.d_cond = 1024; p.cast_f32 = F32;
         trellis::DitRunner* run = trellis::make_dense_runner(m, p, 16, Lc);
@@ -173,10 +198,12 @@ int trellis_run(const trellis::TrellisParams& cfg) {
         trellis::Model d = trellis::Model::load(M + "/ss_dec.gguf", gpu);
         vector<float> logits = trellis::ss_decode(d, zdec); d.free();
         coords = trellis::ss_coords(logits, 64, 32);
+        diag::tensor("sparse_structure_logits", logits);
+        diag::event("sparse_structure", {{"active_tokens", coords.size()}, {"grid_resolution", 32}});
     }
     if (cfg.voxply) { FILE*f=fopen("out/myvox.ply","wb"); fprintf(f,"ply\nformat binary_little_endian 1.0\nelement vertex %zu\nproperty float x\nproperty float y\nproperty float z\nelement face 0\nproperty list uchar int vertex_indices\nend_header\n",coords.size()); for(auto&c:coords){float p[3]={(c[0]+0.5f)/32-0.5f,(c[1]+0.5f)/32-0.5f,(c[2]+0.5f)/32-0.5f}; fwrite(p,4,3,f);} fclose(f); }
     printf("      active voxels @res32 = %d\n", (int)coords.size());
-    if (coords.empty()) { fprintf(stderr, "no voxels produced\n"); return 1; }
+    if (coords.empty()) { diagnostics.finish("failed"); fprintf(stderr, "no voxels produced\n"); return 1; }
 
     const bool do_tex = cfg.texture;
 
@@ -184,6 +211,7 @@ int trellis_run(const trellis::TrellisParams& cfg) {
     auto shape_flow = [&](const std::string& path, const vector<std::array<int,3>>& cds,
                           const float* cnd, const float* ncnd, int lc,
                           const char* stage, int offset) {
+        diag::Stage shape_stage(stage);
         const int n = (int)cds.size();
         trellis::Model m = trellis::Model::load(path, gpu);
         trellis::DiTParams p; p.in_ch = 32; p.out_ch = 32; p.d_cond = 1024; p.cast_f32 = F32;
@@ -193,6 +221,7 @@ int trellis_run(const trellis::TrellisParams& cfg) {
         auto step_cb = make_step_cb(stage, offset);
         vector<float> sn = trellis::sample_flow(fwd, noise((size_t)32*n), cnd, ncnd, sp, nullptr, step_cb);   // [32,n]
         delete run; m.free();
+        diag::tensor(stage, sn);
         return sn;
     };
 
@@ -225,7 +254,8 @@ int trellis_run(const trellis::TrellisParams& cfg) {
         slat_stats("LR slat (res32, decodes OK via upsample)", lr_dn);
         // (2) decoder.upsample(LR slat, 4) -> res512 coords
         vector<std::array<int,3>> hr_coords;
-        { trellis::Model m = trellis::Model::load(M + "/shape_dec.gguf", gpu);
+        { diag::Stage stage("shape_upsample");
+          trellis::Model m = trellis::Model::load(M + "/shape_dec.gguf", gpu);
           hr_coords = trellis::shape_upsample(m, lr_dn, coords); m.free(); }
         // (3) quantize res512 -> res(hr_res//16) with the reference's adaptive token-budget backoff
         //     (sample_shape_slat_cascade): start at hr_target, step -128 toward the 1024 floor while
@@ -237,6 +267,8 @@ int trellis_run(const trellis::TrellisParams& cfg) {
             const float g = (float)gi;
             std::set<std::array<int,3>> q;
             for (auto& c : hr_coords) q.insert({ (int)((c[0]+0.5f)/512.f*g), (int)((c[1]+0.5f)/512.f*g), (int)((c[2]+0.5f)/512.f*g) });
+            diag::event("cascade_budget", {{"resolution", hr_res}, {"tokens", q.size()},
+                {"budget", max_tok}, {"accepted", (int)q.size() < max_tok || hr_res <= 1024}});
             if ((int)q.size() < max_tok || hr_res <= 1024) {
                 shc.assign(q.begin(), q.end());
                 printf("      upsampled coords @res512=%d -> quantized @res%d (grid %d) = %d tokens\n",
@@ -275,10 +307,13 @@ int trellis_run(const trellis::TrellisParams& cfg) {
     trellis::Mesh mesh;
     trellis::ShapeOut so;
     {
+        diag::Stage stage("shape_decode");
         trellis::Model m = trellis::Model::load(M + "/shape_dec.gguf", gpu);
         so = trellis::shape_decode(m, slat_dn, shc, RES); m.free();
         printf("      decoded voxels @res%d = %d\n", so.res, (int)so.coords.size());
         mesh = trellis::dual_grid_to_mesh(so);
+        diag::event("decoded_shape", {{"resolution", so.res}, {"voxels", so.coords.size()},
+            {"vertices", mesh.V()}, {"faces", mesh.F()}});
     }
     printf("      mesh V=%d F=%d\n", mesh.V(), mesh.F());
     {   // reference postprocess fills small holes BEFORE the remesh (max_hole_perimeter=3e-2):
@@ -308,10 +343,15 @@ int trellis_run(const trellis::TrellisParams& cfg) {
         const int tex_res = cfg.tex_res > 0 ? cfg.tex_res
                           : (cascade && (int)so.coords.size() > DENSE_TEX ? 512 : RES);
         const bool mixed = cascade && tex_res != RES;   // res-1024 geometry + res-512 texture
+        diag::event("material_resolution", {{"requested", cfg.tex_res}, {"selected", tex_res},
+            {"geometry_resolution", RES}, {"geometry_voxels", so.coords.size()},
+            {"mixed", mixed}, {"reason", cfg.tex_res > 0 ? "explicit" :
+                (mixed ? "dense_voxel_backoff" : "match_geometry")}});
         printf("[6/7] texture SLAT flow + PBR decode%s\n", mixed ? "  (res-512 texture on res-1024 mesh)" : "");
         trellis::report_progress("texture_flow", 0, 0, 0, 0, -1.0);
 
         if (mixed) {   // decode a res-512 shape (from the LR slat) to guide the res-512 tex decode
+            diag::Stage stage("material_shape_guide");
             trellis::Model m = trellis::Model::load(M + "/shape_dec.gguf", gpu);
             so_tex = trellis::shape_decode(m, lr_dn, coords, 512); m.free();
             pbr_coords = &so_tex.coords; pbr_res = so_tex.res;
@@ -330,6 +370,7 @@ int trellis_run(const trellis::TrellisParams& cfg) {
 
         vector<float> texlat;
         {
+            diag::Stage stage("texture_flow");
             trellis::Model m = trellis::Model::load(tflow, gpu);
             trellis::DiTParams p; p.in_ch = 64; p.out_ch = 32; p.d_cond = 1024; p.cast_f32 = F32;
             trellis::DitRunner* run = trellis::make_sparse_runner(m, p, tcoords, tlc);
@@ -347,12 +388,17 @@ int trellis_run(const trellis::TrellisParams& cfg) {
             texlat = trellis::sample_flow(fwd, noise((size_t)32*tN), tcond, tneg, sp, nullptr, step_cb);  // [32,tN]
             delete run; m.free();
             for (int n = 0; n < tN; ++n) for (int c = 0; c < 32; ++c) texlat[(size_t)c + 32*n] = texlat[(size_t)c + 32*n]*TEX_STD[c] + TEX_MEAN[c];
+            diag::tensor("texture_latent_denormalized", texlat);
         }
         {
+            diag::Stage stage("texture_decode");
             trellis::report_progress("texture_decode", 0, 0, 0, 0, -1.0);
             trellis::Model m = trellis::Model::load(M + "/tex_dec.gguf", gpu);
             vector<float> pbr = trellis::tex_decode(m, texlat, tcoords, tsubs); m.free();   // [6,Mv] pre-scale
             const int Mv = (int)pbr_coords->size();
+            diag::event("material_layout", {{"actual_values", pbr.size()}, {"expected_values", size_t(Mv)*6},
+                {"effective_resolution", pbr_res}, {"voxels", Mv}});
+            diag::pbr("decoded_pbr_before_clamp", pbr, 0.5, 0.5);
             colors.resize((size_t)Mv * 3); pbr6.resize((size_t)Mv * 6);
             auto cl = [](float v){ return v < 0 ? 0.f : (v > 1 ? 1.f : v); };
             for (int i = 0; i < Mv; ++i) {
@@ -360,6 +406,7 @@ int trellis_run(const trellis::TrellisParams& cfg) {
                 for (int k = 0; k < 3; ++k) colors[(size_t)i*3 + k] = pbr6[(size_t)i*6 + k];
             }
             printf("      PBR voxels=%d @res%d\n", Mv, pbr_res);
+            diag::pbr("voxel_pbr", pbr6);
         }
         // `colors` is per-VOXEL but consumed per-VERTEX (weld, vertex-color GLB, PLY),
         // relying on dual_grid_to_mesh's vertex==voxel correspondence. fill_holes adds
@@ -379,6 +426,7 @@ int trellis_run(const trellis::TrellisParams& cfg) {
     printf("[7/7] write %s\n", outglb.c_str());
     trellis::report_progress("package", 0, 0, 0, 0, -1.0);
     bool textured = false;
+    bool glb_written = false;
     if (!pbr6.empty()) {   // UV-baked textured GLB (PBR material)
         // UV method: xatlas unwrap by default — unique chart space per face, no projection
         // overlap. --box-uv selects the voxel-native 6-way box projection: O(F) and seconds vs
@@ -387,6 +435,7 @@ int trellis_run(const trellis::TrellisParams& cfg) {
         const bool boxuv = !cfg.xatlas;
         const int T = cfg.tex >= 0 ? cfg.tex : (cascade ? 2048 : 1024);
         if (const char* dp = std::getenv("TRELLIS_DUMP_POST")) {
+            diag::Stage dump_stage("postprocess_dump_io");
             FILE* dfp = fopen(dp, "wb");
             if (dfp) {   // geometry mesh + the PBR volume the bake samples (may be res-512 in mixed mode)
                 int dV = mesh.V(), dFc = mesh.F(), Mv = (int)pbr_coords->size(), res = pbr_res;
@@ -399,15 +448,19 @@ int trellis_run(const trellis::TrellisParams& cfg) {
                 printf("      [dump] post-stage inputs -> %s\n", dp);
             }
         }
+        diag::Stage prepare_mesh("mesh_weld_and_fill");
         trellis::weld_vertices(mesh.verts, mesh.faces, colors.empty() ? nullptr : &colors,
                                1.0f / ((float)so.res * 8.0f));
         trellis::fill_small_holes(mesh.faces);
+        prepare_mesh.end();
         // Reference production pipeline: rebuild the noisy dual-grid mesh as
         // the narrow-band offset shell (watertight manifold), then quadric
         // simplify to the face target. The BVH over the original hole-filled
         // mesh serves both the remesh UDF and the bake's texel snap.
+        diag::Stage build_bvh("mesh_bvh_build");
         trellis::TriBvh bvh = trellis::TriBvh::build(mesh.verts.data(), mesh.V(),
                                                      mesh.faces.data(), mesh.F());
+        build_bvh.end();
         // The narrow-band remesh offset is eps = band*scale/res, i.e. it shrinks with
         // resolution. At res-512 (band=1) that offset absorbs the decoder's sub-voxel
         // "outer-skin" noise; at res-1024 the SAME band=1 halves the world-space offset,
@@ -415,15 +468,22 @@ int trellis_run(const trellis::TrellisParams& cfg) {
         // scales with resolution to keep the offset resolution-independent (512->1,
         // 1024->2, 1536->3); an explicit --band / per-request band forces that value.
         int remesh_band = cfg.band > 0 ? cfg.band : std::max(1, so.res / 512);
+        diag::event("postprocess_settings", {{"remesh_band", remesh_band}, {"atlas_size", T},
+            {"simplifier", cfg.decim > 0 ? "cluster" : (cfg.decim == 0 ? "none" : "qem")},
+            {"qem_target", cfg.decim < 0 ? (cfg.target_faces > 0 ? cfg.target_faces : (cascade ? 300000 : 150000)) : 0}});
+        diag::Stage remesh_stage("remesh");
         trellis::Mesh rm = trellis::remesh_narrow_band_dc(mesh.verts.data(), mesh.V(),
                                                           mesh.faces.data(), mesh.F(),
                                                           bvh, so.res, remesh_band);
+        remesh_stage.end();
+        diag::event("remesh_result", {{"vertices", rm.V()}, {"faces", rm.F()}, {"fallback_to_decoded_mesh", rm.F() == 0}});
         // Clean the narrow-band DC output (drop degenerate faces, unify winding), then drop
         // decode floaters (the reference is a single watertight component; ours shattered into
         // 50+ pieces). The faithful QEM simplifier below handles surface smoothing via its
         // quadric + skinny-triangle cost, so no Taubin pre-pass is needed (and none is applied,
         // which keeps the mesh aligned to the voxel PBR volume for correct texture sampling).
         if (rm.F() > 0) {
+            diag::Stage cleanup("remesh_component_cleanup");
             trellis::clean_mesh(rm.V(), rm.faces);
             int ndrop = trellis::drop_small_components(rm.verts, rm.faces, 0.02f);
             printf("  remesh postproc: dropped %d floater comps -> V=%d F=%d\n", ndrop, rm.V(), rm.F());
@@ -432,6 +492,7 @@ int trellis_run(const trellis::TrellisParams& cfg) {
         const std::vector<float>& sverts = rm.F() > 0 ? rm.verts : mesh.verts;
         const std::vector<int32_t>& sfaces = rm.F() > 0 ? rm.faces : mesh.faces;
         std::vector<float> dv, dp; std::vector<int32_t> df;
+        diag::Stage simplify_stage("simplify_and_cleanup");
         if (cfg.decim > 0) {
             trellis::decimate_cluster(sverts, (int)sverts.size()/3, sfaces, (int)sfaces.size()/3, {}, cfg.decim, dv, df, dp);
         } else if (cfg.decim == 0) {
@@ -454,32 +515,48 @@ int trellis_run(const trellis::TrellisParams& cfg) {
             if (ndrop2) { printf("  decimated postproc: dropped %d more comps -> F=%d\n", ndrop2, (int)df.size()/3); fflush(stdout); }
         }
         const int dV = (int)dv.size()/3, dF = (int)df.size()/3;
+        simplify_stage.end();
+        diag::event("simplified_mesh", {{"vertices", dV}, {"faces", dF}});
         // Texels are shaded straight from the per-voxel PBR volume (trilinear sampling, the
         // reference bake behavior) rather than from decimation-averaged vertex colors, so
         // full material detail survives simplification.
         trellis::VoxelPbr vox{pbr_coords, &pbr6, pbr_res, &bvh};
         const std::vector<float> no_vp;
+        diag::Stage bake_stage("unwrap_and_bake");
         trellis::BakedMesh bm = boxuv ? trellis::uv_box_project(dv, dV, df, dF, no_vp, T, &vox)
                                       : trellis::uv_bake(dv, dV, df, dF, no_vp, T, &vox);
-        if (!boxuv && !bm.ok()) bm = trellis::uv_chart_project(dv, dV, df, dF, no_vp, T, &vox);
+        const char* effective_uv = boxuv ? "box" : "xatlas";
+        if (!boxuv && !bm.ok()) {
+            diag::event("uv_fallback", {{"from", "xatlas"}, {"to", "chart"}});
+            effective_uv = "chart";
+            bm = trellis::uv_chart_project(dv, dV, df, dF, no_vp, T, &vox);
+        }
+        bake_stage.end();
+        diag::event("bake_result", {{"uv", effective_uv}, {"ok", bm.ok()}, {"atlas_size", bm.T}});
         if (bm.ok()) {
-            trellis::write_glb_textured(outglb.c_str(), bm.verts.data(), (int64_t)bm.verts.size()/3, bm.uv.data(),
+            diag::Stage export_stage("export_textured_glb");
+            glb_written = trellis::write_glb_textured(outglb.c_str(), bm.verts.data(), (int64_t)bm.verts.size()/3, bm.uv.data(),
                                         bm.faces.data(), (int64_t)bm.faces.size()/3, bm.base.data(), bm.mr.data(), bm.T,
                                         /*double_sided=*/rm.F() == 0, run_seed,
                                         cfg.copyright.empty() ? nullptr : cfg.copyright.c_str(),
                                         /*use_webp=*/cfg.webp != 0);
             std::string tex = outglb.substr(0, outglb.find_last_of('.')) + "_base.png";
-            stbi_write_png(tex.c_str(), bm.T, bm.T, 4, bm.base.data(), bm.T*4);
+            { diag::Stage auxiliary("auxiliary_base_png_io");
+              stbi_write_png(tex.c_str(), bm.T, bm.T, 4, bm.base.data(), bm.T*4); }
             textured = true;
             printf("      textured GLB (atlas %d, +%s)\n", bm.T, tex.c_str());
         } else printf("      uv_bake failed; falling back to vertex colors\n");
     }
-    if (!textured)
-        trellis::write_glb(outglb.c_str(), mesh.verts.data(), mesh.V(), mesh.faces.data(), mesh.F(),
+    if (!textured) {
+        diag::event("untextured_output", {{"texture_requested", do_tex}, {"has_vertex_colors", !colors.empty()}});
+        glb_written = trellis::write_glb(outglb.c_str(), mesh.verts.data(), mesh.V(), mesh.faces.data(), mesh.F(),
                            colors.empty() ? nullptr : colors.data(), run_seed,
                            cfg.copyright.empty() ? nullptr : cfg.copyright.c_str());
+    }
     std::string ply = outglb.substr(0, outglb.find_last_of('.')) + ".ply";
-    trellis::write_ply(ply.c_str(), mesh.verts.data(), mesh.V(), mesh.faces.data(), mesh.F(), colors.empty() ? nullptr : colors.data());
+    { diag::Stage auxiliary("auxiliary_ply_io");
+      trellis::write_ply(ply.c_str(), mesh.verts.data(), mesh.V(), mesh.faces.data(), mesh.F(), colors.empty() ? nullptr : colors.data()); }
     printf("done in %.1fs -> %s (+ %s)\n", now() - t0, outglb.c_str(), ply.c_str());
+    diagnostics.finish(glb_written ? "completed" : "output_failed");
     return 0;
 }

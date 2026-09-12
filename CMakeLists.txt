@@ -93,6 +93,7 @@ endif()
 
 # --- core library ----------------------------------------------------------
 add_library(trellis_core STATIC
+  src/trellis_diagnostics.cpp
   src/trellis_model.cpp
   src/dit.cpp
   src/flow_runner.cpp
@@ -268,6 +269,9 @@ endif()
 target_compile_definitions(trellis_core PRIVATE TRELLIS_BUILD_BACKEND="${TRELLIS_BUILD_BACKEND}")
 
 # --- executables -----------------------------------------------------------
+add_executable(trellis-test-diagnostics src/test_diagnostics.cpp)
+target_link_libraries(trellis-test-diagnostics PRIVATE trellis_core)
+
 add_executable(trellis-smoke src/smoke_test.cpp)
 target_link_libraries(trellis-smoke PRIVATE trellis_core)
 set_target_properties(trellis-smoke PROPERTIES BUILD_RPATH "${GGML_RPATH}")

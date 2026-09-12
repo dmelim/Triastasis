@@ -8,6 +8,9 @@
 #include <algorithm>
 #include <string>
 #include <stdexcept>
+#include <filesystem>
+#include <fstream>
+#include <map>
 
 namespace trellis {
 using T = ggml_tensor;
@@ -60,6 +63,21 @@ static ggml_context* mkctx() {
 // workgroups = ~2.1M rows; the res-1024 cascade reaches 2.6M voxels).
 static constexpr int64_t kLinearRowChunk = 1000000;
 
+// Opt-in research capture; never changes decoder values or controls a graph.
+// The caller owns a fresh directory. Failures are reported without stopping inference.
+static void trace_array(const char* dir, const std::string& name, const void* data, size_t bytes) {
+    if (!dir) return;
+    try {
+        const auto path = std::filesystem::u8path(dir) / name;
+        if (std::filesystem::exists(path)) throw std::runtime_error("destination exists");
+        std::ofstream f(path, std::ios::binary);
+        f.write(static_cast<const char*>(data), bytes); f.close();
+        if (!f) throw std::runtime_error("write failed");
+    } catch (const std::exception& e) {
+        fprintf(stderr, "[tex-trace] %s: %s\n", name.c_str(), e.what());
+    }
+}
+
 static std::vector<float> linear_rows(const Model& m, const std::vector<float>& in, int Cin,
                                       int64_t N, const std::string& prefix, int Cout, bool pre_norm) {
     std::vector<float> out((size_t)Cout * N);
@@ -84,6 +102,10 @@ static std::vector<float> decode_unet(const Model& m, const std::vector<float>& 
                                       std::vector<std::vector<uint8_t>>* subs_out,
                                       bool coords_only = false) {
     int N = (int)coords.size();
+    const char* trace = out_ch == 6 ? std::getenv("TRELLIS_TEX_TRACE_DIR") : nullptr;
+    if (trace && !*trace) trace = nullptr;
+    trace_array(trace, "input.coords.i32", coords.data(), coords.size()*sizeof(coords[0]));
+    trace_array(trace, "input.latent.f32", latent.data(), latent.size()*sizeof(float));
     // from_latent [32,N] -> [1024,N]
     std::vector<float> h = linear_rows(m, latent, 32, N, "from_latent", 1024, false);
     struct Stage { int C, nblk, Cout, c2si; const char* s; };
@@ -106,14 +128,37 @@ static std::vector<float> decode_unet(const Model& m, const std::vector<float>& 
         }
         mem_probe("after ConvNeXt stage");
         const std::vector<uint8_t>* ext = guide_subs ? &(*guide_subs)[si] : nullptr;
+        if (ext) trace_array(trace, "guide-"+std::to_string(si)+".u8", ext->data(), ext->size());
         C2SResult r = sparse_c2s(m, std::string("blocks.") + st.s + "." + std::to_string(st.c2si), h, st.C, coords, st.Cout, ext);
         if (subs_out) subs_out->push_back(r.subdiv);
         h = std::move(r.feats); coords = std::move(r.coords); N = (int)coords.size();
+        trace_array(trace, "stage-"+std::to_string(si)+".coords.i32", coords.data(), coords.size()*sizeof(coords[0]));
         mem_probe("after c2s");
     }
     if (coords_only) return {};   // cascade upsample: just need the grown coords
     // final LN(no affine) + output_layer -> [out_ch, M]
-    return linear_rows(m, h, 64, N, "output_layer", out_ch, true);
+    auto output = linear_rows(m, h, 64, N, "output_layer", out_ch, true);
+    if (trace) {
+        trace_array(trace, "output.raw.f32", output.data(), output.size()*sizeof(float));
+        // Select rows by final voxel coordinate, not an index from another run.
+        const char* selection = std::getenv("TRELLIS_TEX_TRACE_POINTS");
+        if (selection) {
+            std::ifstream input(std::filesystem::u8path(selection));
+            std::map<std::array<int,3>, bool> wanted;
+            std::array<int,3> point;
+            while (input >> point[0] >> point[1] >> point[2]) wanted[point] = true;
+            std::vector<int32_t> rows;
+            std::vector<float> features;
+            for (int i = 0; i < N; ++i) if (wanted.count(coords[i])) {
+                rows.insert(rows.end(), {i,coords[i][0],coords[i][1],coords[i][2]});
+                features.insert(features.end(), h.begin()+size_t(i)*64, h.begin()+size_t(i+1)*64);
+            }
+            trace_array(trace, "selected.rows.i32", rows.data(), rows.size()*sizeof(int32_t));
+            trace_array(trace, "selected.prehead.f32", features.data(), features.size()*sizeof(float));
+            fprintf(stderr, "[tex-trace] selected %zu/%zu coordinates; final rows=%d\n", rows.size()/4, wanted.size(), N);
+        }
+    }
+    return output;
 }
 
 ShapeOut shape_decode(const Model& m, const std::vector<float>& latent,

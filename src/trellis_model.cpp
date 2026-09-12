@@ -1,4 +1,5 @@
 #include "trellis_model.h"
+#include "trellis_diagnostics.h"
 
 #include "ggml.h"
 #include "gguf.h"
@@ -165,6 +166,16 @@ Model Model::load(const std::string& path, int gpu) {
         m.tensors[name] = t;
     }
     fclose(f);
+    if (diagnostics::enabled()) {
+        const auto separator = path.find_last_of("/\\");
+        const std::string filename = path.substr(separator == std::string::npos ? 0 : separator + 1);
+        diagnostics::event("model_loaded", {{"model", filename}, {"backend", ggml_backend_name(m.backend)},
+            {"weight_bytes", m.total_bytes()}, {"tensors", m.tensors.size()}});
+        std::map<std::string, size_t> types;
+        for (const auto& entry : m.tensors) ++types[ggml_type_name(entry.second->type)];
+        for (const auto& type : types) diagnostics::event("model_tensor_type",
+            {{"model", filename}, {"type", type.first}, {"tensors", type.second}});
+    }
     return m;
 }
 

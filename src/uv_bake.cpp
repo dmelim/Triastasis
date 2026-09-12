@@ -3,6 +3,7 @@
 #include "meshoptimizer.h"
 #include "Simplify.h"
 #include "tri_bvh.h"
+#include "trellis_diagnostics.h"
 #include <climits>
 #include <cstdio>
 #include <cstdlib>
@@ -29,19 +30,27 @@ namespace {
 // corner stays unwritten and is filled by seam dilation, matching the
 // reference's inpaint step.
 struct VoxSampler {
+    const bool measure = diagnostics::enabled();
+    mutable uint64_t direct = 0, snapped = 0, shell = 0, missing = 0;
     std::unordered_map<uint64_t, int> map;
     const std::vector<float>* feats;
     int res;
     const TriBvh* snap;
+    const bool project_first;
     static uint64_t key(int x, int y, int z) {
         return ((uint64_t)(uint32_t)x << 40) | ((uint64_t)(uint32_t)y << 20) | (uint32_t)z;
     }
-    explicit VoxSampler(const VoxelPbr& v) : feats(v.feats), res(v.res), snap(v.snap) {
+    explicit VoxSampler(const VoxelPbr& v) : feats(v.feats), res(v.res), snap(v.snap), project_first(v.project_first) {
         map.reserve(v.coords->size() * 2);
         for (size_t i = 0; i < v.coords->size(); ++i) {
             const auto& c = (*v.coords)[i];
             map[key(c[0], c[1], c[2])] = (int)i;
         }
+    }
+    ~VoxSampler() {
+        if (measure) diagnostics::event("voxel_sampling", {{"direct", direct}, {"snapped", snapped},
+            {"shell", shell}, {"missing", missing}, {"attempts", direct + snapped + shell + missing},
+            {"population", "raster_sample_attempts_including_overdraw"}, {"project_first", project_first}});
     }
     bool trilinear(const float p[3], float out[6]) const {
         float w[3]; int b[3];
@@ -65,13 +74,17 @@ struct VoxSampler {
         return true;
     }
     bool sample(const float p[3], float out[6]) const {
-        if (trilinear(p, out)) return true;
+        if (project_first && snap) {
+            const TriBvh::Hit h = snap->closest(p, 8.0f / res);
+            if (h.face >= 0 && trilinear(h.point, out)) { if (measure) ++snapped; return true; }
+        }
+        if (trilinear(p, out)) { if (measure) ++direct; return true; }
         // Decimation moves the surface off the voxel shell. Primary correction
         // (reference behavior): snap to the closest point on the original mesh
         // and resample there. Shell crawl remains as the no-BVH fallback.
-        if (snap) {
+        if (snap && !project_first) {
             const TriBvh::Hit h = snap->closest(p, 8.0f / res);
-            if (h.face >= 0 && trilinear(h.point, out)) return true;
+            if (h.face >= 0 && trilinear(h.point, out)) { if (measure) ++snapped; return true; }
         }
         int b[3];
         for (int a = 0; a < 3; ++a) b[a] = (int)std::floor((p[a] + 0.5f) * res - 0.5f);
@@ -87,9 +100,11 @@ struct VoxSampler {
             }
             if (hits) {
                 for (int k = 0; k < 6; ++k) out[k] = racc[k] / hits;
+                if (measure) ++shell;
                 return true;
             }
         }
+        if (measure) ++missing;
         return false;
     }
 };
@@ -237,6 +252,44 @@ void telea_inpaint(std::vector<uint8_t>& base, std::vector<uint8_t>& mr,
     }
 }
 }  // namespace
+
+std::vector<VoxelSampleProbe> probe_voxel_samples(
+    const VoxelPbr& vox, const std::vector<std::array<float,3>>& points) {
+    if (!vox.ok()) return {};
+    VoxSampler sampler(vox);
+    // This extra scan is confined to probes: leave the production sampler intact.
+    auto support = [&](const float p[3], float& total, int& corners) {
+        float w[3]; int b[3];
+        for (int a = 0; a < 3; ++a) {
+            const float grid = (p[a] + 0.5f) * vox.res - 0.5f;
+            b[a] = (int)std::floor(grid); w[a] = grid - b[a];
+        }
+        for (int dz = 0; dz < 2; ++dz) for (int dy = 0; dy < 2; ++dy) for (int dx = 0; dx < 2; ++dx) {
+            const float weight = (dx ? w[0] : 1-w[0]) * (dy ? w[1] : 1-w[1]) * (dz ? w[2] : 1-w[2]);
+            if (weight > 0 && sampler.map.count(VoxSampler::key(b[0]+dx, b[1]+dy, b[2]+dz))) {
+                total += weight; ++corners;
+            }
+        }
+    };
+    std::vector<VoxelSampleProbe> result(points.size());
+    for (size_t i = 0; i < points.size(); ++i) {
+        auto& r = result[i];
+        const float* p = points[i].data();
+        r.direct_valid = sampler.trilinear(p, r.direct);
+        support(p, r.direct_support, r.direct_corners);
+        if (vox.snap) {
+            const auto hit = vox.snap->closest(p, 8.0f / vox.res);
+            r.projected_face = hit.face;
+            if (hit.face >= 0) {
+                std::copy(hit.point, hit.point+3, r.projected_point);
+                r.distance_voxels = std::sqrt(hit.dist2) * vox.res;
+                r.projected_valid = sampler.trilinear(hit.point, r.projected);
+                support(hit.point, r.projected_support, r.projected_corners);
+            }
+        }
+    }
+    return result;
+}
 
 void decimate_cluster(const std::vector<float>& verts, int V, const std::vector<int32_t>& faces, int F,
                       const std::vector<float>& pbr6, int grid,
@@ -875,7 +928,9 @@ BakedMesh uv_chart_project(const std::vector<float>& verts, int V, const std::ve
             mask[t]=1;
         }
     }
+    diagnostics::atlas("chart_before_fill", out.base, out.mr, &mask);
     dilate_full(out.base, out.mr, mask, T);
+    diagnostics::atlas("chart_after_fill", out.base, out.mr);
     printf("  uv_chart_project: atlas %dx%d, charts=%zu, Vo=%zu Fo=%d (scale %.1f tex/unit)\n",
            T, T, charts.size(), out.verts.size()/3, Fo, scale);
     fflush(stdout);
@@ -1424,7 +1479,9 @@ BakedMesh uv_bake(const std::vector<float>& verts, int V, const std::vector<int3
     }
     xatlas::Destroy(atlas);
 
+    diagnostics::atlas("xatlas_before_fill", out.base, out.mr, &mask);
     telea_inpaint(out.base, out.mr, mask, T, 3, 1);
+    diagnostics::atlas("xatlas_after_fill", out.base, out.mr);
     printf("  uv_bake: atlas %dx%d (xatlas %dx%d), Vo=%zu Fo=%d\n", T, T, W, H, out.verts.size()/3, FoAll);
     fflush(stdout);
     return out;
@@ -1639,7 +1696,9 @@ BakedMesh uv_box_project(const std::vector<float>& verts, int V, const std::vect
         }
     }
     // 5) seam dilation
+    diagnostics::atlas("box_before_fill", out.base, out.mr, &mask);
     dilate_full(out.base, out.mr, mask, T);
+    diagnostics::atlas("box_after_fill", out.base, out.mr);
     printf("  uv_box_project: atlas %dx%d, Vo=%d Fo=%d (6 planes, %d re-bucketed, %d occluded-layer)\n",
            T, T, Vo, Fo, reassigned, layered);
     return out;

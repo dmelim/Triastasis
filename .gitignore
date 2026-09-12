@@ -36,6 +36,7 @@ gallery-child-acls-*.json
 gallery-root-acl-*.txt
 gallery-load-errors.log
 *.log
+triastasis-diagnostics-*.jsonl
 triastasis-pilot-*.png
 triastasis-pilot-*.jpg
 

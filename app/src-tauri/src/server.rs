@@ -215,6 +215,23 @@ pub fn start(
     }
 
     let mut cmd = Command::new(&cfg.server_bin);
+    // Keep opt-in per-generation diagnostics outside the native server's
+    // temporary GLB directory. The existing stdout/stderr log remains intact.
+    if std::env::var("TRIASTASIS_DIAGNOSTICS").as_deref() == Ok("1")
+        && std::env::var_os("TRIASTASIS_DIAGNOSTICS_DIR").is_none()
+    {
+        if let Ok(dir) = config::resolve_logs_dir() {
+            let diagnostics_dir = dir.join("diagnostics");
+            if let Err(error) = std::fs::create_dir_all(&diagnostics_dir) {
+                studio_log(
+                    app,
+                    &sink,
+                    &format!("could not create diagnostics directory: {error}"),
+                );
+            }
+            cmd.env("TRIASTASIS_DIAGNOSTICS_DIR", diagnostics_dir);
+        }
+    }
     cmd.arg("--models")
         .arg(&cfg.models_dir)
         .arg("--gpu")

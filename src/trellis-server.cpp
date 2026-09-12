@@ -548,7 +548,7 @@ int main(int argc, char** argv) {
                     image.content.size(), p.seed, p.cascade ? std::to_string(p.hr_res).c_str() : "512",
                     p.birefnet < 0 ? "auto" : (p.birefnet ? "birefnet" : "threshold"), p.xatlas ? "xatlas" : "box");
             try {
-                int rc = trellis_run(p);
+                int rc = trellis_run(p, request_id);
                 if (rc == 0) glb = read_file_bytes(p.output);
                 run_ok = rc == 0 && !glb.empty();
             } catch (const std::exception& e) {

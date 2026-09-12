@@ -5,4 +5,5 @@
 // `p.image` into a textured GLB at `p.output`. Returns 0 on success. All
 // behavior (resolution, bg removal, texture, guidance, ...) comes from `p`,
 // which trellis-cli / trellis-server populate via trellis::parse_args.
-int trellis_run(const trellis::TrellisParams& p);
+// Optional ID is diagnostic correlation only; it does not enter inference/RNG.
+int trellis_run(const trellis::TrellisParams& p, const std::string& diagnostic_request_id = {});
