@@ -2,6 +2,8 @@
 
 Start here when looking for the next research task. This is a list of testable
 questions, not a promise of features or a list of confirmed upstream defects.
+Record useful outcomes in the [findings index](findings.md), with a short
+reference to the detailed report and an explicit adoption status.
 See [the pipeline and upstream research](trellis-material-research.md) and
 [diagnostic collection](material-diagnostics.md) for context.
 
@@ -11,6 +13,13 @@ synthetic validation in project documentation. Each experiment should preserve
 its input hashes, runtime build, exact settings, comparison invariants and limits.
 
 ## Current focus
+
+Priority update (2026-09-13): the decoder investigation is parked with its
+findings preserved. Full-pipeline Q4 versus mixed Q4/Q8 time/memory testing,
+including target resolutions and smaller GPUs, is deferred to final evaluation.
+The user prefers exploring other potential pipeline improvements first. No new
+experiment is selected yet; R01 and R03–R11 remain available for prioritization.
+The R02 account below records completed work and does not schedule its next run.
 
 **R02 — isolate the material striping** is the only selected follow-up. The first
 spatial tracing step is complete: direct and projected material samples were
@@ -59,15 +68,76 @@ original full-precision weights or a full reference-decoder parity test. A
 backend-aware head calculation approached native output within 0.000248 on the
 scaled channel range; numerical parity is approximate, not bit-exact.
 
-The next bounded R02 step is a decoder-only precision comparison using the
-captured latent and subdivision masks, with flow, geometry and sampling fixed.
-Verify model provenance before comparing higher-precision weights. Quantization
-is a testable candidate, not an established cause; earlier decoder operations
-and generated latent content remain possible contributors. Do not change defaults
-or label this an upstream defect from the present evidence.
+The decoder-only precision comparison is now complete. The Q4 and Q8 files
+match the pinned model catalog; all 66 quantized tensors reproduce exactly from
+the same release's F16 weights, and the other 218 tensors are bit-identical.
+Two Q4 replays reproduced the original raw output exactly. All replay inputs,
+subdivision masks and stage coordinates remained identical across Q4/Q8/F16.
+
+At the previously selected bright/dark pair, code-value luma contrast fell from
+0.07370 with Q4 to 0.03008 with Q8 and 0.02586 with F16 (59% and 65% reductions).
+Fixed projected surface maps across all four views showed weaker regular
+striping with Q8/F16, with some residual pattern. Q8 closely followed F16:
+RGB MAE averaged 0.00176 across the 384,086 fixed surface samples, versus
+0.05191 for Q4. These are screen-sampled differences, not perceptual or
+surface-area-weighted quality scores. The Q4 material decoder configuration is
+therefore a demonstrated contributor on this input. Weight rounding and backend
+quantized arithmetic change together; their individual effects are not isolated.
+
+The fixed-atlas export/PBR check is also complete. A research-only box rebake
+reproduced the previous Q4 geometry, normals, UVs, indices and both decoded
+textures exactly. Q4/Q8/F16 exports retained the same 139,964 triangles and
+1024-square atlas; decoded PNGs matched baked arrays. At the same saved UV pair,
+baked base-colour contrast was 0.04846 / 0.01618 / 0.01338 (Q4/Q8/F16), a 66.6%
+and 72.4% reduction. Fixed-light PBR and unlit inspection across all four views
+showed that the weaker striping survives export. Some softness and residual
+variation remain. Surface-area-weighted RGB MAE versus F16 was about 0.05115
+for Q4 and 0.00153 for Q8. These measure agreement with F16, not ground truth.
+
+The production-default sampling check is now complete too. With direct-then-
+project sampling, baked contrast at the same UV pair was 0.03190 / 0.01348 /
+0.01038 for Q4/Q8/F16, reductions of 57.7% and 67.4%. The Q4 control exactly
+matched the earlier default-sampling export. Geometry, raw decoder volumes,
+executable, encoding and renderer settings matched the project-first study.
+Four-view PBR/unlit inspection confirmed weaker striping with Q8/F16. The
+benefit therefore does not require project-first sampling on this asset.
+All precisions used the same 404,822 direct, 68,607 projected and two shell
+sample attempts, with zero missing attempts. These counts include overdraw.
+
+Q8 remains close to F16 with either sampler; some residual variation remains.
+One selected bright/dark pair cannot rank sampling methods: the broader profile
+and rendered views must also be considered. The second-asset comparison is now
+complete, using production sampling and a fixed mesh/atlas within that asset. Broader
+asset validation and memory/performance measurements are needed before a
+default change. This is not a confirmed upstream defect or evidence that every
+remaining stripe has the same cause. See the [precision study](decoder-precision-study.md).
+
+A requested resource-cost check is complete for the saved 512 decoder input.
+A Q4 bundle with only its material decoder upgraded to Q8 adds 35.9 MB of model
+payload (0.55%). Nine rotated-order decoder replays found similar resident RAM
+and overlapping decode times (Q4/Q8 medians 8.314/8.421 seconds). Whole-device
+GPU polling showed a modest increase, but background usage prevents an exact
+allocation estimate. This does not certify an unchanged minimum GPU/RAM tier:
+full-pipeline peaks, 1024 behavior and smaller target GPUs remain untested.
+No bundle or hardware recommendation changed. Details are in the precision study;
+the second-asset results are recorded below.
+
+The second asset reproduced its previous material volume exactly. Q4 replay
+also reproduced the capture's raw decoder output and decoded textures. Across
+Q4/Q8/F16, inputs, stage coordinates, geometry, UVs, PNG encoding and lighting
+matched. Area-weighted RGB MAE versus F16 was 0.04750 for Q4 and 0.00184 for Q8.
+Four-view PBR/unlit inspection showed Q4's purple tint on metal caps largely
+absent with Q8/F16; Q8 closely resembled F16. Wood colour also shifted toward
+green and some line contrast weakened. The source contains intentional grain,
+so this is not proof that all reduced variation is an improvement or that source
+fidelity improved overall. No second-asset stripe-reduction percentage is claimed.
+This supports Q8 as a candidate across two inputs, without changing defaults.
+Deferred to final evaluation: validate full-pipeline time/memory at the intended
+resolutions and smaller target GPU/backend before making a bundle or
+minimum-requirement decision. This is not the next prioritized experiment.
 
 **Deferred:** further codec experiments (R01), safeguard experiments (R03),
-runtime/overhead work (R04), and R05–R11 below. Their evidence and proposed
+runtime/overhead work (R04), and unresolved items among R05–R11 below. Their evidence and proposed
 experiments are preserved here for later; they are not running in parallel.
 
 ## Completed first experiments
@@ -98,8 +168,8 @@ the initial hypotheses must not silently become production recommendations.
 
 | ID | Topic | Isolation strategy and maintenance boundary |
 | --- | --- | --- |
-| R05 | Crisp edges: resolution, remeshing, simplification and smooth normals | Render decoded/remeshed/simplified geometry with the same material and camera. Test normal/shading changes separately from moving vertices. Prefer existing controls before native algorithm changes. |
-| R06 | Material-volume resolution versus atlas size | Hold the generated material fixed while changing atlas size; separately test material generation resolution. A larger atlas cannot restore missing generated detail. Higher resolution is not guaranteed to improve every input. |
+| R05 | Crisp edges: resolution, remeshing, simplification and smooth normals | Higher default face target rejected after user review of five textured examples: too little visible benefit for the added geometry. Stop adoption testing for that candidate; preserve existing controls. Other geometry hypotheses remain separate, unproven investigations. See [study and decision](geometry-shading-study.md). |
+| R06 | Material-volume resolution versus atlas size | Completed: five atlas assets, three material pairs, 38 controlled exports and 114 renders. Larger atlases modestly sharpen boundaries and retain striping; 1024 material helps the rock's appearance but loses penguin markings and shifts toolbox colour. Added material-stage cost is about 26–139 s. Keep defaults and automatic fallback; retain per-asset controls. See [full study](material-resolution-study.md) and F06/F07. |
 | R07 | Lighting and material interpretation | Compare the identical GLB under documented environment lighting, clay and unlit base colour. This can live in the viewer; do not compensate for bad data by globally raising exposure. |
 | R08 | Reusing preprocessing for repeated inputs | Profile loading, mask inference and crop/normalization first. Cache only with source/model/options/version keys and verify identical conditioning. An exported cutout can be cropped again; it is not automatically an equivalent cache. |
 | R09 | Separating quality controls | Test geometry, material resolution, UVs and encoding independently before changing presets. This is chiefly an app decision once backend capabilities and costs are established. |

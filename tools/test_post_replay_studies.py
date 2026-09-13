@@ -75,6 +75,22 @@ def main():
     probe_command[2] = str(root / "invalid-probe.csv")
     probe_points.write_text("0 0", encoding="utf-8")
     assert run_probe().returncode == 2 and not Path(probe_command[2]).exists()
+    geometry = root / "geometry"
+    geometry_command = [str(args.replay.resolve()), str(dump), str(root / "unused.glb"),
+        "--no-remesh", "--no-weld", "--no-fill", "--no-bake", "--faces", "10",
+        "--geometry-study", str(geometry)]
+    result = subprocess.run(geometry_command, env=env, capture_output=True, timeout=30)
+    assert result.returncode == 0, result.stderr.decode(errors="replace")
+    expected = struct.pack("<2i", 3, 1) + vertices.tobytes() + struct.pack("<3i", 0, 1, 2)
+    for stage in ("before", "qem"):
+        assert (geometry / f"{stage}.bin").read_bytes() == expected
+    # The production post-QEM hole fill closes the single triangle's boundary.
+    cleaned = (geometry / "cleanup.bin").read_bytes()
+    assert struct.unpack("<2i", cleaned[:8]) == (3, 2) and len(cleaned) == 68
+    assert cleaned[8:44] == vertices.tobytes()
+    assert subprocess.run(geometry_command, env=env, capture_output=True, timeout=30).returncode == 2
+    assert (geometry / "before.bin").read_bytes() == expected
+    assert not (root / "unused.glb").exists()
     print(f"Replay studies passed; synthetic outputs: {root}")
 
 

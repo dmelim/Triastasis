@@ -5,6 +5,7 @@
 #include "tri_bvh.h"
 #include "trellis_diagnostics.h"
 #include <climits>
+#include <stdexcept>
 #include <cstdio>
 #include <cstdlib>
 #include <cmath>
@@ -1702,6 +1703,73 @@ BakedMesh uv_box_project(const std::vector<float>& verts, int V, const std::vect
     printf("  uv_box_project: atlas %dx%d, Vo=%d Fo=%d (6 planes, %d re-bucketed, %d occluded-layer)\n",
            T, T, Vo, Fo, reassigned, layered);
     return out;
+}
+
+// Deliberately isolated research path; mirrors the box raster/dilation rules.
+
+void rebake_fixed_box_atlas(BakedMesh& out, const std::vector<int>& fgroup,
+                           const VoxelPbr& vox) {
+    const int T = out.T, Fo = (int)out.faces.size()/3;
+    if (!vox.ok() || T < 12 || T > 16384 || out.verts.empty() ||
+        out.verts.size()%3 || out.faces.size()%3 || !Fo ||
+        out.uv.size() != out.verts.size()/3*2 || fgroup.size() != size_t(Fo) ||
+        vox.feats->size() != vox.coords->size()*6)
+        throw std::runtime_error("invalid fixed box atlas");
+    for (int i : out.faces) if (i < 0 || size_t(i) >= out.verts.size()/3)
+        throw std::runtime_error("fixed atlas face index out of range");
+    for (int g : fgroup) if (g < 0 || g >= 12)
+        throw std::runtime_error("fixed atlas bucket out of range");
+    for (float v : out.verts) if (!std::isfinite(v) || std::fabs(v)>2)
+        throw std::runtime_error("invalid fixed atlas position");
+    for (float v : out.uv) if (!std::isfinite(v) || v<0 || v>1)
+        throw std::runtime_error("invalid fixed atlas UV");
+    std::unique_ptr<VoxSampler> vs(new VoxSampler(vox));
+    // 4) depth-tested rasterization: on residual within-bucket overlap the
+    // surface nearest the projection direction owns the texel (outermost wins),
+    // instead of whatever face happened to rasterize last.
+    out.T = T; out.base.assign((size_t)T*T*4,0); out.mr.assign((size_t)T*T*4,0);
+    std::vector<uint8_t> mask((size_t)T*T,0);
+    std::vector<float> zbuf((size_t)T*T, -1e30f);
+    auto u8 = [](float v){ v=v*255.f; return (uint8_t)(v<0?0:(v>255?255:v)); };
+    for (int f = 0; f < Fo; ++f) {
+        int idx[3] = { out.faces[3*f], out.faces[3*f+1], out.faces[3*f+2] };
+        const int gax = (fgroup[f]%6)/2;
+        const float gsign = (fgroup[f]%2 == 0) ? 1.f : -1.f;
+        float px[3], py[3], pz[3];
+        for (int j=0;j<3;++j){ px[j]=out.uv[2*idx[j]]*T; py[j]=out.uv[2*idx[j]+1]*T;
+            pz[j]=gsign*out.verts[3*idx[j]+gax]; }
+        int x0=(int)std::floor(std::min({px[0],px[1],px[2]})), x1=(int)std::ceil(std::max({px[0],px[1],px[2]}));
+        int y0=(int)std::floor(std::min({py[0],py[1],py[2]})), y1=(int)std::ceil(std::max({py[0],py[1],py[2]}));
+        x0=std::max(0,x0); y0=std::max(0,y0); x1=std::min(T-1,x1); y1=std::min(T-1,y1);
+        float d=(py[1]-py[2])*(px[0]-px[2])+(px[2]-px[1])*(py[0]-py[2]); if (std::fabs(d)<1e-9f) continue;
+        for (int y=y0;y<=y1;++y) for (int x=x0;x<=x1;++x){
+            float fx=x+0.5f, fy=y+0.5f;
+            float w0=((py[1]-py[2])*(fx-px[2])+(px[2]-px[1])*(fy-py[2]))/d;
+            float w1=((py[2]-py[0])*(fx-px[2])+(px[0]-px[2])*(fy-py[2]))/d;
+            float w2=1-w0-w1;
+            if (w0<-0.001f||w1<-0.001f||w2<-0.001f) continue;
+            size_t t=(size_t)y*T+x;
+            const float dep = w0*pz[0]+w1*pz[1]+w2*pz[2];
+            if (mask[t] && dep < zbuf[t]) continue;
+            float s[6];
+            bool have = false;
+            if (vs) {
+                float p[3];
+                for (int a = 0; a < 3; ++a)
+                    p[a] = w0*out.verts[3*idx[0]+a] + w1*out.verts[3*idx[1]+a] + w2*out.verts[3*idx[2]+a];
+                have = vs->sample(p, s);
+            }
+            if (!have) continue;
+            zbuf[t] = dep;
+            out.base[4*t+0]=u8(s[0]); out.base[4*t+1]=u8(s[1]); out.base[4*t+2]=u8(s[2]); out.base[4*t+3]=u8(s[5]);
+            out.mr[4*t+0]=0; out.mr[4*t+1]=u8(s[4]); out.mr[4*t+2]=u8(s[3]); out.mr[4*t+3]=255;
+            mask[t]=1;
+        }
+    }
+    // 5) seam dilation
+    diagnostics::atlas("box_before_fill", out.base, out.mr, &mask);
+    dilate_full(out.base, out.mr, mask, T);
+    diagnostics::atlas("box_after_fill", out.base, out.mr);
 }
 
 } // namespace trellis

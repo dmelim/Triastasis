@@ -49,6 +49,11 @@ struct VoxelSampleProbe {
 std::vector<VoxelSampleProbe> probe_voxel_samples(
     const VoxelPbr& vox, const std::vector<std::array<float,3>>& points);
 
+// Research only: rebake an existing native box atlas without changing any
+// geometry/UV data. groups contains the original 0..11 bucket for each face.
+void rebake_fixed_box_atlas(BakedMesh& mesh, const std::vector<int>& groups,
+                           const VoxelPbr& vox);
+
 // Vertex-clustering decimation: snap verts to a `grid`-cell lattice over [-0.5,0.5]^3, average
 // position + pbr per cell, drop degenerate faces. Reduces a dense voxel-surface mesh enough for
 // xatlas. Outputs new verts/faces/pbr6 (in place via the out vectors).

@@ -17,6 +17,8 @@ guide.
 
 ## Implementation details
 
+- [Research findings](findings.md) keeps short references to useful discoveries,
+  their tradeoffs and the decision on whether to adopt them.
 - [Research backlog](research-backlog.md) is the starting point for future runtime,
   material-quality and performance investigations, with controlled experiments
   and their current status.
@@ -27,6 +29,11 @@ guide.
   upstream appearance reports, and the experiments needed to isolate dark materials.
 - [Material diagnostics](material-diagnostics.md) explains opt-in persistent
   runtime measurements and offline analysis.
+- [Decoder precision study](decoder-precision-study.md) records the controlled
+  Q4/Q8/F16 comparison, observed striping reduction and remaining validation.
+- [Material resolution study](material-resolution-study.md) separates generated
+  material resolution from atlas size across controlled exports, with visual
+  findings, timing and storage costs, and the decision to retain defaults.
 
 
 For current implementation behavior, use the application and native runtime

@@ -188,6 +188,48 @@ Generated JSONL filenames are ignored by Git. No records are uploaded.
 
 ## What is measured
 
+For isolated decoder research, build `trellis-tex-decode-replay` and run:
+
+```powershell
+cmake --build build --target trellis-tex-decode-replay
+build/trellis-tex-decode-replay.exe models/tex_dec.gguf out/capture out/replay 0
+```
+
+It consumes the `input.coords.i32`, already-denormalized `input.latent.f32` and
+four `guide-<stage>.u8` files from the opt-in texture trace. The output directory
+must be new; it stores `output.raw.f32` (six channels before scale/clamp) and
+`replay.json` with model-load/decode wall times. Capture stdout/stderr to a
+separate log. The optional GPU argument defaults to 0; -1 selects CPU, and an
+unavailable requested GPU is an error. This is a trusted local research format,
+not an import API or supported model checkpoint format.
+
+Set `TRELLIS_TEX_TRACE_DIR` to a separate fresh directory to retain replay input
+and expanded-coordinate evidence. `tools/compare_tex_decode_replays.py --help`
+documents comparison against a reference trace and saved corner/point arrays;
+it rejects changed inputs or coordinate order before comparing values. Model
+hashes and tensor provenance must be checked separately, as in the
+[precision study](decoder-precision-study.md). Replaying with a different decoder
+does not require replacing the application's installed models.
+
+For the subsequent export check, `tools/prepare_fixed_box_replay.py --input
+out/reference.glb --output out/fixed-box.bin` extracts an existing native 4x3 box
+atlas. Then run `post-replay out/post.bin out/rebaked.glb --fixed-box-mesh
+out/fixed-box.bin --material-raw out/trace/output.raw.f32 --project-first`.
+The last flag selects the earlier research sampling variant; omit it to use
+direct-then-project sampling. This path builds only the original mesh BVH and
+rebakes the fixed layout, skipping remesh/decimation/unwrap. Outputs include PNG
+GLB and `.base.rgba`/`.mr.rgba` arrays and must not already exist. Verify the raw
+decoder coordinate order against the dump before use: this trusted format has
+no embedded model/coordinate fingerprint. Only native box atlases are supported.
+
+`fixed_box_settings` reports the effective atlas, face count and sampling method;
+the earlier `replay_settings` also contains ordinary requested defaults that the
+fixed path skips. `source_dump_voxel_pbr` describes the original dump;
+`fixed_replay_voxel_pbr` describes the selected decoder output after scale/clamp.
+Create `TRIASTASIS_DIAGNOSTICS_DIR` before launching to store JSONL independently
+of captured stderr. Keep model/geometry hashes and rendering settings with each
+experiment as described in the [precision study](decoder-precision-study.md).
+
 | Event family | Observations | Interpretation |
 | --- | --- | --- |
 | `run_start`, `correlation`, `run_end` | Unique run ID, sequence, monotonic elapsed time, build commit/dirty flag/backend/version, seed and request correlation | `completed` means the native GLB writer returned success. `failed`, `output_failed`, `incomplete`, and background/replay-only runs are distinct. It is not proof that the client imported or saved the result. |

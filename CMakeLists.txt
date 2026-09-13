@@ -280,6 +280,10 @@ add_executable(trellis-decode-replay src/decode_replay.cpp)
 target_link_libraries(trellis-decode-replay PRIVATE trellis_core)
 set_target_properties(trellis-decode-replay PROPERTIES BUILD_RPATH "${GGML_RPATH}")
 
+add_executable(trellis-tex-decode-replay src/tex_decode_replay.cpp)
+target_link_libraries(trellis-tex-decode-replay PRIVATE trellis_core)
+set_target_properties(trellis-tex-decode-replay PROPERTIES BUILD_RPATH "${GGML_RPATH}")
+
 add_executable(trellis-test-ss-flow src/test_ss_flow.cpp)
 target_link_libraries(trellis-test-ss-flow PRIVATE trellis_core)
 set_target_properties(trellis-test-ss-flow PROPERTIES BUILD_RPATH "${GGML_RPATH}")

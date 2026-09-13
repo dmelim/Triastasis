@@ -10,6 +10,10 @@
 // and xatlas/default PNG variants from one final mesh, using <out> as a prefix.
 // --probe-points <xyz.txt> writes material CSV at <out>, after original-mesh
 // weld/fill and BVH construction, skipping remesh, simplification and baking.
+// --fixed-box-mesh <mesh.bin> --material-raw <raw.f32> [--project-first]
+// rebakes a prepared native box atlas directly; no remesh/decimation/unwrap.
+// --geometry-study <new-dir> --no-bake writes before.bin, qem.bin and
+// cleanup.bin: int32 vertex/face counts, float32 XYZ, int32 triangle indices.
 #include "uv_bake.h"
 #include "tri_bvh.h"
 #include "remesh_dc.h"
@@ -26,6 +30,7 @@
 #include <iomanip>
 #include <cmath>
 #include <algorithm>
+#include <stdexcept>
 
 using trellis::VoxelPbr;
 
@@ -56,7 +61,8 @@ int main(int argc, char** argv) {
     trellis::diagnostics::event("replay", {{"seed_known", false}});
     bool boxuv = false, do_weld = true, do_fill = true, do_bake = true, do_remesh = true, do_snap = true;
     bool codec_study = false, sampling_study = false;
-    std::string probe_points;
+    std::string probe_points, fixed_box_mesh, material_raw, geometry_study;
+    bool project_first = false;
     int band = 1;
     int faces_target = 300000, atlas = 2048, decim = -1;
     for (int i = 3; i < argc; ++i) {
@@ -74,7 +80,40 @@ int main(int argc, char** argv) {
         else if (a == "--codec-study") codec_study = true;
         else if (a == "--sampling-study") sampling_study = true;
         else if (a == "--probe-points" && i+1 < argc) probe_points = argv[++i];
+        else if (a == "--fixed-box-mesh" && i+1 < argc) fixed_box_mesh = argv[++i];
+        else if (a == "--material-raw" && i+1 < argc) material_raw = argv[++i];
+        else if (a == "--project-first") project_first = true;
+        else if (a == "--geometry-study" && i+1 < argc) geometry_study = argv[++i];
         else { fprintf(stderr, "unknown or incomplete option: %s\n", a.c_str()); return 2; }
+    }
+    if (!geometry_study.empty() && (!fixed_box_mesh.empty() || !probe_points.empty() || do_bake || decim != -1)) {
+        fprintf(stderr, "geometry study requires --no-bake and default QEM simplification\n"); return 2;
+    }
+    if (!geometry_study.empty()) {
+        if (!std::filesystem::create_directory(std::filesystem::u8path(geometry_study))) {
+            fprintf(stderr, "geometry study directory must be new\n"); return 2;
+        }
+    }
+    auto save_geometry = [&](const char* name, const std::vector<float>& v, const std::vector<int32_t>& f) {
+        if (geometry_study.empty()) return;
+        std::ofstream stream(std::filesystem::u8path(geometry_study) / name, std::ios::binary);
+        const int32_t counts[] = {static_cast<int32_t>(v.size()/3), static_cast<int32_t>(f.size()/3)};
+        stream.write(reinterpret_cast<const char*>(counts), sizeof(counts));
+        stream.write(reinterpret_cast<const char*>(v.data()), v.size()*sizeof(float));
+        stream.write(reinterpret_cast<const char*>(f.data()), f.size()*sizeof(int32_t));
+        stream.close();
+        if (!stream) throw std::runtime_error("geometry study output failed");
+    };
+    if ((!fixed_box_mesh.empty() && (material_raw.empty() || codec_study || sampling_study ||
+            !probe_points.empty() || !do_snap || !do_bake)) ||
+        (fixed_box_mesh.empty() && (!material_raw.empty() || project_first))) {
+        fprintf(stderr, "fixed box replay requires material raw and separate study settings\n"); return 2;
+    }
+    if (!fixed_box_mesh.empty()) {
+        for (const char* suffix : {"", ".base.rgba", ".mr.rgba"})
+            if (std::filesystem::exists(std::filesystem::u8path(std::string(out)+suffix))) {
+                fprintf(stderr, "fixed replay output already exists\n"); return 2;
+            }
     }
     if (faces_target <= 0 || atlas <= 0 || band <= 0 ||
         (codec_study && sampling_study) || ((codec_study || sampling_study) && !do_bake) ||
@@ -105,10 +144,11 @@ int main(int argc, char** argv) {
     fclose(f);
     trellis::diagnostics::event("replay_settings", {{"resolution", res}, {"vertices", V}, {"faces", F},
         {"material_voxels", Mv}, {"band", band}, {"target_faces", faces_target}, {"atlas_size", atlas},
-        {"remesh", do_remesh}, {"snap", do_snap}, {"weld", do_weld}, {"fill", do_fill},
-        {"bake", do_bake}, {"cluster_grid", decim}, {"uv", boxuv ? "box" : "xatlas"},
+        {"remesh", do_remesh && fixed_box_mesh.empty()}, {"snap", do_snap}, {"weld", do_weld}, {"fill", do_fill},
+        {"bake", do_bake}, {"cluster_grid", decim}, {"uv", !fixed_box_mesh.empty() ? "fixed_box" : boxuv ? "box" : "xatlas"},
+        {"fixed_box_replay", !fixed_box_mesh.empty()},
         {"codec_study", codec_study}, {"sampling_study", sampling_study}, {"probe_only", !probe_points.empty()}});
-    trellis::diagnostics::pbr("replayed_voxel_pbr", pbr6);
+    trellis::diagnostics::pbr(fixed_box_mesh.empty() ? "replayed_voxel_pbr" : "source_dump_voxel_pbr", pbr6);
     printf("loaded: V=%d F=%d voxels=%d res=%d\n", V, F, Mv, res);
 
     double t = now();
@@ -122,6 +162,48 @@ int main(int argc, char** argv) {
     trellis::TriBvh bvh = trellis::TriBvh::build(verts.data(), (int64_t)verts.size()/3,
                                                  faces.data(), (int64_t)faces.size()/3);
     printf("  [bvh %.1fs]\n", now()-t); t = now();
+    if (!fixed_box_mesh.empty()) {
+        // Trusted research arrays: int32[V,F,T], native positions, UVs, indices,
+        // then one int32 box bucket per face. Never unwrap or simplify here.
+        std::ifstream input(std::filesystem::u8path(fixed_box_mesh), std::ios::binary);
+        int32_t h[3];
+        if (!input.read(reinterpret_cast<char*>(h), sizeof(h)) || h[0]<=0 || h[1]<=0 || h[2]<12 || h[2]>16384 ||
+            std::filesystem::file_size(std::filesystem::u8path(fixed_box_mesh)) !=
+                12+uint64_t(h[0])*20+uint64_t(h[1])*16) {
+            fprintf(stderr, "invalid fixed mesh header/length\n"); return 2;
+        }
+        trellis::BakedMesh bm;
+        bm.T=h[2]; bm.verts.resize(size_t(h[0])*3); bm.uv.resize(size_t(h[0])*2); bm.faces.resize(size_t(h[1])*3);
+        std::vector<int> groups(h[1]);
+        auto read = [&](auto& a) { return bool(input.read(reinterpret_cast<char*>(a.data()), a.size()*sizeof(a[0]))); };
+        if (!read(bm.verts) || !read(bm.uv) || !read(bm.faces) || !read(groups)) return 2;
+        std::ifstream raw(std::filesystem::u8path(material_raw), std::ios::binary);
+        if (!raw.read(reinterpret_cast<char*>(pbr6.data()), pbr6.size()*sizeof(float)) || raw.peek()!=EOF) {
+            fprintf(stderr, "material raw size mismatch\n"); return 2;
+        }
+        for (auto& v : pbr6) {
+            if (!std::isfinite(v)) { fprintf(stderr, "nonfinite material value\n"); return 2; }
+            v=std::clamp(v*0.5f+0.5f, 0.f, 1.f);
+        }
+        trellis::diagnostics::event("fixed_box_settings", {{"vertices", h[0]}, {"faces", h[1]},
+            {"atlas_size", h[2]}, {"project_first", project_first}, {"codec", "png"},
+            {"remesh", false}, {"decimation", false}, {"unwrap", false}});
+        trellis::diagnostics::pbr("fixed_replay_voxel_pbr", pbr6);
+        try {
+            trellis::diagnostics::Stage stage("fixed_box_bake");
+            trellis::rebake_fixed_box_atlas(bm, groups, VoxelPbr{&coords, &pbr6, res, &bvh, project_first});
+        } catch (const std::exception& e) { fprintf(stderr, "%s\n", e.what()); return 2; }
+        bool written=trellis::write_glb_textured(out, bm.verts.data(), h[0], bm.uv.data(), bm.faces.data(), h[1],
+            bm.base.data(), bm.mr.data(), bm.T, false, -1, nullptr, false);
+        for (const auto& entry : {std::make_pair(".base.rgba", &bm.base), std::make_pair(".mr.rgba", &bm.mr)}) {
+            std::ofstream file(std::filesystem::u8path(std::string(out)+entry.first), std::ios::binary);
+            file.write(reinterpret_cast<const char*>(entry.second->data()), entry.second->size());
+            file.close(); written = bool(file) && written;
+        }
+        diagnostics.finish(written ? "completed" : "output_failed");
+        printf("fixed box bake/export %.3fs\n", now()-t);
+        return written ? 0 : 1;
+    }
     if (!probe_points.empty()) {
         std::ifstream input(std::filesystem::u8path(probe_points));
         std::vector<std::array<float,3>> points;
@@ -177,6 +259,7 @@ int main(int argc, char** argv) {
     }
     const std::vector<float>& sverts = rm.F() > 0 ? rm.verts : verts;
     const std::vector<int32_t>& sfaces = rm.F() > 0 ? rm.faces : faces;
+    save_geometry("before.bin", sverts, sfaces);
 
     std::vector<float> dv, dp; std::vector<int32_t> df;
     if (decim > 0) trellis::decimate_cluster(sverts, (int)sverts.size()/3, sfaces, (int)sfaces.size()/3, {}, decim, dv, df, dp);
@@ -185,6 +268,7 @@ int main(int argc, char** argv) {
         // match the CLI: faithful QEM port (not the old meshopt/FQMS decimate_simplify)
         trellis::decimate_qem(sverts, (int)sverts.size()/3, sfaces, (int)sfaces.size()/3, faces_target, dv, df);
         audit("decimate_qem", df);
+        save_geometry("qem.bin", dv, df);
         trellis::weld_vertices(dv, df, nullptr, 1.0f / ((float)res * 8.0f));
         audit("weld2", df);
         trellis::fill_small_holes(df);
@@ -194,6 +278,7 @@ int main(int argc, char** argv) {
         audit("drop2", df);
     }
     printf("  [decimate %.1fs]\n", now()-t); t = now();
+    save_geometry("cleanup.bin", dv, df);
     if (!do_bake) { diagnostics.finish("postprocess_only"); printf("(--no-bake) done\n"); return 0; }
 
     VoxelPbr vox{&coords, &pbr6, res, do_snap ? &bvh : nullptr};
