@@ -218,6 +218,7 @@ const candidateGallery = $("candidate-gallery");
 const candidateSummary = $("candidate-summary");
 const clearCandidatesBtn = $<HTMLButtonElement>("clear-candidates");
 const viewerMount = $("viewer-mount");
+const viewerSelectionLoading = $("viewer-selection-loading");
 const viewerReferenceToggle = $<HTMLButtonElement>("viewer-reference-toggle");
 const viewerReferencePopover = $("viewer-reference-popover");
 const viewerReferenceImage = $<HTMLImageElement>("viewer-reference-image");
@@ -2704,6 +2705,11 @@ versionDockToggle.addEventListener("click", () => {
 let recordSelectionRequest = 0;
 let pendingRecordId: string | null = null;
 
+function setViewerSelectionLoading(loading: boolean): void {
+  viewerSelectionLoading.classList.toggle("hidden", !loading);
+  viewerMount.setAttribute("aria-busy", String(loading));
+}
+
 function updateVersionSelection(): void {
   const selectedId = pendingRecordId ?? activeId;
   for (const item of versionGalleryEl.querySelectorAll<HTMLElement>(".version-item")) {
@@ -2718,10 +2724,15 @@ async function loadRecordData(rec: VersionRecord): Promise<void> {
   const request = ++recordSelectionRequest;
   pendingRecordId = rec.id;
   updateVersionSelection();
+  setViewerSelectionLoading(true);
   try {
     await modelOperations.run(async () => {
       if (request !== recordSelectionRequest) return;
       if (!(await resolveUnsavedEdits())) throw new Error("Model change cancelled; edits kept");
+      if (request !== recordSelectionRequest) return;
+      setWorkspaceMode("view");
+      // Let the preview loading state paint before parsing a large GLB.
+      await new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
       if (request !== recordSelectionRequest) return;
       await loadRecordDataNow(rec);
     });
@@ -2731,6 +2742,7 @@ async function loadRecordData(rec: VersionRecord): Promise<void> {
     if (request === recordSelectionRequest) {
       pendingRecordId = null;
       updateVersionSelection();
+      setViewerSelectionLoading(false);
     }
   }
 }

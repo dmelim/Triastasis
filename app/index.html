@@ -32,8 +32,8 @@
         #model-setup .onboarding-shell--loading .onboarding-logo { width: 88px; height: 88px; }
       }
       @media (prefers-reduced-motion: reduce) {
-        #model-setup .startup-paint-brush { animation: none; stroke-dashoffset: 0; }
-        #model-setup .startup-paint-finish { animation: none; opacity: 1; }
+        .startup-paint-brush { animation: none; stroke-dashoffset: 0; }
+        .startup-paint-finish { animation: none; opacity: 1; }
       }
     </style>
   </head>
@@ -516,6 +516,15 @@
 
       <section class="panel viewer-panel" id="view-mode-panel" role="tabpanel" aria-labelledby="mode-view">
         <div id="viewer-mount" class="viewer-mount">
+<div id="viewer-selection-loading" class="viewer-selection-loading hidden" role="status" aria-live="polite" aria-label="Loading model">
+<svg class="viewer-loading-logo" viewBox="0 0 1120 1120" aria-hidden="true" focusable="false">
+<defs><mask id="viewer-loading-paint-mask" maskUnits="userSpaceOnUse" x="0" y="0" width="1120" height="1120"><path class="startup-paint-brush" pathLength="1" d="M 349 196 L 432 125 C 483 90 548 146 560 195 C 588 273 498 341 402 369 C 326 402 261 473 263 522 C 266 579 317 620 368 606 C 452 586 480 486 549 435 C 598 392 644 395 678 439 C 720 491 673 552 630 600 C 590 663 533 739 479 736 C 422 734 397 681 433 627 C 473 569 546 554 610 558 C 698 553 750 503 813 553 C 877 601 881 661 827 717 C 791 754 744 778 706 790 C 622 828 566 886 567 939 C 568 988 620 1024 663 1004 C 699 989 724 960 750 934" fill="none" stroke="white" stroke-width="150" stroke-linecap="butt" stroke-linejoin="round"/></mask></defs>
+<image href="/brand/triastasis-mark.png" width="1120" height="1120" opacity=".085"/>
+<image href="/brand/triastasis-mark.png" width="1120" height="1120" mask="url(#viewer-loading-paint-mask)"/>
+<image class="startup-paint-finish" href="/brand/triastasis-mark.png" width="1120" height="1120" opacity="0"/>
+</svg>
+<span>Loading model…</span>
+</div>
           <div id="viewer-reference-popover" class="viewer-reference-popover hidden">
             <img id="viewer-reference-image" alt="Source image used to generate the current model" />
           </div>

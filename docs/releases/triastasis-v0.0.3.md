@@ -1,6 +1,6 @@
 # Triastasis 0.0.3
 
-Windows desktop prerelease for local image-to-3D generation.
+Windows desktop release for local image-to-3D generation.
 
 ## What's new
 
@@ -21,4 +21,4 @@ experimental ROCm. The native runtimes are unchanged from 0.0.2.
 Each package includes a `.sha256` checksum file. `SHA256SUMS` lists the checksums
 for the installer and all four runtime archives.
 
-This version is a prerelease. Portable distribution is not available.
+Portable distribution is not available.

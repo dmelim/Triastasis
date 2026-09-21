@@ -58,6 +58,8 @@ let pendingCustomPath: string | null = null;
 export type OnboardingStep = "welcome" | "credits" | "runtime" | "models";
 let onboardingStep: OnboardingStep = "welcome";
 let runtimeInstallInProgress = false;
+let runtimeInstallError: string | null = null;
+let setupRefreshVersion = 0;
 let lastReadyBundleId: string | null = null;
 let activationFeedback: { bundleId: string; state: "ready" | "failed"; message: string } | null = null;
 const automaticActivationAttempts = new Set<string>();
@@ -338,12 +340,13 @@ export async function refreshModelSetup(): Promise<void> {
   const el = section();
   if (!el || !isTauri()) return;
   if (runtimeInstallInProgress) return;
+  const refreshVersion = ++setupRefreshVersion;
   const onboardingComplete = onboardingWasCompleted();
   const [scan, runtime] = await Promise.all([
     currentScan(),
     scanRuntime().catch(() => null),
   ]);
-  if (runtimeInstallInProgress) return;
+  if (runtimeInstallInProgress || refreshVersion !== setupRefreshVersion) return;
   if (!scan || !runtime) {
     setSetupVisible(true);
     renderSetupError(el, !onboardingComplete);
@@ -357,7 +360,7 @@ export async function refreshModelSetup(): Promise<void> {
     return;
   }
   if (onboardingComplete) onboardingStep = runtime.installed ? "models" : "runtime";
-  await renderSetup(el, scan, runtime, partials, !onboardingComplete);
+  await renderSetup(el, scan, runtime, partials, !onboardingComplete, refreshVersion);
 }
 
 /** Reopen model setup when generation discovers that no model is configured. */
@@ -406,12 +409,16 @@ async function renderSetup(
   runtime: RuntimeStatus,
   partials: string[],
   showWelcome: boolean,
+  refreshVersion: number,
 ): Promise<void> {
   const snapshot = modelDownloadSnapshot();
   const catalog = snapshot.catalog.length
     ? snapshot.catalog
     : [{ id: "", displayName: "", quantization: "", fileCount: 0, totalBytes: 0 }];
   const hardware = await detectNativeHardware();
+  // A refresh may have reached this probe before the user started installation.
+  // Do not let it replace the busy screen or apply a superseded runtime scan.
+  if (runtimeInstallInProgress || refreshVersion !== setupRefreshVersion) return;
   const { views, recommendation } = buildViews(
     catalog.filter((b) => b.id),
     scan,
@@ -716,6 +723,9 @@ async function renderSetup(
     </div>`;
 
   bindActions(root, scan, runtime);
+  if (step === "runtime" && !runtime.installed && runtimeInstallError) {
+    showMessage(root, runtimeInstallError, true);
+  }
   if (step === "credits" || (!showWelcome && step === "models")) {
     bindCuratedModelTerms(root, () => void refreshModelSetup());
   }
@@ -796,6 +806,7 @@ function showMessage(root: HTMLElement, text: string, isError: boolean): void {
 function bindActions(root: HTMLElement, scan: ModelsScan, runtime: RuntimeStatus): void {
   root.querySelectorAll<HTMLButtonElement>("[data-act]").forEach((btn) => {
     btn.onclick = async () => {
+      if (runtimeInstallInProgress) return;
       const act = btn.dataset.act;
       const id = btn.dataset.id ?? "";
       if (act === "delete-incomplete" && btn.dataset.confirm !== "true") {
@@ -858,11 +869,16 @@ function bindActions(root: HTMLElement, scan: ModelsScan, runtime: RuntimeStatus
         } else if (act === "install-runtime") {
           const backend = btn.dataset.backend || runtime.recommendedBackend;
           runtimeInstallInProgress = true;
+          runtimeInstallError = null;
+          ++setupRefreshVersion;
           root.querySelectorAll<HTMLButtonElement>("[data-act]").forEach((control) => {
             control.disabled = true;
           });
           showMessage(root, `Downloading and verifying the ${runtimeLabel(backend)} runtime...`, false);
-          await installRuntime(backend);
+          const installed = await installRuntime(backend);
+          if (!installed.installed) {
+            throw new Error("Runtime installation did not finish. Please try again.");
+          }
         } else if (act === "change-location") {
           const picked = await pickDirectory(scan.modelsRoot);
           if (picked && picked !== scan.modelsRoot) {
@@ -897,7 +913,9 @@ function bindActions(root: HTMLElement, scan: ModelsScan, runtime: RuntimeStatus
           await activateManagedBundle(id);
         }
       } catch (e) {
-        showMessage(root, (e as Error).message || String(e), true);
+        const message = (e as Error).message || String(e);
+        if (act === "install-runtime") runtimeInstallError = message;
+        showMessage(root, message, true);
         refreshAfterAction = false;
       } finally {
         if (act === "install-runtime") {
