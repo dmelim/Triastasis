@@ -1,7 +1,7 @@
 # Triastasis 0.0.3
 
-Release preparation for the Windows desktop application. Packages and clean
-Windows acceptance testing are still pending.
+Prerelease of the Windows desktop application for clean-install acceptance
+testing on a second computer.
 
 ## Changes
 
@@ -15,13 +15,14 @@ Windows acceptance testing are still pending.
 Portable distribution remains deferred until its Library storage is isolated
 from installed application data.
 
-Before publication:
+Before promoting the prerelease to a full release:
 
 - Build and verify the frontend, Rust application, and Windows NSIS installer from the intended release commit.
 - Build the Vulkan, CUDA, and CUDA 12 compatibility runtime archives through the release workflow. ROCm remains experimental and is not a release blocker.
-- Publish one `SHA256SUMS` manifest covering every published package and runtime archive.
+- Record the SHA-256 hash of every published package and runtime archive in the
+  GitHub prerelease description, without separate checksum assets.
 - Verify installation, GPU recommendation, runtime and model downloads, restart persistence, generation, GLB export/import, and uninstall on a clean Windows installation.
 - Verify rapid Library selection, preservation of unsaved edits, and interrupted sweep recovery without duplicate queued jobs.
 
-The planned release tag is `triastasis-v0.0.3`; version-derived runtime downloads
-require the corresponding runtime archives to be published before distribution.
+The prerelease tag is `triastasis-v0.0.3`; version-derived runtime downloads
+require the corresponding runtime archives to be available before testing.
