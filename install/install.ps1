@@ -28,7 +28,7 @@ param(
   [string]$Dest = "$env:LOCALAPPDATA\triastasis",
   [string]$ModelsDir = "",
   [ValidatePattern('^[A-Za-z0-9][A-Za-z0-9._-]*$')]
-  [string]$ReleaseTag = "triastasis-v0.0.2",
+  [string]$ReleaseTag = "triastasis-v0.0.3",
   # Legacy opt-in: quantized weights "q8" (~10 GB) or "q4" (~6.5 GB). Default f16.
   [string]$Quant = "",
   # Legacy opt-in: download weights in the installer instead of the app.

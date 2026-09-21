@@ -1,6 +1,6 @@
 [package]
 name = "triastasis"
-version = "0.0.2"
+version = "0.0.3"
 description = "Triastasis - local image-to-3D generation UI for trellis.cpp"
 authors = ["Triastasis"]
 edition = "2021"

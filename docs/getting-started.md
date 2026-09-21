@@ -101,7 +101,7 @@ backend or ROCm cannot start.
 
 ## Portable availability
 
-Version 0.0.2 ships as a Windows installer only. Portable distribution is deferred
+Version 0.0.3 targets Windows installer distribution only. Portable distribution is deferred
 until Library storage is isolated from installed application data.
 
 ## Advanced installer options

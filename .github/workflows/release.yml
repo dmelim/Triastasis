@@ -8,7 +8,7 @@ on:
       release_tag:
         description: "Release tag to attach binaries to"
         required: true
-        default: "triastasis-v0.0.2"
+        default: "triastasis-v0.0.3"
 
 permissions:
   contents: write

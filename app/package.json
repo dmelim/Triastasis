@@ -1,7 +1,7 @@
 {
   "name": "triastasis",
   "private": true,
-  "version": "0.0.2",
+  "version": "0.0.3",
   "type": "module",
   "description": "Triastasis - desktop app for local image-to-3D generation with trellis.cpp",
   "scripts": {
