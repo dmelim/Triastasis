@@ -1,8 +1,7 @@
 name: Build & Release
 
+# Publishing reused assets must not start builds; dispatch builds explicitly.
 on:
-  release:
-    types: [published]
   workflow_dispatch:
     inputs:
       release_tag:
@@ -177,7 +176,8 @@ jobs:
         shell: bash
         run: |
           set -e
-          gh release upload "${{ steps.tag.outputs.value }}" "$ASSET" --clobber --repo "${{ github.repository }}"
+          sha256sum "$ASSET" > "$ASSET.sha256"
+          gh release upload "${{ steps.tag.outputs.value }}" "$ASSET" "$ASSET.sha256" --clobber --repo "${{ github.repository }}"
 
   # Triastasis desktop app (Tauri). Small, backend-agnostic installers that
   # the install/ scripts fetch by these stable, version-less names:
@@ -235,6 +235,7 @@ jobs:
           exe=$(find "$base/nsis" -name '*-setup.exe' | head -1)
           test -n "$exe" || { echo "NSIS installer not found under $base/nsis"; ls -R "$base" || true; exit 1; }
           cp "$exe" triastasis-windows-x64-setup.exe
+          sha256sum triastasis-windows-x64-setup.exe > triastasis-windows-x64-setup.exe.sha256
           gh release upload "${{ steps.tag.outputs.value }}" \
-            triastasis-windows-x64-setup.exe \
+            triastasis-windows-x64-setup.exe triastasis-windows-x64-setup.exe.sha256 \
             --clobber --repo "${{ github.repository }}"

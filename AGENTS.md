@@ -83,7 +83,8 @@ unless a concrete failure makes it necessary.
 - Publish one `SHA256SUMS` file covering every installer, portable package, and
   runtime archive in the release. Each line contains the lowercase SHA-256 digest
   followed by two spaces and the exact artifact filename. Do not publish separate
-  per-artifact checksum sidecars; keep the release asset list easy to navigate.
+  per-artifact checksum sidecars unless an existing installer requires them. For
+  the 0.0.3 replacement, retain matching runtime and installer `.sha256` files.
 - Use `.github/workflows/release.yml` for the Vulkan, CUDA, CUDA 12
   compatibility, and experimental ROCm runtime archives. The workflow may also
   rebuild the desktop packages; that redundant clean build is desirable.

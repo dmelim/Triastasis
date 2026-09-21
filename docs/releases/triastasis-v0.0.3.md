@@ -1,28 +1,36 @@
-# Triastasis 0.0.3
+# Triastasis 0.0.3 — replacement prerelease
 
-Prerelease of the Windows desktop application for clean-install acceptance
-testing on a second computer.
+This replacement prerelease restores the checksum files required by runtime
+installation and supplies all four runtime archives. The earlier September 21,
+2026 prerelease was incomplete and runtime setup failed because its checksum
+files were missing.
 
-## Changes
+The desktop application code is unchanged by this replacement. Existing 0.0.3
+installers use the same release URLs and can retry runtime setup once these
+assets are published. The replacement installer is rebuilt from the release
+commit; its checksum identifies the downloadable package.
+
+## Changes since 0.0.2
 
 - Library selection responds immediately while an asset loads and skips superseded queued selections.
 - The asset dock is hidden in the full-page Library view.
 - Interrupted-generation recovery excludes jobs already queued or running and guards against duplicate sweep restoration.
 - Application versions and installer defaults target `triastasis-v0.0.3`.
 
-## Packages and release gate
+## Runtime provenance and checksums
 
-Portable distribution remains deferred until its Library storage is isolated
-from installed application data.
+All four runtime ZIPs (Vulkan, CUDA, CUDA 12 compatibility, and experimental
+ROCm) are reused byte-for-byte from `triastasis-v0.0.2`. Native sources,
+third-party dependency contents, and native build configuration are unchanged.
+Each archive retains its matching `.sha256` file, as required by the existing
+desktop downloader. `SHA256SUMS` also lists every downloadable package.
 
-Before promoting the prerelease to a full release:
+Release builds are manually dispatched when binaries need rebuilding.
+Publishing a release does not automatically rebuild or overwrite reused assets.
 
-- Build and verify the frontend, Rust application, and Windows NSIS installer from the intended release commit.
-- Build the Vulkan, CUDA, and CUDA 12 compatibility runtime archives through the release workflow. ROCm remains experimental and is not a release blocker.
-- Record the SHA-256 hash of every published package and runtime archive in the
-  GitHub prerelease description, without separate checksum assets.
-- Verify installation, GPU recommendation, runtime and model downloads, restart persistence, generation, GLB export/import, and uninstall on a clean Windows installation.
-- Verify rapid Library selection, preservation of unsaved edits, and interrupted sweep recovery without duplicate queued jobs.
+## Availability
 
-The prerelease tag is `triastasis-v0.0.3`; version-derived runtime downloads
-require the corresponding runtime archives to be available before testing.
+This remains a prerelease pending clean-Windows acceptance testing. Download
+`triastasis-windows-x64-setup.exe`; the app downloads its runtime and models during
+setup. ROCm remains experimental. Portable distribution remains deferred until
+its Library storage is isolated from installed application data.
