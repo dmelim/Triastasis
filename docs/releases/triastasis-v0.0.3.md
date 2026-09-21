@@ -1,36 +1,24 @@
-# Triastasis 0.0.3 — replacement prerelease
+# Triastasis 0.0.3
 
-This replacement prerelease restores the checksum files required by runtime
-installation and supplies all four runtime archives. The earlier September 21,
-2026 prerelease was incomplete and runtime setup failed because its checksum
-files were missing.
+Windows desktop prerelease for local image-to-3D generation.
 
-The desktop application code is unchanged by this replacement. Existing 0.0.3
-installers use the same release URLs and can retry runtime setup once these
-assets are published. The replacement installer is rebuilt from the release
-commit; its checksum identifies the downloadable package.
+## What's new
 
-## Changes since 0.0.2
+- Branded startup screen and a consistent welcome experience.
+- More reliable mask previews, viewer controls, and linked asset loading.
+- Faster Library selection, with unsaved edits preserved when switching assets.
+- The asset dock stays hidden in the full-page Library view.
+- Improved interrupted-generation recovery, avoiding duplicate queued jobs.
 
-- Library selection responds immediately while an asset loads and skips superseded queued selections.
-- The asset dock is hidden in the full-page Library view.
-- Interrupted-generation recovery excludes jobs already queued or running and guards against duplicate sweep restoration.
-- Application versions and installer defaults target `triastasis-v0.0.3`.
+## Downloads
 
-## Runtime provenance and checksums
+Download `triastasis-windows-x64-setup.exe` to install Triastasis. During setup,
+the app downloads the appropriate runtime and model bundle.
 
-All four runtime ZIPs (Vulkan, CUDA, CUDA 12 compatibility, and experimental
-ROCm) are reused byte-for-byte from `triastasis-v0.0.2`. Native sources,
-third-party dependency contents, and native build configuration are unchanged.
-Each archive retains its matching `.sha256` file, as required by the existing
-desktop downloader. `SHA256SUMS` also lists every downloadable package.
+Runtime packages are available for Vulkan, CUDA, CUDA 12 compatibility, and
+experimental ROCm. The native runtimes are unchanged from 0.0.2.
 
-Release builds are manually dispatched when binaries need rebuilding.
-Publishing a release does not automatically rebuild or overwrite reused assets.
+Each package includes a `.sha256` checksum file. `SHA256SUMS` lists the checksums
+for the installer and all four runtime archives.
 
-## Availability
-
-This remains a prerelease pending clean-Windows acceptance testing. Download
-`triastasis-windows-x64-setup.exe`; the app downloads its runtime and models during
-setup. ROCm remains experimental. Portable distribution remains deferred until
-its Library storage is isolated from installed application data.
+This version is a prerelease. Portable distribution is not available.
