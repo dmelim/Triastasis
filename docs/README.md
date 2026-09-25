@@ -22,7 +22,13 @@ guide.
 - [Research backlog](research-backlog.md) is the starting point for future runtime,
   material-quality and performance investigations, with controlled experiments
   and their current status.
-
+- [Model and runtime opportunities](model-runtime-opportunities.md) assesses
+  stage-specific sampling, conditioning reuse, upstream memory fixes, graph
+  replay and other ways to get more from the existing models, with evidence
+  limits and maintenance boundaries.
+- [Model and runtime experiments](model-runtime-experiments.md) records measured
+  preparation reuse, fixed-shape material continuation, shape-step comparisons,
+  the failed memory screen, resource accounting and remaining adoption gates.
 - [Library storage and validation](library-storage.md) describes current save
   outcomes, metadata snapshots, compatibility, and regression-check commands.
 - [TRELLIS.2 material research](trellis-material-research.md) traces the model,

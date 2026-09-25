@@ -13,6 +13,11 @@ candidates; their outstanding validation is not the next scheduled task.
 
 | ID | Finding | Decision status | Evidence |
 | --- | --- | --- | --- |
+| F08 | Exact preparation reuse avoided about 38 seconds of repeated BiRefNet/DINO work; cache hits took about 1.7 ms and matched fresh conditioning exactly on one input. | Highest-priority candidate; broader validation and full-request measurements required. No production integration. | [Preparation reuse](model-runtime-experiments.md#exact-preparation-reuse). |
+| F09 | Eight shape steps took 7.847 s versus 11.111 s at twelve, with similar major structure in one fixed-view screen. Sixteen took 15.047 s without a clear visible gain. | Broaden the eight-step quality screen; retain twelve as default. | [Shape effort](model-runtime-experiments.md#shape-sampling-effort). |
+| F10 | Exact upstream streamed ConvNeXt exceeded the declared tolerance on a tiny real-weight block; the captured larger case was not run. | Hold adoption; discrepancy cause unresolved. No accepted memory/speed benefit. | [Memory screen](model-runtime-experiments.md#streamed-decoder-memory-screen). |
+| F11 | Saved-shape material continuation reproduced same-noise outputs exactly; changed noise changed materials with identical geometry and UVs. | Functional prototype passed; additional assets, full exports and native/API scope remain. | [Material continuation](model-runtime-experiments.md#fixed-shape-material-continuation). |
+| F12 | CUDA graph enablement requires a coherent backend rebuild; the bounded campaign did not run it. | Untested. No capture, correctness or speed claim. | [Graph feasibility](model-runtime-experiments.md#cuda-graphs-not-tested). |
 | F01 | Q8 material decoding reduces the measured rock striping and closely follows F16 on two tested assets. Colour also changes; the second comparison reduces purple metal tint but shifts wood greener. A useful, modest improvement, not a universal sharpness or fidelity fix. | Candidate: keep for evaluation. Full-pipeline resource validation remains before changing defaults. | [Decoder precision study](decoder-precision-study.md), including second-asset and resource checks. |
 | F02 | Replacing only the Q4 bundle's material decoder with Q8 adds 35.9 MB (0.55%) of model payload. Decoder-only timing ranges overlap; this does not establish unchanged low-end requirements. | Supports F01; validate full-pipeline peak memory and target hardware. | [Resource check](decoder-precision-study.md#mixed-bundle-resource-check). |
 | F03 | Lossless PNG preserves baked material values; WebP introduced measurable metallic/roughness error in the controlled comparison. PNG was 43% larger for that export. | Candidate: assess material-data encoding separately from base colour before adoption. | [Codec experiment and limits](research-backlog.md#completed-first-experiments), R01. |
@@ -21,7 +26,7 @@ candidates; their outstanding validation is not the next scheduled task.
 | F06 | On five fixed Q4/box-UV assets, larger atlases preserve finer boundaries but also existing striping. 1024 to 2048 cuts sampling discrepancy against 4096 by 48–53%, which is convergence, not a quality score. Decoded texture storage rises from 8 to 32 MiB; 4096 needs 128 MiB. | Keep defaults. 2048 remains a manual close-view option; no blanket 4096 upgrade supported. | [Material resolution study](material-resolution-study.md#atlas-only-results). |
 | F07 | Actual 1024 material changes appearance substantially: less green/banded rock, colour/contrast shifts on toolbox, and loss of many penguin spots. It removes measured missing sample attempts in three pairs but adds about 26–139 seconds of material-stage work. | Asset-specific option, not a universal improvement. Keep defaults and automatic fallback; rock is the strongest positive example, with residual speckling. | [Material-grid results](material-resolution-study.md#material-grid-results), including controls and timing limits. |
 
-Detailed local captures, renders and logs are retained in ignored
-`out/material-research/`; the linked reports identify their experiment folders.
+Detailed captures, renders, logs and research prototypes remain in ignored local
+output; the linked reports preserve their reusable conclusions and limitations.
 Update each decision to adopted, deferred or rejected when reviewed, preserving
-the evidence and reason. Last updated: 2026-09-13.
+the evidence and reason. Last updated: 2026-09-25.

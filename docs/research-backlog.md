@@ -14,6 +14,15 @@ its input hashes, runtime build, exact settings, comparison invariants and limit
 
 ## Current focus
 
+Priority update (2026-09-25): the bounded
+[model/runtime campaign](model-runtime-experiments.md) is complete. Preparation
+reuse is the strongest
+candidate; material-only continuation passed a functional proof. Eight shape
+steps needs broader quality coverage. The streamed decoder block failed its
+numerical gate, and CUDA graphs remain untested pending a coherent build.
+No production defaults changed. The September 13 material-decoder deferral below
+remains in effect; its selected-follow-up wording describes that earlier phase.
+
 Priority update (2026-09-13): the decoder investigation is parked with its
 findings preserved. Full-pipeline Q4 versus mixed Q4/Q8 time/memory testing,
 including target resolutions and smaller GPUs, is deferred to final evaluation.
