@@ -5,6 +5,16 @@ Research results: 2026-09-25. This records the bounded follow-up to the
 sequentially with independent review between candidates. No candidate was
 integrated into the application or adopted as a production default.
 
+Review follow-up (2026-09-29): the
+[execution research direction](runtime-execution-research-direction.md) records
+the Astra (high reasoning) / Opus 5.5 (medium reasoning) discussion, retained
+BiRefNet loading/inference timings, cache payload breakdown, patch/merge function
+identity and the diagnostic controls. The original
+measurements and failed numerical criterion below remain unchanged; the failure
+does not establish an upstream defect. Subsequent GPU comparisons, the CPU
+reference and retained-stage analysis are recorded in the
+[September 29 results](runtime-execution-research-direction.md#september-29-results).
+
 ## Decisions at a glance
 
 | Candidate | Result | Decision |
@@ -167,10 +177,12 @@ large-decoder memory savings. They exclude the resident model and are not total
 VRAM measurements. The larger captured-input comparison was intentionally not
 launched, and the tolerance was not relaxed.
 
-The failing value indices were not saved, so 128 failures do not prove a single
-bad voxel row. Tail-chunk behavior, numerical kernel differences and indexing
-remain hypotheses rather than established causes. Hold adoption pending a
-focused diagnosis; do not generalize this result to every upstream memory fix.
+The September 25 run did not save failing indices, so that run alone did not
+establish a single affected row. The [September 29 follow-up](runtime-execution-research-direction.md#september-29-results)
+located all failures in the tail row and reproduced the discrepancy in the
+baseline with matched chunk boundaries. Hold adoption pending the remaining
+partition and decoder checks; do not generalize this result to every upstream
+memory fix.
 
 ## Fixed-shape material continuation
 

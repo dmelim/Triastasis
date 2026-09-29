@@ -29,6 +29,9 @@ guide.
 - [Model and runtime experiments](model-runtime-experiments.md) records measured
   preparation reuse, fixed-shape material continuation, shape-step comparisons,
   the failed memory screen, resource accounting and remaining adoption gates.
+- [Runtime execution research direction](runtime-execution-research-direction.md)
+  records the Astra/Opus discussion, September 29 partition and accuracy results,
+  retained stage counts, BiRefNet profiling questions and remaining controls.
 - [Library storage and validation](library-storage.md) describes current save
   outcomes, metadata snapshots, compatibility, and regression-check commands.
 - [TRELLIS.2 material research](trellis-material-research.md) traces the model,

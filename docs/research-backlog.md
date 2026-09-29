@@ -14,6 +14,20 @@ its input hashes, runtime build, exact settings, comparison invariants and limit
 
 ## Current focus
 
+Research direction (2026-09-29): investigate
+[BiRefNet execution efficiency and chunk-dependent decoder numerics](runtime-execution-research-direction.md).
+The Astra (high reasoning) / Opus 5.5 (medium reasoning) discussion established
+the timing split and refined the controls. The [September 29 results](runtime-execution-research-direction.md#september-29-results)
+show bitwise baseline/candidate agreement at matched 512+1 partitions and a
+split-tail accuracy anomaly in both implementations on the synthetic block.
+Start with the outstanding one-chunk candidate control (D), then the tail-size
+sweep (S3). Consider a separately gated large-partition block comparison after
+S3. BiRefNet timing follows only in an idle window with the historical two
+backend threads, below-normal priority, four logical CPUs and no aggregate CPU
+hard cap; retain other resource safeguards. These remain native investigations
+with an upstream-compatible maintenance goal, not permission to change defaults.
+The September 25 results and earlier material-decoder deferral remain intact.
+
 Priority update (2026-09-25): the bounded
 [model/runtime campaign](model-runtime-experiments.md) is complete. Preparation
 reuse is the strongest
