@@ -31,7 +31,8 @@ guide.
   the failed memory screen, resource accounting and remaining adoption gates.
 - [Runtime execution research direction](runtime-execution-research-direction.md)
   records the Astra/Opus discussion, September 29 partition and accuracy results,
-  retained stage counts, large-partition checks, BiRefNet profiling results and
+  retained stage counts, large-partition checks, BiRefNet profiling and the
+  September 30 bitwise-equal interpolation speedup, with
   remaining adoption controls.
 - [Library storage and validation](library-storage.md) describes current save
   outcomes, metadata snapshots, compatibility, and regression-check commands.

@@ -15,11 +15,17 @@ does not establish an upstream defect. Subsequent GPU comparisons, the CPU
 reference and retained-stage analysis are recorded in the
 [September 29 results](runtime-execution-research-direction.md#september-29-results).
 
+September 30 priority update: the [paired interpolation comparison](runtime-execution-research-direction.md#september-30-interpolation-comparison)
+reduced measured BiRefNet inference from 39.467 to 6.999 seconds with identical
+mattes on one input. This is now the immediate runtime priority; caching remains
+complementary and its savings must be re-measured after the execution change.
+The September 25 measurements below remain historical results.
+
 ## Decisions at a glance
 
 | Candidate | Result | Decision |
 | --- | --- | --- |
-| Exact preparation reuse | Recomputed and cached conditioning matched exactly; measured preparation fell from about 38 seconds to about 1.7 milliseconds on cache hits. | Highest-priority integration candidate, after broader input coverage and paired full-request measurements. |
+| Exact preparation reuse | Recomputed and cached conditioning matched exactly; measured preparation fell from about 38 seconds to about 1.7 milliseconds on cache hits in the original runtime. | Complementary candidate after the September 30 interpolation improvement; broader input coverage and paired full-request measurements remain. |
 | Fixed-shape material continuation | Same-noise material replay was exact; different noise changed materials while geometry and UVs stayed identical. | Functional prototype passed; application integration and full export validation remain. |
 | Eight shape steps | Sampling took 7.847 seconds versus 11.111 at twelve steps, without an obvious major regression in the inspected views of one asset. | Broader quality evaluation candidate; retain twelve as the default. |
 | Sixteen shape steps | Sampling took 15.047 seconds; no clear visual improvement in this case. | No evidence supporting a default increase. |
@@ -290,8 +296,10 @@ GPU execution. This did not affect the earlier shape-step comparison.
 4. **Memory streaming:** the [partition follow-up](runtime-execution-research-direction.md#second-session-partition-results)
    reproduced the tiny discrepancy in the baseline and passed a large synthetic
    block comparison, but the subsequent full 512 decoder comparison failed.
-   Isolate that divergence before upstream adoption; preserve both failures and
-   the successful controls as separate evidence.
+   The [native 256 MiB control](runtime-execution-research-direction.md#september-30-native-partition-control)
+   subsequently reproduced all six candidate arrays exactly. Park adoption pending
+   a concrete memory need and broader quality/memory evidence; preserve the failed
+   default-budget comparison and successful controls separately.
 5. **CUDA graphs:** reserve a separate coherent-build window, then run a bounded
    correctness and actual-capture comparison.
 

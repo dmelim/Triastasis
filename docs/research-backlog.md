@@ -24,14 +24,19 @@ The [second-session follow-up](runtime-execution-research-direction.md#second-se
 completed D, S3 and a bitwise-equal large synthetic partition comparison.
 [BiRefNet profiling](runtime-execution-research-direction.md#birefnet-profiling-results)
 identified CPU interpolation as about 83% of measured inference time under the
-historical CPU configuration. Prioritize a focused locality prototype after
-upstream review, with output parity and resource checks. The subsequent
+historical CPU configuration. The [September 30 interpolation change](runtime-execution-research-direction.md#september-30-interpolation-comparison)
+subsequently reduced paired inference from 39.467 to 6.999 seconds with identical
+mattes. The small native patch passed actual-source verification and remains
+local; broader inputs and packaged-runtime checks precede shipping. This takes
+priority over preparation caching, whose savings need re-measurement. The earlier
 [full 512 decoder comparison](runtime-execution-research-direction.md#full-512-resolution-decoder-comparison)
 failed: changed subdivision masks, coordinates and aligned output values keep
-streaming adoption on hold. Isolate the first feature divergence and compare matched
-partitions on retained real stage inputs before expanding validation. These remain
-native investigations with an upstream-compatible maintenance goal, not
-permission to change defaults.
+streaming adoption on hold. The [native 256 MiB control](runtime-execution-research-direction.md#september-30-native-partition-control)
+then reproduced all six streamed output arrays exactly, locating the observed
+effect in the baseline's own budget sensitivity for this fixture. Park streaming
+unless a concrete memory constraint justifies broader quality/memory evaluation.
+No streaming patch or generation-default change is adopted. Keep native changes
+small and compatible with upstream maintenance.
 The September 25 results and earlier material-decoder deferral remain intact.
 
 Priority update (2026-09-25): the bounded

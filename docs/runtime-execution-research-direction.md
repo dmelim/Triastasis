@@ -1,7 +1,7 @@
 # Research direction: execution efficiency and chunk-dependent numerics
 
-Recorded: 2026-09-29; updated 2026-09-30. Status: bounded follow-up results;
-no adopted runtime change.
+Recorded: 2026-09-29; updated 2026-09-30. Status: validated local interpolation
+change; streaming adoption remains on hold. No packaged runtime update.
 This direction follows the [September 25 experiments](model-runtime-experiments.md)
 and the subsequent review of their source, evidence and interpretation.
 
@@ -28,8 +28,9 @@ These are native/runtime investigations, not app-only features. Keep prototypes
 isolated. Profile before changing execution, and prepare any justified change
 in a form suitable for upstream review and adoption. Production integration
 requires a separate scope decision under the project's maintenance boundary.
-The follow-up used isolated prototypes; no production implementation, upstream
-submission or default change resulted.
+The initial follow-up used isolated prototypes. On September 30 the user approved
+the small native interpolation change recorded below. It is locally validated;
+no packaged runtime, upstream submission or generation-default change resulted.
 
 ## Verified facts from the review
 
@@ -361,14 +362,120 @@ with the same operation counts. Its inference took 33.787 seconds: interpolation
 (6.40%). This reinforces the dominant bucket while showing process-to-process
 variation; it does not explain the earlier fast reference/warmup passes.
 
+## September 30 interpolation comparison
+
+The user approved a small native interpolation change after isolated validation.
+A live upstream check still resolved to `c0bed38c1578f7e36e3e50c8ff1e38fa0d47583f`;
+its interpolation function matched the local original. The candidate traverses
+CHW data channel first and precomputes source indices and double fractions. It
+preserves the original four-term double expression and adds no threads.
+
+The mechanically extracted original and candidate matched bitwise in fourteen
+edge/production-shape CPU cases and a 192-channel, 256-to-1024 resize containing
+201,326,592 output values. Some small resizes were slightly slower; the large
+fixture improved from 3.897 to 0.449 seconds under the capped CPU configuration.
+Those isolated timings are not network latency.
+
+A same-binary, same-model comparison used the historical four logical CPUs,
+two backend threads, below-normal priority and no Job CPU rate cap. After one
+warmup per variant, measured passes alternated A/B/B/A/A/B with 15-second pauses.
+All eight full mattes matched each other and the previous reference bitwise on
+the tested MSVC/CUDA build;
+graph/deform/interpolation call counts stayed at 142/20/12.
+
+| Measured inference | Original | Candidate |
+| --- | --- | --- |
+| Three wall times (seconds) | 39.362, 39.301, 39.739 | 7.281, 6.932, 6.783 |
+| Mean wall time (seconds) | 39.467 | 6.999 |
+| Mean interpolation time (seconds) | 32.694 | 0.665 |
+
+This is about **5.64 times faster**, or an **82.3% reduction**, for the measured
+inference passes on one input. Original/candidate warmups took 16.922/7.347 seconds;
+the unusually faster original warmup remains unexplained. These are not complete
+generation timings, a cold-start guarantee, or validation across other compilers,
+devices and inputs. The candidate measured range is about 7.1% of its mean;
+the paired comparison shows a large benefit without claiming identical run times.
+Preparation caching remains useful for reuse, but this execution improvement is
+the immediate priority because it also benefits uncached inference.
+
+The CPU implementation is shared by the backends, but neither the absolute time
+saved nor the overall speedup has been measured on other runtime configurations.
+Bitwise equality is established on this MSVC build, not guaranteed for every
+compiler. Full-request latency and preparation-cache savings after this change
+remain unmeasured; the seven-second inference result is not a measured cache
+saving or a guaranteed lower bound. Release-facing claims require full-request
+evidence, and distribution belongs in new runtime archives for the next alpha,
+with backend validation under the clean-Windows acceptance gate.
+
+The paired process charged 270.143 seconds, including loading and pauses, bringing
+the cumulative ledger to 594.408/1,000 before subsequent validation. It exited
+cleanly with no owned survivor. Sampled private commit peaked at 5.374 GB and free
+VRAM stayed above 8,691 MiB. Whole-machine CPU averaged 24.20%, with a 71.9% peak
+and 25 of 271 samples above 40%. The guard's five-consecutive-sample stop did not
+trigger. Thus the preferred 20% target and 40% ceiling were not strict whole-system
+bounds; these readings include other applications and do not isolate owned CPU.
+Earlier CPU/GPU readiness failures launched no model and charged no GPU time.
+
+The tested function was then applied to `src/birefnet.cpp`. An isolated executable
+compiled that actual translation unit, without profiling hooks, against the
+unchanged existing libraries. Its fresh full matte again matched the reference
+bitwise: inference 6.535 seconds and model loading 0.400 seconds. This is a single
+verification pass, not another paired benchmark. The process charged 8.049 seconds,
+bringing the ledger to 602.457 before the streaming control; it left no survivor.
+Its nine CPU samples averaged 22.67% and peaked at 37.5%. The source change is
+locally validated, with no installed binary or packaged application replaced.
+
+## September 30 native partition control
+
+The native decoder was run on the retained full 512 fixture with
+`TRELLIS_BLOCK_CHUNK_MB=256`, preserving the model, input, normalization and
+other controls. Through stages 0–2 this gives the candidate's chunk capacities:
+16,384 rows at C=1024, 32,768 at C=512 and 65,536 at C=256. At stage 3 the
+native C=128 capacity remains 131,072, versus the candidate's 65,536 cap;
+this is not a claim of identical partitions throughout the decoder.
+
+The native 256 MiB result matched the prior streamed candidate bitwise in all
+six saved arrays: final coordinates, seven-channel features and four subdivision
+masks. Both had 1,416,520 final voxels, compared with 1,416,585 for the default
+1,500 MiB baseline. Stage 2 reproduced exactly the same 139 mask-bit differences
+from the default (three before row 65,536 and 136 after), producing 339,080
+active children versus 339,093. This is stronger than matching the counts alone.
+A fresh native process reproduced all six arrays exactly again. The two native
+decode times were 5.096 and 5.211 seconds under the one-core/10% Job cap; these
+are diagnostic timings, not an uncapped decoder performance comparison.
+
+The baseline's own budget change therefore reproduces the full observed
+discrepancy for this fixture; the streamed candidate adds no difference in the
+saved outputs relative to that control. The original failure against the default
+baseline remains on record. This does not identify the first divergent operation,
+prove actual CUDA dispatch, establish visual harmlessness or justify relaxing the
+original tolerance. Streaming is parked: no native streaming patch was adopted.
+Broader memory/quality validation should follow a demonstrated product need.
+Bit-exact comparison remains a diagnostic. Any future quality-and-memory
+acceptance criteria must be defined before new runs, with baseline partition
+variation considered explicitly; they must not replace a failed criterion after
+the fact.
+
+The September 30 session completed four GPU processes, charging 292.304 seconds
+and bringing the cumulative total to **616.569/1,000 seconds**. Every ledger entry
+was finalized and every guard recorded no owned survivor. New local evidence
+used about 172 MB, with 5.65 MB of build output, within the separate 512 MiB/2 GiB
+ceilings. Across 296 process-window CPU samples the whole-machine mean was 23.95%
+and peak 71.9%; all 25 samples above 40% occurred in the paired BiRefNet run.
+Final native verification and both decoder controls stayed below 40% in their
+samples. The whole-system resource caveat above remains; no strict 40% guarantee
+is inferred from these guards. Model/runtime libraries remained unchanged.
+
 ## Diagnostic sequence and remaining work
 
 The original sequence below explains the controls. D, S3, the large synthetic
 partition check, full 512 decoder comparison and BiRefNet profiling are now
-complete. The full decoder failed its numerical gate. Isolate its first feature
-divergence and compare matched partitions before expanding streaming validation.
-Actual kernel tracing remains unperformed. A focused BiRefNet interpolation
-prototype is a separate next decision.
+complete. The full decoder failed its numerical gate against the default budget;
+the September 30 control subsequently reproduced its output in the native baseline
+at 256 MiB. Streaming is parked rather than expanding validation now.
+Actual kernel tracing remains unperformed. The subsequent BiRefNet interpolation
+change passed isolated and full-matte checks as recorded above; broader input and
+packaged-runtime validation remain before shipping.
 
 ### Streamed decoder: explain the discrepancy before expanding
 
@@ -420,12 +527,13 @@ target. Retain readiness, memory, thermal, cleanup and elapsed-budget safeguards
 
 ## Resource and decision rules
 
-Across both sessions, 35 GPU-process launches charged **324.265 of 1,000
+Across the first two sessions, 35 GPU-process launches charged **324.265 of 1,000
 seconds**, including model loading, host work and in-process pauses. This is
 process-wall accounting, not kernel-active GPU time. The second session stayed
 within its two-hour elapsed window. Jobs ran sequentially; no owned process
 remained after the final repeats. About 2.015 GB of local research evidence
-remained below the 2 GiB cap. No production source or runtime dependency changed.
+remained below the 2 GiB cap. No production source or runtime dependency changed
+during those first two sessions; the September 30 native edit is recorded above.
 
 Across 347 sampled readings during second-session model processes, whole-machine
 CPU averaged 13.46%. One initial D-control sample reached 48%, followed by 26.8%
