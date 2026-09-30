@@ -20,12 +20,18 @@ The Astra (high reasoning) / Opus 5.5 (medium reasoning) discussion established
 the timing split and refined the controls. The [September 29 results](runtime-execution-research-direction.md#september-29-results)
 show bitwise baseline/candidate agreement at matched 512+1 partitions and a
 split-tail accuracy anomaly in both implementations on the synthetic block.
-Start with the outstanding one-chunk candidate control (D), then the tail-size
-sweep (S3). Consider a separately gated large-partition block comparison after
-S3. BiRefNet timing follows only in an idle window with the historical two
-backend threads, below-normal priority, four logical CPUs and no aggregate CPU
-hard cap; retain other resource safeguards. These remain native investigations
-with an upstream-compatible maintenance goal, not permission to change defaults.
+The [second-session follow-up](runtime-execution-research-direction.md#second-session-partition-results)
+completed D, S3 and a bitwise-equal large synthetic partition comparison.
+[BiRefNet profiling](runtime-execution-research-direction.md#birefnet-profiling-results)
+identified CPU interpolation as about 83% of measured inference time under the
+historical CPU configuration. Prioritize a focused locality prototype after
+upstream review, with output parity and resource checks. The subsequent
+[full 512 decoder comparison](runtime-execution-research-direction.md#full-512-resolution-decoder-comparison)
+failed: changed subdivision masks, coordinates and aligned output values keep
+streaming adoption on hold. Isolate the first feature divergence and compare matched
+partitions on retained real stage inputs before expanding validation. These remain
+native investigations with an upstream-compatible maintenance goal, not
+permission to change defaults.
 The September 25 results and earlier material-decoder deferral remain intact.
 
 Priority update (2026-09-25): the bounded
@@ -197,7 +203,7 @@ the initial hypotheses must not silently become production recommendations.
 | R08 | Reusing preprocessing for repeated inputs | Profile loading, mask inference and crop/normalization first. Cache only with source/model/options/version keys and verify identical conditioning. An exported cutout can be cropped again; it is not automatically an equivalent cache. |
 | R09 | Separating quality controls | Test geometry, material resolution, UVs and encoding independently before changing presets. This is chiefly an app decision once backend capabilities and costs are established. |
 | R10 | Same-seed postprocessing repeatability | Four identical-input runs produced different final meshes, including off/off and on/on pairs. Two instrumented runs matched upstream counts and 19 pre-bake distribution records, then differed at the recorded simplified mesh. Hash intermediate arrays before/after cleanup and simplification; compare repeated GPU QEM with a controlled CPU baseline. GPU reduction/selection ordering is a candidate, not an established cause. Both current replay and generation builds use GPU QEM when available. |
-| R11 | Matte inference cost | New timers isolate mask inference as the largest measured preprocessing cost. Profile internal inference, transfers and model reuse independently; distinguish cold process startup from a resident server. Evaluate the exact-input reuse proposed in R08 only after conditioning identity is verified. |
+| R11 | Matte inference cost | Internal profiling now attributes about 83% of three measured inferences to CPU interpolation; matte parity, timing stability and bucket coverage passed. Test a focused interpolation/locality improvement after upstream review. Fresh/reference/warmup timings vary, so preserve cold/resident distinctions and measure paired speedups. Exact preparation reuse remains complementary. See [profiling results](runtime-execution-research-direction.md#birefnet-profiling-results). |
 
 ## Experiment discipline
 

@@ -1,6 +1,7 @@
 # Research direction: execution efficiency and chunk-dependent numerics
 
-Recorded: 2026-09-29. Status: partial follow-up results; no adopted runtime change.
+Recorded: 2026-09-29; updated 2026-09-30. Status: bounded follow-up results;
+no adopted runtime change.
 This direction follows the [September 25 experiments](model-runtime-experiments.md)
 and the subsequent review of their source, evidence and interpretation.
 
@@ -10,7 +11,7 @@ This research direction was developed through a user-mediated discussion between
 **Astra (high reasoning)** and **Opus 5.5 (medium reasoning)**. Both models are
 credited for the critique, corrections and refinement of the diagnostic plan.
 Model names and reasoning settings are recorded as supplied by the user.
-This attribution concerns the discussion. September 29 experiment execution used
+This attribution concerns the discussion. September 29–30 experiment execution used
 Sol (medium reasoning), sequentially, with Astra review between stages. Completed
 work and outstanding tests are distinguished in the results below.
 
@@ -130,12 +131,12 @@ comparison.
 
 ## September 29 results
 
-The bounded follow-up completed S1 repeatability/reproduction, the S2
+The first session of the bounded follow-up completed S1 repeatability/reproduction, the S2
 matched-partition B/C comparison, an S6 dequantized-weight F64 CPU reference,
 and a read-only review of retained decoder stage counts. D (candidate as one
 chunk), S3 (tail-size sweep), S4 (intermediate comparisons) and B1 (BiRefNet
-timing) did not run. The BiRefNet instrumentation prototype built, but its
-matte-equivalence gate remains untested.
+timing) had not run at that point. Subsequent D, S3, large-partition and BiRefNet
+results are recorded in the second-session sections below.
 
 ### Synthetic block comparison
 
@@ -220,12 +221,154 @@ There was no trace of actual kernel dispatch, no accepted speed/memory benefit,
 and no production adoption. Raw evidence remains private; the aggregate results
 above support [F10](findings.md).
 
+## Second-session partition results
+
+Sequential follow-up completed the one-chunk candidate control (D), the tail
+sweep (S3), and a larger synthetic block comparison. D matched the frozen
+one-chunk baseline bitwise in both repetitions.
+
+For each tested tail, baseline and candidate with the **same partition** matched
+bitwise. Comparing a single baseline chunk against a 512-row candidate chunk
+plus a tail gave:
+
+| Tail rows | Values outside the original tolerance | Result |
+| --- | --- | --- |
+| 0 | 0 | Bitwise equal |
+| 1 | 128 | Only tail rows differ |
+| 2 | 255 | Only tail rows differ |
+| 7 | 891 | Only tail rows differ |
+| 8 | 1,019 | Only tail rows differ |
+| 9 | 1,085 | Only tail rows differ |
+| 16 | 2,016 | Only tail rows differ |
+| 32, 64, 128, 256 | 0 | Bitwise equal |
+
+Tail 32 was added after observing the initial sweep; tail 1 reused the verified
+earlier evidence. The first 512 rows matched bitwise throughout. The discrepancy
+therefore extends beyond eight rows in this fixture. These observations do not
+establish an exact dispatch boundary, behavior at untested tail sizes, or which
+kernels actually ran.
+
+### Large partitions
+
+A separately checked 80-cubed synthetic coordinate layout retained all input
+neighbors, C=128 and the same real shape-block weights. Pilot comparisons at
+N=65,537 and N=131,073 matched bitwise except for the final single-row tail.
+At N=65,537, a selected-row F64 reference gave tail relative L2 errors of 1.46%
+for the one-chunk baseline and 3.52% for the split candidate; seven sampled
+ordinary rows were identical across implementations. This is a selected-row
+reference, not an all-row accuracy distribution.
+
+At **N=511,234**, the baseline's one chunk and candidate's
+**7 x 65,536 + 52,482** layout produced bitwise-identical complete outputs in
+both repetitions. Baseline graph allocation was 1,570,510,848 bytes versus
+248,595,968 bytes for the candidate's peak chunk allocation, about 84% lower.
+These are graph allocator capacities, not whole-device peak memory. The candidate
+was slower in this restricted-CPU screen (632–670 ms versus 380–432 ms); two
+ordered repetitions do not establish production latency.
+
+This matches the retained material-stage **size**, using a synthetic spatial
+layout and shape-decoder weights. It is not a material decoder or full geometry
+decoder validation. The larger split passed its numerical gate; production
+adoption still requires broader decoder checks.
+
+## Full 512-resolution decoder comparison
+
+The successful synthetic block did **not** carry over to a saved full shape
+decoder case. The native baseline produced 1,416,585 final voxels; the isolated
+streamed candidate produced 1,416,520. The first two subdivision masks matched
+exactly, but the third differed. Stage inputs were:
+
+| Stage | Channels | Baseline input voxels | Candidate input voxels |
+| --- | --- | --- | --- |
+| 0 | 1,024 | 4,314 | 4,314 |
+| 1 | 512 | 19,644 | 19,644 |
+| 2 | 256 | 83,274 | 83,274 |
+| 3 | 128 | 339,093 | 339,080 |
+
+The candidate splits stage 2 into 65,536 + 17,738 rows. Stage 3 also uses large
+chunks and a substantial tail. Thus the observed full-decoder difference cannot
+be dismissed as the previously tested single-row-tail case. Exact early masks
+do not prove early features were identical; the first divergent operation has
+not been isolated. The candidate changed only ConvNeXt execution, preserving
+subdivision and final-head code. Input normalization was checked against the
+validated replay source before execution.
+
+The third subdivision mask differed in 139 bits: three before row 65,536 and
+136 after it. Final coordinate sets shared 1,415,560 voxels, with 1,025
+baseline-only and 960 candidate-only coordinates. Among shared coordinates,
+346,617 seven-channel feature rows changed; 2,395,915 of 9,908,920 scalar values
+exceeded the original tolerance. Maximum absolute difference was about 77.50,
+with RMS difference about 0.4903. These are raw decoder values, not a rendered
+visual-quality metric.
+
+The full-decoder numerical gate failed. The net difference of 65 voxels therefore
+understates the changed coordinate set and does not establish negligible visual
+impact. Adoption remains on hold despite the successful C=128 synthetic block.
+This comparison does not distinguish an implementation defect from the baseline's
+own response to these larger partitions; a matched-partition control on real
+stage features is still needed. The earlier matched-block equality remains
+valid within its tested scope. No 1024 or material decoder run was added.
+
+One fresh repeat of each implementation was run solely as a repeatability
+control after the failure. Coordinates, all four masks and all feature values
+were bitwise-identical within each implementation, reproducing the discrepancy.
+Restricted-CPU decode times were 5.396/5.490 seconds for the baseline and
+8.055/8.143 seconds for the candidate. These are small-sample research timings;
+neither a full-decoder speed improvement nor a full-decoder memory benefit was
+established. The single-block allocation saving must not be extrapolated to
+the whole decoder.
+
+## BiRefNet profiling results
+
+The isolated profiler used the historical configuration: two backend threads,
+four logical CPUs, below-normal priority and no aggregate CPU hard cap. It
+reused the existing research libraries. One timing-off reference, one timing-on
+warmup and three measured passes produced bitwise-identical finite mattes.
+
+The measured inference wall times were **36.499, 36.869 and 35.769 seconds**.
+Their range was 3.02% of the mean, within the predeclared 5% stability gate.
+Mean exclusive internal buckets were:
+
+| Bucket | Mean seconds | Share of internal total |
+| --- | --- | --- |
+| CPU interpolation (12 calls) | 30.045 | 82.69% |
+| Graph runner (142 calls) | 2.936 | 8.08% |
+| Whole deformable-convolution calls (20) | 0.917 | 2.52% |
+| Other named host operations | 0.316 | 0.87% |
+| Unaccounted remainder | 2.119 | 5.83% |
+
+Rounding accounts for small differences in the sum. The remainder passed the
+10% coverage gate. The graph bucket includes setup, allocation, upload, compute,
+readback and free; its compute component alone averaged about 0.538 seconds.
+The deform bucket includes the existing device synchronization, transfers and
+allocation/free. Inclusive backbone/decoder subtotals are not added again.
+Internal total excludes some final destruction overhead; measured wall time
+averaged about 0.046 seconds more.
+
+CPU interpolation is the strongest first optimization target in this fixture.
+Its channel-major data is traversed with channel as the innermost loop;
+improving locality is a source-based hypothesis to test, not a measured fix.
+This supports a focused upstream-compatible prototype before a network rewrite.
+
+The timing-off reference took 17.152 seconds and warmup 22.098 seconds. Their
+large difference from the measured runs remains unexplained. Output parity
+does not establish zero instrumentation overhead, and no optimization or
+first-request speedup was tested.
+
+A separate fresh timing-on process produced the same matte and normalized input,
+with the same operation counts. Its inference took 33.787 seconds: interpolation
+27.552 seconds, graph runner 2.747, deformable convolution 0.940 and remainder 2.158
+(6.40%). This reinforces the dominant bucket while showing process-to-process
+variation; it does not explain the earlier fast reference/warmup passes.
+
 ## Diagnostic sequence and remaining work
 
-The original sequence below explains the controls; completed portions are
-identified in [September 29 results](#september-29-results). Next comes D, then
-S3, with a separately gated large-partition comparison considered afterward.
-BiRefNet timing waits for an idle window with its historical CPU configuration.
+The original sequence below explains the controls. D, S3, the large synthetic
+partition check, full 512 decoder comparison and BiRefNet profiling are now
+complete. The full decoder failed its numerical gate. Isolate its first feature
+divergence and compare matched partitions before expanding streaming validation.
+Actual kernel tracing remains unperformed. A focused BiRefNet interpolation
+prototype is a separate next decision.
 
 ### Streamed decoder: explain the discrepancy before expanding
 
@@ -277,11 +420,33 @@ target. Retain readiness, memory, thermal, cleanup and elapsed-budget safeguards
 
 ## Resource and decision rules
 
+Across both sessions, 35 GPU-process launches charged **324.265 of 1,000
+seconds**, including model loading, host work and in-process pauses. This is
+process-wall accounting, not kernel-active GPU time. The second session stayed
+within its two-hour elapsed window. Jobs ran sequentially; no owned process
+remained after the final repeats. About 2.015 GB of local research evidence
+remained below the 2 GiB cap. No production source or runtime dependency changed.
+
+Across 347 sampled readings during second-session model processes, whole-machine
+CPU averaged 13.46%. One initial D-control sample reached 48%, followed by 26.8%
+and 9.2%; this exceeded the preferred 40% ceiling briefly despite that job's
+queried 10% cap. Whole-machine readings include other activity, and the guard's
+sustained-load stop did not trigger. BiRefNet's combined run peaked at 28.6%.
+These are sampled process-window observations, not continuous session-wide CPU
+measurements or a guarantee of a strict whole-system ceiling.
+
+The N=131,073 pilot completed successfully but exceeded an incorrectly sized
+per-launch output limit. All expected arrays were complete and independently
+checked before its result was retained with this qualification; its process
+time remained charged. The campaign-wide output ceiling was not exceeded.
+Subsequent launch limits were sized from expected array bytes.
+
 The initial review covered discussion, source inspection and a CPU indexing
 check; subsequent GPU and CPU work is recorded in [September 29 results](#september-29-results).
 The follow-up established its own 1,000-second ceiling, separate from September
-25; keep its 6.194-second charge cumulative across sessions. Before further
-execution, establish a fresh elapsed window and verify GPU availability.
+25; keep all charges cumulative across sessions, including the initial 6.194
+seconds. Before further execution, establish a fresh elapsed window and verify
+GPU availability.
 Run one job at a time with deadlines, RAM/VRAM reserves,
 limited threads and capped output. Charge failed attempts and profiling runs.
 Stop at failed controls rather than expanding the workload.

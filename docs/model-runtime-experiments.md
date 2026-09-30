@@ -287,8 +287,11 @@ GPU execution. This did not affect the earlier shape-step comparison.
    seeds, including failures and worst cases; retain twelve meanwhile.
 3. **Material continuation:** extend to additional assets and the complete export
    path, then decide whether the native/API maintenance cost fits product scope.
-4. **Memory streaming:** locate the numerical discrepancy before retrying the
-   larger captured block or considering upstream adoption.
+4. **Memory streaming:** the [partition follow-up](runtime-execution-research-direction.md#second-session-partition-results)
+   reproduced the tiny discrepancy in the baseline and passed a large synthetic
+   block comparison, but the subsequent full 512 decoder comparison failed.
+   Isolate that divergence before upstream adoption; preserve both failures and
+   the successful controls as separate evidence.
 5. **CUDA graphs:** reserve a separate coherent-build window, then run a bounded
    correctness and actual-capture comparison.
 
