@@ -309,14 +309,32 @@ static void bn(const Model& m, const std::string& p, Feat& x) {     // folded BN
 static void relu(Feat& x) { for (auto& v : x.d) if (v < 0) v = 0; }
 
 static Feat interp(const Feat& x, int Ho, int Wo) {                 // bilinear, align_corners=True
+    struct Coord { int lo, hi; double frac; };
     Feat o; o.C = x.C; o.H = Ho; o.W = Wo; o.d.resize((size_t)x.C * Ho * Wo);
     double sy = Ho > 1 ? (double)(x.H - 1) / (Ho - 1) : 0.0, sx = Wo > 1 ? (double)(x.W - 1) / (Wo - 1) : 0.0;
-    for (int ho = 0; ho < Ho; ++ho) { double fy = ho * sy; int y0 = (int)fy; int y1 = std::min(y0+1, x.H-1); double ly = fy - y0;
-        for (int wo = 0; wo < Wo; ++wo) { double fx = wo * sx; int x0 = (int)fx; int x1 = std::min(x0+1, x.W-1); double lx = fx - x0;
-            for (int ch = 0; ch < x.C; ++ch) { const float* s = &x.d[(size_t)ch*x.H*x.W];
+    // Source positions are shared by every channel; keep CHW reads and writes contiguous.
+    std::vector<Coord> ys(Ho), xs(Wo);
+    for (int ho = 0; ho < Ho; ++ho) {
+        double fy = ho * sy; int y0 = (int)fy; int y1 = std::min(y0+1, x.H-1); double ly = fy - y0;
+        ys[ho] = {y0, y1, ly};
+    }
+    for (int wo = 0; wo < Wo; ++wo) {
+        double fx = wo * sx; int x0 = (int)fx; int x1 = std::min(x0+1, x.W-1); double lx = fx - x0;
+        xs[wo] = {x0, x1, lx};
+    }
+    for (int ch = 0; ch < x.C; ++ch) {
+        const float* s = &x.d[(size_t)ch*x.H*x.W];
+        float* dst = &o.d[(size_t)ch*Ho*Wo];
+        for (int ho = 0; ho < Ho; ++ho) {
+            int y0 = ys[ho].lo, y1 = ys[ho].hi; double ly = ys[ho].frac;
+            for (int wo = 0; wo < Wo; ++wo) {
+                int x0 = xs[wo].lo, x1 = xs[wo].hi; double lx = xs[wo].frac;
                 double v = (1-ly)*(1-lx)*s[(size_t)y0*x.W+x0] + (1-ly)*lx*s[(size_t)y0*x.W+x1]
                          + ly*(1-lx)*s[(size_t)y1*x.W+x0] + ly*lx*s[(size_t)y1*x.W+x1];
-                o.d[(size_t)ch*Ho*Wo + (size_t)ho*Wo + wo] = (float)v; } } }
+                dst[(size_t)ho*Wo+wo] = (float)v;
+            }
+        }
+    }
     return o;
 }
 static Feat concat_ch(std::vector<const Feat*> fs) {               // along channel
