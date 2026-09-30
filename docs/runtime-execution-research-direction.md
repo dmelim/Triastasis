@@ -364,6 +364,11 @@ variation; it does not explain the earlier fast reference/warmup passes.
 
 ## September 30 interpolation comparison
 
+The inference-only results below were followed by a
+[controlled full-request comparison](birefnet-interpolation-findings.md).
+That brief records the later request timings and output checks; statements below
+about unmeasured full-request latency describe the earlier experiment's scope.
+
 The user approved a small native interpolation change after isolated validation.
 A live upstream check still resolved to `c0bed38c1578f7e36e3e50c8ff1e38fa0d47583f`;
 its interpolation function matched the local original. The candidate traverses

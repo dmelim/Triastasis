@@ -34,6 +34,9 @@ guide.
   retained stage counts, large-partition checks, BiRefNet profiling and the
   September 30 bitwise-equal interpolation speedup, with
   remaining adoption controls.
+- [BiRefNet interpolation findings](birefnet-interpolation-findings.md) explains
+  the small native fix, exact-output checks and subsequent controlled request
+  timings, with qualifications for presenting the results.
 - [Library storage and validation](library-storage.md) describes current save
   outcomes, metadata snapshots, compatibility, and regression-check commands.
 - [TRELLIS.2 material research](trellis-material-research.md) traces the model,
