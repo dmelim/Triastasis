@@ -15,6 +15,11 @@ Release notes under [`releases/`](releases/) describe a specific published or
 prepared version. They are not a substitute for the current getting-started
 guide.
 
+## Performance
+
+- [BiRefNet optimization report](birefnet-interpolation-findings.md) explains the
+  interpolation fix, controlled validation, 12-input app comparison and limits.
+
 ## Implementation details
 
 - [Library storage and validation](library-storage.md) describes current save
