@@ -2835,6 +2835,8 @@ function renderCandidates(): void {
     preview.className = "candidate-preview";
     if (slot.record) {
       const img = document.createElement("img");
+      img.loading = "lazy";
+      img.decoding = "async";
       const url = URL.createObjectURL(slot.record.thumb ?? slot.record.input);
       candidateUrls.push(url);
       img.src = url;
@@ -2998,6 +3000,8 @@ function renderLibraryAsset(asset: AssetGroup): HTMLElement {
   item.appendChild(itemHead);
 
   const img = document.createElement("img");
+  img.loading = "lazy";
+  img.decoding = "async";
   const url = URL.createObjectURL(representative.thumb ?? representative.input);
   libraryUrls.push(url);
   img.src = url;
@@ -3012,7 +3016,6 @@ function renderLibraryAsset(asset: AssetGroup): HTMLElement {
   item.append(img, text);
 
   const openAsset = async (): Promise<void> => {
-    selectedAssetId = asset.assetId;
     await loadRecordData(representative);
   };
   item.addEventListener("click", () => void openAsset());
@@ -3173,10 +3176,7 @@ async function refreshGalleryNow(): Promise<void> {
   const activeAsset = activeId
     ? assetGroups.find((asset) => asset.records.some((record) => record.id === activeId))
     : undefined;
-  if (activeAsset) selectedAssetId = activeAsset.assetId;
-  if (!selectedAssetId || !dockAssetGroups.some((asset) => asset.assetId === selectedAssetId)) {
-    selectedAssetId = dockAssetGroups[0]?.assetId ?? null;
-  }
+  selectedAssetId = activeAsset?.assetId ?? null;
   renderLibraryView();
 
   for (const asset of dockAssetGroups) {
@@ -3271,6 +3271,8 @@ async function refreshGalleryNow(): Promise<void> {
     item.appendChild(itemHead);
 
     const img = document.createElement("img");
+    img.loading = "lazy";
+    img.decoding = "async";
     const url = URL.createObjectURL(representative.thumb ?? representative.input);
     galleryUrls.push(url);
     img.src = url;
@@ -3284,7 +3286,6 @@ async function refreshGalleryNow(): Promise<void> {
     text.append(count, latest);
     item.append(img, text);
     const openAsset = async (): Promise<void> => {
-      selectedAssetId = asset.assetId;
       await loadRecordData(representative);
     };
     item.addEventListener("click", () => void openAsset());
@@ -3341,6 +3342,8 @@ async function refreshGalleryNow(): Promise<void> {
       item.appendChild(itemHead);
 
       const img = document.createElement("img");
+      img.loading = "lazy";
+      img.decoding = "async";
       const url = URL.createObjectURL(representative.thumb ?? representative.input);
       galleryUrls.push(url);
       img.src = url;

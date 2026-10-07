@@ -1,5 +1,6 @@
 @import "./design-system/tokens.css";
 @import "./design-system/select.css";
+@import "./design-system/scrollbars.css";
 
 * { box-sizing: border-box; }
 
@@ -198,8 +199,6 @@ output {
   padding: var(--space-5);
   overflow-y: auto;
   overscroll-behavior: contain;
-  scrollbar-color: var(--border-strong) transparent;
-  scrollbar-width: thin;
 }
 .library-mode-header {
   display: flex;
@@ -650,9 +649,9 @@ select option:disabled { color: var(--content-secondary); }
 .generate-actions .button { min-height: 42px; white-space: nowrap; }
 .sweep-btn { font-weight: 600; }
 
-#generate-mode-panel .quality-picker { margin-top: 17px; }
-#generate-mode-panel .advanced-settings { margin-top: 14px; }
-#generate-mode-panel .generate-actions { margin-top: 17px; }
+#generate-mode-panel .quality-picker { margin-top: 12px; }
+#generate-mode-panel .advanced-settings { margin-top: 10px; }
+#generate-mode-panel .generate-actions { margin-top: 12px; }
 
 /* ---- progress ---- */
 .progress { display: flex; flex-direction: column; gap: 10px; }
@@ -1130,18 +1129,8 @@ input:focus-visible,
   min-height: 96px;
   scroll-padding-inline: 12px;
   scroll-snap-type: x proximity;
-  scrollbar-color: var(--border-strong) transparent;
-  scrollbar-width: thin;
 }
 .version-gallery { min-height: 0; padding-bottom: 6px; }
-.gallery::-webkit-scrollbar { height: 8px; }
-.gallery::-webkit-scrollbar-track { background: transparent; }
-.gallery::-webkit-scrollbar-thumb {
-  border: 2px solid var(--surface-raised);
-  border-radius: var(--radius-pill);
-  background: var(--border-strong);
-}
-.gallery::-webkit-scrollbar-thumb:hover { background: var(--border-strong); }
 .gallery-empty { color: var(--content-secondary); font-size: var(--font-size-label); padding: 6px 0; }
 .asset-item {
   position: relative;
@@ -1628,11 +1617,20 @@ input:focus-visible,
 }
 
 /* ---- compact desktop ergonomics ---- */
+/* Respond to the space left by the Library and banners, not just window height.
+   Advanced controls still scroll normally when opened. */
+@media (min-width: 761px) {
+  .panel-left { container: controls / size; }
+  @container controls (max-height: 640px) {
+    #generate-mode-panel { padding-block: 12px; }
+    #generate-mode-panel > * + * { margin-top: 10px; }
+    #generate-mode-panel .dropzone { aspect-ratio: 4 / 3; }
+  }
+}
+
 .mode-panel {
   min-height: 0;
   overscroll-behavior: contain;
-  scrollbar-color: var(--border-strong) transparent;
-  scrollbar-width: thin;
 }
 .viewer-panel { min-height: 0; }
 .icon-btn { white-space: nowrap; }

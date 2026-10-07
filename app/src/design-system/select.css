@@ -111,8 +111,6 @@
   overflow-y: auto;
   overscroll-behavior: contain;
   padding: 4px;
-  scrollbar-width: thin;
-  scrollbar-color: var(--border-strong) transparent;
 }
 
 .ds-select-option {
