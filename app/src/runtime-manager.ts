@@ -2,6 +2,14 @@ import { invoke } from "./tauri";
 
 export interface RuntimeStatus {
   installed: boolean;
+  managed: boolean;
+  version: string | null;
+  versionState: "current" | "older" | "newer" | "unknown";
+  releaseUrl: string;
+  targetVersion: string;
+  updateAvailable: boolean;
+  pendingVersion: string | null;
+  pendingPath: string | null;
   backend: string;
   path: string;
   portable: boolean;
@@ -17,7 +25,12 @@ export function installRuntime(backend: string): Promise<RuntimeStatus> {
   return invoke<RuntimeStatus>("install_runtime", { backend });
 }
 
+export function updateRuntime(backend: string): Promise<RuntimeStatus> {
+  return invoke<RuntimeStatus>("update_runtime", { backend });
+}
+
 export function runtimeLabel(backend: string): string {
+  if (backend === "unknown") return "Unknown backend";
   if (backend === "cuda12") return "CUDA 12 compatibility";
   if (backend === "cuda") return "CUDA";
   if (backend === "rocm") return "ROCm";

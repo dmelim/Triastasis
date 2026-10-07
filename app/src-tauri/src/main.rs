@@ -117,6 +117,7 @@ fn get_config() -> Option<config::Config> {
 
 #[tauri::command]
 fn save_config(config: config::Config) -> Result<(), String> {
+    let _runtime_guard = runtime::operation_guard()?;
     config::save(&config)
 }
 
@@ -311,10 +312,22 @@ fn runtime_status() -> Result<runtime::RuntimeStatus, String> {
 }
 
 #[tauri::command]
-async fn install_runtime(backend: String) -> Result<runtime::RuntimeStatus, String> {
-    tauri::async_runtime::spawn_blocking(move || runtime::install(&backend))
+async fn update_runtime(backend: String) -> Result<runtime::RuntimeStatus, String> {
+    tauri::async_runtime::spawn_blocking(move || runtime::update(&backend))
         .await
-        .map_err(|error| format!("runtime installation task failed: {error}"))?
+        .map_err(|error| format!("runtime update task failed: {error}"))?
+}
+
+#[tauri::command]
+async fn install_runtime(
+    app: tauri::AppHandle,
+    backend: String,
+) -> Result<runtime::RuntimeStatus, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        runtime::install(&backend, app.state::<ServerState>().inner())
+    })
+    .await
+    .map_err(|error| format!("runtime installation task failed: {error}"))?
 }
 
 /// Full size+SHA-256 verification of one bundle inside the managed root,
@@ -639,6 +652,7 @@ fn main() {
             scan_models,
             runtime_status,
             install_runtime,
+            update_runtime,
             verify_model_bundle,
             free_disk_space,
             start_model_download,
@@ -655,6 +669,9 @@ fn main() {
         ])
         .setup(|app| {
             startup::schedule_fallback(app.handle().clone());
+            if let Err(error) = runtime::activate_pending(app.state::<ServerState>().inner()) {
+                eprintln!("[studio] pending runtime update: {error}");
+            }
             // Auto-launch the server if the installer already wrote a usable config.
             if let Some(cfg) = config::load() {
                 if !cfg.server_bin.is_empty() {

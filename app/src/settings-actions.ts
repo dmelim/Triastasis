@@ -10,3 +10,14 @@ export async function saveAndRestart(save: (() => Promise<unknown>) | null, rest
   catch (error) { throw new Error((save ? "Settings saved; restart failed: " : "Restart failed: ") + (error instanceof Error ? error.message : String(error))); }
   return save ? "Settings saved; server restart requested" : "Server restart requested";
 }
+
+export async function notifySettingsAction(
+  action: () => Promise<string>,
+  onSaved: (message: string) => void,
+  onError: (message: string) => void,
+): Promise<void> {
+  let message: string;
+  try { message = await action(); }
+  catch (error) { onError(error instanceof Error ? error.message : String(error)); return; }
+  onSaved(message);
+}

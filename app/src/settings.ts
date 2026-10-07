@@ -1,4 +1,6 @@
-import { runtimeNumbers, saveAndRestart } from "./settings-actions";
+import { runtimeDownloadError, runtimePresentation } from "./runtime-presentation";
+import { scanRuntime, updateRuntime, runtimeLabel } from "./runtime-manager";
+import { notifySettingsAction, runtimeNumbers, saveAndRestart } from "./settings-actions";
 // Settings page: shows the resolved config and lets the user adjust the bits
 // that make sense per environment. In Tauri, saving hands the config to the shell
 // (which restarts the server); in the browser we only expose host/port.
@@ -12,7 +14,7 @@ import {
   setAllowsGenerationAboveRecommendation,
   type GenerationHardwareProfile,
 } from "./hardware-profile";
-import { appVersion, invoke, isTauri, logsDir, openLogsDir, openOutputDir, pickDirectory } from "./tauri";
+import { appVersion, bindExternalLinks, invoke, isTauri, logsDir, openLogsDir, openOutputDir, pickDirectory } from "./tauri";
 import { renderModelStorage } from "./model-settings";
 import { readMigratedPreference } from "./storage-migration";
 
@@ -36,6 +38,8 @@ function escapeHtml(value: string): string {
 }
 
 let activeSettingsSection = "settings-general";
+
+export function selectRuntimeSettings(): void { activeSettingsSection = "settings-runtime"; }
 
 function bindSettingsTabs(body: HTMLElement): void {
   const tabs = Array.from(body.querySelectorAll<HTMLButtonElement>("[role=tab]"));
@@ -166,9 +170,48 @@ function section(id: string, title: string, description: string, content: string
   </section>`;
 }
 
+async function renderRuntimeUpdate(body: HTMLElement): Promise<void> {
+  const area = body.querySelector<HTMLElement>("[data-runtime-update]");
+  if (!area) return;
+  try {
+    const runtime = await scanRuntime();
+    if (!area.isConnected) return;
+    const presentation = runtimePresentation(runtime);
+    area.innerHTML = `<strong>${escapeHtml(runtimeLabel(runtime.backend))} runtime</strong>
+      <p>${escapeHtml(presentation.description)}</p>
+      <p>${escapeHtml(presentation.nextStep)}</p>
+      ${runtime.installed ? `<p>Active runtime: <code>${escapeHtml(runtime.path)}</code></p>` : ""}
+      ${runtime.pendingPath ? `<p>Staged runtime folder: <code>${escapeHtml(runtime.pendingPath)}</code></p>` : ""}
+      ${presentation.downloadLabel ? `<button type="button" class="button button--secondary" data-update-runtime>${escapeHtml(presentation.downloadLabel)}</button>` : ""}
+      ${presentation.showRelease ? `<a class="link-btn" href="${escapeHtml(runtime.releaseUrl)}" target="_blank" rel="noopener noreferrer">Open Triastasis ${escapeHtml(runtime.targetVersion)} release</a>` : ""}`;
+    bindExternalLinks(area);
+    const button = area.querySelector<HTMLButtonElement>("[data-update-runtime]");
+    if (button) button.onclick = async () => {
+      button.disabled = true;
+      button.setAttribute("aria-busy", "true");
+      button.textContent = "Downloading and verifying runtime...";
+      try {
+        await updateRuntime(runtime.backend);
+        window.dispatchEvent(new Event("runtime-status-changed"));
+        await renderRuntimeUpdate(body);
+      } catch (error) {
+        button.disabled = false;
+        button.removeAttribute("aria-busy");
+        button.textContent = "Retry runtime update";
+        let message = area.querySelector<HTMLElement>("[data-runtime-error]");
+        if (!message) { message = document.createElement("p"); message.dataset.runtimeError = ""; area.append(message); }
+        message.textContent = runtimeDownloadError(error, runtime.targetVersion);
+      }
+    };
+  } catch (error) {
+    area.textContent = `Could not check runtime version: ${(error as Error).message ?? String(error)}`;
+  }
+}
+
 export async function renderSettings(
   body: HTMLElement,
   onSaved: (message: string) => void,
+  onError: (message: string) => void,
 ): Promise<void> {
   const [cfg, hardware, version] = await Promise.all([
     loadConfig(true),
@@ -227,10 +270,11 @@ export async function renderSettings(
             "settings-runtime",
             "Runtime",
             "Configure the local server and restart it after changes.",
-            `${field("Port", "set-port", String(cfg.port), "number")}
+            `<div data-runtime-update class="settings-field-wide" aria-live="polite"></div>
+             ${field("Port", "set-port", String(cfg.port), "number")}
              <div class="settings-actions settings-field-wide">
                <button id="set-restart" class="button button--secondary" type="button">Restart server</button>
-               <button id="set-save" class="button button--primary" type="button">Save &amp; restart</button>
+               <button id="set-save" class="button button--primary" type="button">Save &amp; restart server</button>
              </div>`,
           )}
           ${section(
@@ -258,6 +302,8 @@ export async function renderSettings(
       }
     };
 
+    void renderRuntimeUpdate(body);
+
     const outputInput = body.querySelector("#set-output") as HTMLInputElement;
     (body.querySelector("#set-output-browse") as HTMLButtonElement).onclick = async () => {
       const picked = await pickDirectory(outputInput.value.trim());
@@ -271,27 +317,21 @@ export async function renderSettings(
       }
     };
 
-    const feedback = document.createElement("p");
-    feedback.setAttribute("role", "status");
-    body.querySelector(".settings-actions")!.append(feedback);
     let applying = false;
     const apply = async (saveDraft: boolean) => {
       if (applying) return;
       applying = true;
       const buttons = body.querySelectorAll<HTMLButtonElement>("#set-save, #set-restart");
       buttons.forEach((button) => { button.disabled = true; });
-      feedback.textContent = saveDraft ? "Saving settings…" : "Requesting restart…";
       try {
-        const patch = saveDraft ? {
+        await notifySettingsAction(async () => {
+          const patch = saveDraft ? {
           ...runtimeNumbers((body.querySelector("#set-gpu") as HTMLInputElement).value, (body.querySelector("#set-port") as HTMLInputElement).value),
           modelsDir: (body.querySelector("#set-models") as HTMLInputElement).value.trim(),
           outputDir: outputInput.value.trim(),
         } : null;
-        const message = await saveAndRestart(patch ? () => saveConfig(patch) : null, () => invoke("restart_server"));
-        feedback.textContent = message;
-        onSaved(message);
-      } catch (error) {
-        feedback.textContent = error instanceof Error ? error.message : String(error);
+          return saveAndRestart(patch ? () => saveConfig(patch) : null, () => invoke("restart_server"));
+        }, onSaved, onError);
       } finally {
         applying = false;
         buttons.forEach((button) => { button.disabled = false; });

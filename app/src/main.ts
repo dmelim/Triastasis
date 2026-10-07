@@ -1,3 +1,5 @@
+import { scanRuntime } from "./runtime-manager";
+import { runtimeNotice } from "./runtime-presentation";
 import { loadVersionModel } from "./store";
 import { OperationQueue } from "./operation-queue";
 import { SharedResources } from "./editing/shared-resources";
@@ -71,7 +73,7 @@ import {
   type GenerationHardwareProfile,
 } from "./hardware-profile";
 import type { ComponentAnalysis, EditHistory } from "./editing";
-import { progressDisplayMode, renderSettings, type ProgressDisplayMode } from "./settings";
+import { progressDisplayMode, renderSettings, selectRuntimeSettings, type ProgressDisplayMode } from "./settings";
 import { readMigratedPreference } from "./storage-migration";
 import type {
   EditableScene,
@@ -3556,9 +3558,10 @@ async function renderSettingsPage(): Promise<void> {
     await renderSettings(settingsBody, (message) => {
       pollHealth();
       void refreshHardwareGuardrails();
-      toast(message);
+      toast(message, "ok");
+      void showRuntimeVersionNotice();
       void renderSettingsPage();
-    });
+    }, (message) => toast(message, "err"));
   } catch (error) {
     const runtimeStatus = settingsBody.querySelector<HTMLElement>(".settings-runtime");
     settingsBody.querySelectorAll<HTMLSelectElement>("select").forEach(destroySelect);
@@ -3720,6 +3723,7 @@ listenSafely<string>("automation-import-requested", () => {
   void syncAutomationImportRequests();
 });
 listenSafely("server-restarted", () => {
+  void showRuntimeVersionNotice();
   automationJobsCache = null;
   void pollHealth();
 });
@@ -4694,6 +4698,44 @@ $("import-generation-folder-btn").addEventListener("click", async () => {
 });
 
 
+let runtimeVersionBanner: HTMLElement | null = null;
+let dismissedRuntimeNotice: string | null = null;
+let runtimeNoticeRequest = 0;
+window.addEventListener("runtime-status-changed", () => { void showRuntimeVersionNotice(); });
+
+async function showRuntimeVersionNotice(): Promise<void> {
+  const request = ++runtimeNoticeRequest;
+  if (!isTauri() || document.body.classList.contains("model-setup-active")) return;
+  try {
+    const runtime = await scanRuntime();
+    if (request !== runtimeNoticeRequest) return;
+    const notice = runtimeNotice(runtime, dismissedRuntimeNotice);
+    runtimeVersionBanner?.remove();
+    runtimeVersionBanner = null;
+    if (!notice) return;
+    const banner = document.createElement("div");
+    banner.className = "banner";
+    banner.setAttribute("role", "status");
+    const message = document.createElement("span");
+    message.textContent = notice;
+    const settings = document.createElement("button");
+    settings.className = "link-btn";
+    settings.type = "button";
+    settings.textContent = "Open runtime settings";
+    settings.onclick = () => { selectRuntimeSettings(); void openSettings(); };
+    const dismiss = document.createElement("button");
+    dismiss.className = "link-btn";
+    dismiss.type = "button";
+    dismiss.textContent = "Dismiss";
+    dismiss.onclick = () => { dismissedRuntimeNotice = notice; banner.remove(); runtimeVersionBanner = null; };
+    banner.append(message, settings, dismiss);
+    runtimeVersionBanner = banner;
+    setupBanner.insertAdjacentElement("afterend", banner);
+  } catch (error) {
+    console.warn("Could not check runtime version", error);
+  }
+}
+
 // ---- boot ----
 async function boot(): Promise<void> {
   setViewerTools(false);
@@ -4711,6 +4753,7 @@ async function boot(): Promise<void> {
     await recoverServer();
   }
   await pollHealth();
+  void showRuntimeVersionNotice();
   await syncAutomationResults();
   await syncAutomationImportRequests();
   await checkInterruptedManifests();

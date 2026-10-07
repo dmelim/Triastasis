@@ -137,22 +137,27 @@ function Download($url, $dest) {
   }
 }
 
-function Verify-ReleaseChecksum($file, $checksumUrl) {
-  $checksumFile = "$file.sha256"
+function Verify-ReleaseChecksum($file, $artifact) {
+  $checksumFile = "$file.checksums"
   try {
+    # Only the published 0.0.3 compatibility release uses individual sidecars.
+    $legacy = $ReleaseTag -eq "triastasis-v0.0.3"
+    $checksumUrl = if ($legacy) { "$RelBase/$artifact.sha256" } else { "$RelBase/SHA256SUMS" }
     Download $checksumUrl $checksumFile
-  } catch {
-    Warn "release checksum is unavailable; continuing for compatibility with older releases."
-    return
-  }
-  try {
-    $line = (Get-Content -LiteralPath $checksumFile -Raw).Trim()
-    $match = [regex]::Match($line, '^([A-Fa-f0-9]{64})\s+[*]?.+$')
-    if (-not $match.Success) { Die "invalid checksum file for $(Split-Path $file -Leaf)" }
-    $expected = $match.Groups[1].Value.ToLowerInvariant()
+    $expected = $null
+    $names = [System.Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
+    foreach ($line in (Get-Content -LiteralPath $checksumFile)) {
+      if ($line -eq "") { continue }
+      $match = [regex]::Match($line, '^([a-f0-9]{64})  ([^/\\]+)$')
+      if (-not $match.Success) { Die "invalid release checksum manifest" }
+      $name = $match.Groups[2].Value
+      if ($name.Trim() -cne $name -or -not $names.Add($name)) { Die "ambiguous release checksum manifest" }
+      if ($name -ceq $artifact) { $expected = $match.Groups[1].Value }
+    }
+    if (-not $expected) { Die "release checksum manifest does not contain $artifact" }
     $actual = (Get-FileHash -LiteralPath $file -Algorithm SHA256).Hash.ToLowerInvariant()
-    if ($actual -ne $expected) { Die "SHA-256 mismatch for $(Split-Path $file -Leaf); the download was not used" }
-    Info "verified SHA-256: $(Split-Path $file -Leaf)"
+    if ($actual -ne $expected) { Die "SHA-256 mismatch for $artifact; the download was not used" }
+    Info "verified SHA-256: $artifact"
   } finally {
     Remove-Item -LiteralPath $checksumFile -Force -ErrorAction SilentlyContinue
   }
@@ -164,7 +169,7 @@ New-Item -ItemType Directory -Force -Path $RuntimeDir | Out-Null
 $bundle = "trellis-$Backend-windows-x64.zip"
 $tmp = Join-Path $env:TEMP $bundle
 Download "$RelBase/$bundle" $tmp
-Verify-ReleaseChecksum $tmp "$RelBase/$bundle.sha256"
+Verify-ReleaseChecksum $tmp $bundle
 Expand-Archive -Path $tmp -DestinationPath $RuntimeDir -Force
 Remove-Item $tmp -Force
 $ServerBin = Join-Path $RuntimeDir "trellis-server.exe"
@@ -191,7 +196,7 @@ if ($SkipApp) {
   Log "downloading Triastasis desktop app"
   $setup = Join-Path $env:TEMP "triastasis-windows-x64-setup.exe"
   Download "$RelBase/triastasis-windows-x64-setup.exe" $setup
-  Verify-ReleaseChecksum $setup "$RelBase/triastasis-windows-x64-setup.exe.sha256"
+  Verify-ReleaseChecksum $setup "triastasis-windows-x64-setup.exe"
   Info "launching installer (silent, per-user)"
   $installer = Start-Process $setup -ArgumentList "/S" -Wait -PassThru
   if ($installer.ExitCode -ne 0) { Die "Triastasis installer exited with code $($installer.ExitCode)" }

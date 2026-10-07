@@ -154,6 +154,11 @@ pub fn start(
     state: &ServerState,
     allow_reuse: bool,
 ) -> Result<(), String> {
+    #[cfg(debug_assertions)]
+    if std::env::var("TRIASTASIS_TEST_DISABLE_NATIVE_SERVER").as_deref() == Ok("1") {
+        return Err("native server disabled for the isolated runtime download demo".into());
+    }
+    let _runtime_guard = crate::runtime::operation_guard()?;
     stop(state);
     if cfg.server_bin.is_empty() {
         return Err("server binary is not configured".to_string());
