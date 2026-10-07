@@ -2033,7 +2033,62 @@ function updateProgressFromServerLog(line: string): void {
   }
 }
 
+const queuePreviewUrls = new Map<GenerationJob, string>();
+const queuePreviewRows = new Map<GenerationJob, HTMLLIElement>();
+let queueExpanded = false;
+const queueExpandButton = $<HTMLButtonElement>("queue-expand-btn");
+queueExpandButton.addEventListener("click", () => {
+  queueExpanded = !queueExpanded;
+  renderQueuePreviews();
+});
+
+function renderQueuePreviews(): void {
+  const preview = $<HTMLImageElement>("progress-input-preview");
+  const list = $("queue-previews");
+  const live = new Set(currentJob ? [currentJob, ...generationQueue] : generationQueue);
+  const imageUrl = (job: GenerationJob): string => {
+    let url = queuePreviewUrls.get(job);
+    if (!url) { url = URL.createObjectURL(job.image); queuePreviewUrls.set(job, url); }
+    return url;
+  };
+  if (currentJob) {
+    const url = imageUrl(currentJob);
+    if (preview.getAttribute("src") !== url) preview.src = url;
+    preview.alt = `Input for ${currentJob.label}`;
+  } else preview.removeAttribute("src");
+  preview.classList.toggle("hidden", !currentJob);
+  for (const [job, row] of queuePreviewRows) {
+    if (!generationQueue.includes(job)) { row.remove(); queuePreviewRows.delete(job); }
+  }
+  for (const [job, url] of queuePreviewUrls) {
+    if (!live.has(job)) { URL.revokeObjectURL(url); queuePreviewUrls.delete(job); }
+  }
+  generationQueue.forEach((job, index) => {
+    let row = queuePreviewRows.get(job);
+    if (!row) {
+      row = document.createElement("li");
+      const image = document.createElement("img");
+      image.className = "queue-image";
+      image.alt = "";
+      image.loading = "lazy";
+      image.decoding = "async";
+      image.src = imageUrl(job);
+      const label = document.createElement("span");
+      row.append(image, label);
+      queuePreviewRows.set(job, row);
+      list.append(row);
+    }
+    row.lastElementChild!.textContent = `${index + 1}. ${job.label}`;
+  });
+  if (!generationQueue.length) queueExpanded = false;
+  queueExpandButton.classList.toggle("hidden", !generationQueue.length);
+  queueExpandButton.setAttribute("aria-expanded", String(queueExpanded));
+  $("queue-expand-label").textContent = `${queueExpanded ? "Hide" : "Show"} queued (${generationQueue.length})`;
+  list.classList.toggle("hidden", !queueExpanded);
+}
+
 function updateQueueStatus(): void {
+  renderQueuePreviews();
   const queued = generationQueue.length;
   progressQueue.textContent = queued
     ? `1 running · ${queued} queued`
@@ -2508,6 +2563,22 @@ async function runGenerationQueue(): Promise<void> {
   }
 }
 
+let queueConfirmationTimer: number | undefined;
+function showQueueConfirmation(): void {
+  window.clearTimeout(queueConfirmationTimer);
+  dropzone.querySelector(".queue-confirmation")?.remove();
+  const badge = document.createElement("span");
+  badge.className = "queue-confirmation";
+  badge.setAttribute("role", "status");
+  badge.setAttribute("aria-label", "Added to queue");
+  const icon = document.createElement("span");
+  icon.className = "queue-confirmation-icon";
+  icon.setAttribute("aria-hidden", "true");
+  badge.append(icon);
+  dropzone.append(badge);
+  queueConfirmationTimer = window.setTimeout(() => badge.remove(), 1100);
+}
+
 function doGenerate(): void {
   if (!inputImage) return;
   if (!generationBackendReady()) return;
@@ -2528,6 +2599,7 @@ function doGenerate(): void {
       label: `${inputName.replace(/\.[^.]+$/, "") || "Model"} · seed ${params.seed}`,
       autoOpen: noModelYet,
     });
+    showQueueConfirmation();
   } catch (error) {
     toast((error as Error).message, "err");
   }
@@ -2643,6 +2715,7 @@ async function doSweep(): Promise<void> {
       candidate: slot,
     });
   });
+  showQueueConfirmation();
 }
 
 sweepBtn.addEventListener("click", () => {

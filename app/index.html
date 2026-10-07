@@ -540,6 +540,7 @@
                 <span class="button-icon icon-minus" aria-hidden="true"></span>
               </button>
               <div class="progress-head">
+                <img id="progress-input-preview" class="queue-image hidden" alt="Current generation input" />
                 <div class="progress-titles">
                   <div id="progress-title" class="progress-title">Generating 3D model</div>
                   <div id="progress-queue" class="progress-queue muted">1 running</div>
@@ -556,8 +557,10 @@
                 <div class="progress-actions" id="progress-actions">
                   <button id="cancel-btn" class="button button--secondary progress-cancel" type="button">Cancel current</button>
                   <button id="clear-queue-btn" class="link-btn progress-clear" type="button">Clear queued</button>
+                  <button id="queue-expand-btn" class="link-btn queue-expand hidden" type="button" aria-expanded="false" aria-controls="queue-previews"><span id="queue-expand-label">Show queued</span><span class="queue-caret" aria-hidden="true"></span></button>
                 </div>
               </div>
+              <ol id="queue-previews" class="queue-previews hidden" aria-label="Waiting generation jobs"></ol>
             </div>
             <button id="progress-chip" class="progress-chip hidden" type="button" aria-expanded="false" aria-controls="progress-card" title="Expand job card.">
               <span id="progress-chip-title" class="progress-chip-title"></span>
