@@ -14,24 +14,32 @@ its input hashes, runtime build, exact settings, comparison invariants and limit
 
 ## Current focus
 
+October 3 update: the [consolidated BiRefNet report](birefnet-interpolation-findings.md)
+is the current entry point. The interpolation fix passed controlled intermediate
+parity checks and a 12-input app comparison with no obvious new major preview
+regressions. Release-package and backend validation remain. The dated investigation
+below preserves how priorities evolved; caching is complementary and streaming is
+parked.
+
 Research direction (2026-09-29): investigate
-[BiRefNet execution efficiency and chunk-dependent decoder numerics](runtime-execution-research-direction.md).
+[BiRefNet execution efficiency and chunk-dependent decoder numerics](archive/runtime-research/runtime-execution-research-direction.md).
 The Astra (high reasoning) / Opus 5.5 (medium reasoning) discussion established
-the timing split and refined the controls. The [September 29 results](runtime-execution-research-direction.md#september-29-results)
+the timing split and refined the controls. The [September 29 results](archive/runtime-research/runtime-execution-research-direction.md#september-29-results)
 show bitwise baseline/candidate agreement at matched 512+1 partitions and a
 split-tail accuracy anomaly in both implementations on the synthetic block.
-The [second-session follow-up](runtime-execution-research-direction.md#second-session-partition-results)
+The [second-session follow-up](archive/runtime-research/runtime-execution-research-direction.md#second-session-partition-results)
 completed D, S3 and a bitwise-equal large synthetic partition comparison.
-[BiRefNet profiling](runtime-execution-research-direction.md#birefnet-profiling-results)
+[BiRefNet profiling](archive/runtime-research/runtime-execution-research-direction.md#birefnet-profiling-results)
 identified CPU interpolation as about 83% of measured inference time under the
-historical CPU configuration. The [September 30 interpolation change](runtime-execution-research-direction.md#september-30-interpolation-comparison)
+historical CPU configuration. The [September 30 interpolation change](archive/runtime-research/runtime-execution-research-direction.md#september-30-interpolation-comparison)
 subsequently reduced paired inference from 39.467 to 6.999 seconds with identical
-mattes. The small native patch passed actual-source verification and remains
-local; broader inputs and packaged-runtime checks precede shipping. This takes
+mattes. The small native patch passed actual-source verification and is committed;
+the October 3 report records broader app inputs, while packaged-runtime checks
+still precede shipping. This takes
 priority over preparation caching, whose savings need re-measurement. The earlier
-[full 512 decoder comparison](runtime-execution-research-direction.md#full-512-resolution-decoder-comparison)
+[full 512 decoder comparison](archive/runtime-research/runtime-execution-research-direction.md#full-512-resolution-decoder-comparison)
 failed: changed subdivision masks, coordinates and aligned output values keep
-streaming adoption on hold. The [native 256 MiB control](runtime-execution-research-direction.md#september-30-native-partition-control)
+streaming adoption on hold. The [native 256 MiB control](archive/runtime-research/runtime-execution-research-direction.md#september-30-native-partition-control)
 then reproduced all six streamed output arrays exactly, locating the observed
 effect in the baseline's own budget sensitivity for this fixture. Park streaming
 unless a concrete memory constraint justifies broader quality/memory evaluation.
@@ -40,7 +48,7 @@ small and compatible with upstream maintenance.
 The September 25 results and earlier material-decoder deferral remain intact.
 
 Priority update (2026-09-25): the bounded
-[model/runtime campaign](model-runtime-experiments.md) is complete. Preparation
+[model/runtime campaign](archive/runtime-research/model-runtime-experiments.md) is complete. Preparation
 reuse is the strongest
 candidate; material-only continuation passed a functional proof. Eight shape
 steps needs broader quality coverage. The streamed decoder block failed its
@@ -208,7 +216,7 @@ the initial hypotheses must not silently become production recommendations.
 | R08 | Reusing preprocessing for repeated inputs | Profile loading, mask inference and crop/normalization first. Cache only with source/model/options/version keys and verify identical conditioning. An exported cutout can be cropped again; it is not automatically an equivalent cache. |
 | R09 | Separating quality controls | Test geometry, material resolution, UVs and encoding independently before changing presets. This is chiefly an app decision once backend capabilities and costs are established. |
 | R10 | Same-seed postprocessing repeatability | Four identical-input runs produced different final meshes, including off/off and on/on pairs. Two instrumented runs matched upstream counts and 19 pre-bake distribution records, then differed at the recorded simplified mesh. Hash intermediate arrays before/after cleanup and simplification; compare repeated GPU QEM with a controlled CPU baseline. GPU reduction/selection ordering is a candidate, not an established cause. Both current replay and generation builds use GPU QEM when available. |
-| R11 | Matte inference cost | Internal profiling now attributes about 83% of three measured inferences to CPU interpolation; matte parity, timing stability and bucket coverage passed. Test a focused interpolation/locality improvement after upstream review. Fresh/reference/warmup timings vary, so preserve cold/resident distinctions and measure paired speedups. Exact preparation reuse remains complementary. See [profiling results](runtime-execution-research-direction.md#birefnet-profiling-results). |
+| R11 | Matte inference cost | Internal profiling now attributes about 83% of three measured inferences to CPU interpolation; matte parity, timing stability and bucket coverage passed. Test a focused interpolation/locality improvement after upstream review. Fresh/reference/warmup timings vary, so preserve cold/resident distinctions and measure paired speedups. Exact preparation reuse remains complementary. See [profiling results](archive/runtime-research/runtime-execution-research-direction.md#birefnet-profiling-results). |
 
 ## Experiment discipline
 

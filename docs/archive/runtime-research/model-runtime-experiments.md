@@ -1,5 +1,9 @@
 # Model and runtime experiments
 
+> Historical research record. For the current release-facing summary, see the
+> [BiRefNet optimization report](../../birefnet-interpolation-findings.md).
+> Proposals and status statements below reflect their original research dates.
+
 Research results: 2026-09-25. This records the bounded follow-up to the
 [opportunity assessment](model-runtime-opportunities.md). Experiments ran
 sequentially with independent review between candidates. No candidate was

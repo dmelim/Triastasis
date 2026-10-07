@@ -1,5 +1,9 @@
 # Research direction: execution efficiency and chunk-dependent numerics
 
+> Historical research record. For the current release-facing summary, see the
+> [BiRefNet optimization report](../../birefnet-interpolation-findings.md).
+> Proposals and status statements below reflect their original research dates.
+
 Recorded: 2026-09-29; updated 2026-09-30. Status: validated local interpolation
 change; streaming adoption remains on hold. No packaged runtime update.
 This direction follows the [September 25 experiments](model-runtime-experiments.md)
@@ -48,10 +52,10 @@ It is not a GPU-kernel-only timer. The approximately 38-second preparation cost
 is a measurement of this implementation/configuration, not a fixed model cost.
 The original resource restrictions and runtime provenance still apply.
 
-[BiRefNet](../src/birefnet.cpp) allocates and executes segmented graphs, reads
+[BiRefNet](../../../src/birefnet.cpp) allocates and executes segmented graphs, reads
 outputs back to host vectors, and performs operations including normalization,
 activation, interpolation and concatenation on the CPU. Its custom
-[deformable convolution](../src/deform_conv.cu) allocates device buffers and
+[deformable convolution](../../../src/deform_conv.cu) allocates device buffers and
 uploads inputs and weights per call. These are profiling targets, not yet a
 measured attribution of the bottleneck.
 
@@ -220,7 +224,7 @@ CPU-only reference and retained-log analysis added no GPU charge.
 This is one synthetic block with real weights, not a full decoder validation.
 There was no trace of actual kernel dispatch, no accepted speed/memory benefit,
 and no production adoption. Raw evidence remains private; the aggregate results
-above support [F10](findings.md).
+above support [F10](../../findings.md).
 
 ## Second-session partition results
 
@@ -365,7 +369,7 @@ variation; it does not explain the earlier fast reference/warmup passes.
 ## September 30 interpolation comparison
 
 The inference-only results below were followed by a
-[controlled full-request comparison](birefnet-interpolation-findings.md).
+[controlled full-request comparison](../../birefnet-interpolation-findings.md).
 That brief records the later request timings and output checks; statements below
 about unmeasured full-request latency describe the earlier experiment's scope.
 

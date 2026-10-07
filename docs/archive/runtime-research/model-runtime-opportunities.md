@@ -1,5 +1,9 @@
 # Getting more from the existing TRELLIS.2 models
 
+> Historical research record. For the current release-facing summary, see the
+> [BiRefNet optimization report](../../birefnet-interpolation-findings.md).
+> Proposals and status statements below reflect their original research dates.
+
 Research snapshot: 2026-09-24. This is a source-based opportunity assessment,
 not a benchmark result or an implementation commitment. No inference, runtime
 installation, model download, upstream integration, or production change was
@@ -30,8 +34,8 @@ One important product distinction: the current **High preset does not spend
 more sampling steps on the models than Medium**. Both request 1024 geometry;
 High primarily raises the face target and atlas size and selects PNG and
 BiRefNet. All flows still use 12 steps. See
-[presets](../app/src/generation-presets.ts) and
-[pipeline](../src/trellis_cli.cpp). A future inference-quality preset would be
+[presets](../../../app/src/generation-presets.ts) and
+[pipeline](../../../src/trellis_cli.cpp). A future inference-quality preset would be
 a genuinely different control, and would need evidence before adoption.
 
 ## Evidence and versions
@@ -85,8 +89,8 @@ low-resolution shape, high-resolution shape when enabled, and materials.
 guidance interval and time rescaling. Only sparse/shape guidance strengths are
 CLI/environment options; the app's request API does not expose them. Other
 sampler settings are assigned in C++.
-[Sampler interface](../include/flow_runner.h),
-[arguments](../include/trellis_args.h), [request API](../app/src/api.ts).
+[Sampler interface](../../../include/flow_runner.h),
+[arguments](../../../include/trellis_args.h), [request API](../../../app/src/api.ts).
 
 Our defaults match the published stage settings: sparse/shape guidance 7.5,
 material guidance 1, and 12 steps. They are a defensible baseline, not proof
@@ -104,7 +108,7 @@ steps can converge toward an imperfect model prediction rather than the source.
 Compare actual model forward calls and elapsed time, not steps alone:
 classifier-free guidance executes conditioned and unconditioned passes within
 its interval. Materials at guidance 1 currently need only one pass per step.
-[Local sampler](../src/flow_runner.cpp),
+[Local sampler](../../../src/flow_runner.cpp),
 [reference Euler sampler](https://github.com/microsoft/TRELLIS.2/blob/75fbf0183001ed9876c8dbb35de6b68552ee08bd/trellis2/pipelines/samplers/flow_euler.py).
 
 This first needs a small research parameterization of orchestration and progress
@@ -122,7 +126,7 @@ white, reflective or partially transparent subjects.
 The local crop adds a 10% margin; the inspected reference uses no added margin.
 The alpha-presence tests also differ. These are concrete comparison targets,
 not established defects or instructions to change the native defaults.
-[Local preprocessing](../src/preprocess.cpp),
+[Local preprocessing](../../../src/preprocess.cpp),
 [reference preprocessing](https://github.com/microsoft/TRELLIS.2/blob/75fbf0183001ed9876c8dbb35de6b68552ee08bd/trellis2/pipelines/trellis2_image_to_3d.py).
 
 Every request reruns preparation and DINOv3 encoding, even for the same image
@@ -130,7 +134,7 @@ with a different seed. The previous research isolated **36.33 seconds of matte
 inference in one run**; that observation motivates profiling but is not a
 general speedup estimate. Exact-input reuse is already an untested R08/R11
 candidate, now with a concrete runtime target.
-[Existing backlog](research-backlog.md).
+[Existing backlog](../../research-backlog.md).
 
 Cache the canonical prepared arrays and/or DINO features, keyed by source
 content, mask/options, preprocessing version, conditioning resolution, model
@@ -138,7 +142,7 @@ hash/precision and relevant backend identity. Bound the cache and invalidate it
 when any dependency changes. The current 512 and 1024 feature arrays together
 are about **20 MiB** of F32 data, derived from `(1029 + 4101) * 1024 * 4` bytes;
 this is an array-size calculation, not measured cache overhead.
-[Encoder](../src/dinov3.cpp).
+[Encoder](../../../src/dinov3.cpp).
 
 Do not implement this by sending our exported cutout through preprocessing
 again. The cutout already contains cropped, premultiplied RGB plus alpha;
@@ -163,8 +167,8 @@ showed it open. The patch commit is
 Local comparison confirms the full-flow attention mask and older decoder
 allocation paths remain. There is already some chunking locally, so the
 opportunity is the improved bounds and lifetimes, not adding chunking from zero.
-[Attention](../src/dit.cpp), [sparse decode](../src/sparse.cpp),
-[shape decoder](../src/shape_decoder.cpp).
+[Attention](../../../src/dit.cpp), [sparse decode](../../../src/sparse.cpp),
+[shape decoder](../../../src/shape_decoder.cpp).
 
 Review this patch in isolation on an integration branch, retaining our
 diagnostics and protocol behavior. Test both ordinary and dense inputs, peak
@@ -185,15 +189,15 @@ reduce repeated launch overhead. Our pinned GGML defaults `GGML_CUDA_GRAPHS`
 to OFF, and the root build/release workflow does not enable it. This establishes
 the repository build configuration, not the flags in an independently installed
 binary.
-[GGML CMake](../thirdparty/ggml/CMakeLists.txt),
-[release workflow](../.github/workflows/release.yml),
-[runner](../src/flow_runner.cpp).
+[GGML CMake](../../../thirdparty/ggml/CMakeLists.txt),
+[release workflow](../../../.github/workflows/release.yml),
+[runner](../../../src/flow_runner.cpp).
 
 The pinned implementation has warmup and graph-compatibility checks and disables
 this path below Ampere. Its option description says "llama.cpp only", so it
 needs an isolated compatibility experiment rather than an assumed supported
 Trellis optimization.
-[CUDA implementation](../thirdparty/ggml/src/ggml-cuda/ggml-cuda.cu).
+[CUDA implementation](../../../thirdparty/ggml/src/ggml-cuda/ggml-cuda.cu).
 
 Compare the same source, weights and workloads with the build option off/on on
 an eligible GPU. Verify actual capture/replay, amortized stage time and output
@@ -207,7 +211,7 @@ The app already has **512 seed sweeps**; adding seed search is not a new feature
 They retain the selected texture setting. Geometry-only generation also exists.
 A useful app-level experiment is whether geometry-only candidate screening
 saves enough time without causing users to select worse final assets.
-[Sweep orchestration](../app/src/main.ts), [parameters](../app/src/types.ts).
+[Sweep orchestration](../../../app/src/main.ts), [parameters](../../../app/src/types.ts).
 
 The larger missing capability is **continuation from saved internal state**:
 retain shape latents, ordered coordinates, subdivision masks, conditioning and
@@ -215,7 +219,7 @@ resolved settings, then regenerate only materials or continue the cascade.
 Today the server calls the full pipeline for every generation. Existing decoder
 and postprocess replay tools are research facilities, not a supported resumable
 generation contract.
-[Server](../src/trellis-server.cpp), [replay diagnostics](material-diagnostics.md).
+[Server](../../../src/trellis-server.cpp), [replay diagnostics](../../material-diagnostics.md).
 
 This could let a user keep a good shape while exploring several materials, and
 avoid repeating preprocessing and geometry. A final GLB cannot substitute for
@@ -243,7 +247,7 @@ Three source-derived hypotheses deserve separate measurements:
   4101 conditioning tokens costs about 1.41 GiB per branch in F32 before overhead
   (`30 * 2 * 1536 * 4101 * 4` bytes). Lower-precision storage changes the numerical
   question. The memory tradeoff may outweigh saved work.
-  [Cross-attention code](../src/dit.cpp).
+  [Cross-attention code](../../../src/dit.cpp).
 - **Weight residency.** The resident process does not retain every model's
   weights. `Model::load` streams tensors from disk into backend buffers and
   `free` releases them at stage boundaries. Profile disk reads, transfers and
@@ -251,14 +255,14 @@ Three source-derived hypotheses deserve separate measurements:
   cache or selective GPU residency is more plausible than retaining everything;
   activation headroom must determine eviction. The shape decoder is loaded at
   multiple points in some cascade/material paths.
-  [Loader](../src/trellis_model.cpp), [orchestration](../src/trellis_cli.cpp).
+  [Loader](../../../src/trellis_model.cpp), [orchestration](../../../src/trellis_cli.cpp).
 - **GPU-resident sampling.** Each forward uploads the latent, conditioning and
   RoPE inputs, computes the graph and reads velocity to the CPU. Guidance,
   statistics and Euler updates run on host vectors. Device-side updates could
   remove transfers/synchronization, but need to preserve guards, progress and
   diagnostic behavior. Do not simply remove the constant uploads: the runner
   explicitly notes that its allocator reuses those input buffers.
-  [Forward and sampler](../src/flow_runner.cpp).
+  [Forward and sampler](../../../src/flow_runner.cpp).
 
 These are new native maintenance, with no measured local speedup. Profile first;
 focus on whichever cost is material. Launching simultaneous requests is not an
@@ -309,7 +313,7 @@ Q4/Q8/F16 file size alone does not predict speed, activation memory or fidelity.
 The F32 compute switch cannot reconstruct information removed from Q4 weights.
 Avoid disabling numeric safeguards or using experimental fast attention modes
 as an assumed free improvement.
-[Model loader](../src/trellis_model.cpp), [precision study](decoder-precision-study.md).
+[Model loader](../../../src/trellis_model.cpp), [precision study](../../decoder-precision-study.md).
 
 Multiple consistent views could supply missing evidence about backs and hidden
 parts, but reference [PR #104](https://github.com/microsoft/TRELLIS.2/pull/104)
@@ -366,5 +370,5 @@ change. Run resource-intensive experiments serially on an available GPU. Keep
 private inputs, raw logs and generated assets in ignored research output.
 
 No new candidate is marked adopted. This report adds directions beyond the
-[material appearance conclusions](material-research-consolidated-report.md)
+[material appearance conclusions](../../material-research-consolidated-report.md)
 and leaves their prior decisions intact.

@@ -22,21 +22,11 @@ guide.
 - [Research backlog](research-backlog.md) is the starting point for future runtime,
   material-quality and performance investigations, with controlled experiments
   and their current status.
-- [Model and runtime opportunities](model-runtime-opportunities.md) assesses
-  stage-specific sampling, conditioning reuse, upstream memory fixes, graph
-  replay and other ways to get more from the existing models, with evidence
-  limits and maintenance boundaries.
-- [Model and runtime experiments](model-runtime-experiments.md) records measured
-  preparation reuse, fixed-shape material continuation, shape-step comparisons,
-  the failed memory screen, resource accounting and remaining adoption gates.
-- [Runtime execution research direction](runtime-execution-research-direction.md)
-  records the Astra/Opus discussion, September 29 partition and accuracy results,
-  retained stage counts, large-partition checks, BiRefNet profiling and the
-  September 30 bitwise-equal interpolation speedup, with
-  remaining adoption controls.
-- [BiRefNet interpolation findings](birefnet-interpolation-findings.md) explains
-  the small native fix, exact-output checks and subsequent controlled request
-  timings, with qualifications for presenting the results.
+- [BiRefNet optimization report](birefnet-interpolation-findings.md) is the main
+  release-facing account of the fix, controlled validation, 12-input app
+  comparison, resource use and remaining limits.
+- [Runtime research archive](archive/runtime-research/README.md) preserves the
+  earlier investigations and evidence for caching, sampling and decoder work.
 - [Library storage and validation](library-storage.md) describes current save
   outcomes, metadata snapshots, compatibility, and regression-check commands.
 - [TRELLIS.2 material research](trellis-material-research.md) traces the model,
