@@ -2786,7 +2786,8 @@ let pendingRecordId: string | null = null;
 
 function setViewerSelectionLoading(loading: boolean): void {
   viewerSelectionLoading.classList.toggle("hidden", !loading);
-  viewerMount.setAttribute("aria-busy", String(loading));
+  // Only the model canvas is busy; queue status and controls remain independent.
+  viewerMount.querySelector("canvas")?.setAttribute("aria-busy", String(loading));
 }
 
 function updateVersionSelection(): void {

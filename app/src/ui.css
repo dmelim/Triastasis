@@ -967,18 +967,25 @@ select option:disabled { color: var(--content-secondary); }
 .viewer-selection-loading {
   position: absolute;
   inset: 0;
-  z-index: 4;
+  z-index: 1;
   display: flex;
   flex-direction: column;
   align-items: center;
   justify-content: center;
   gap: 18px;
-  background: radial-gradient(ellipse at center, rgba(0, 200, 180, .06), transparent 65%), var(--surface-viewer);
+  background: rgb(11 14 19 / 65%);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
   color: var(--content-secondary);
   font-size: var(--font-size-label);
   cursor: progress;
 }
-.viewer-loading-logo { width: clamp(72px, 12vw, 112px); height: clamp(72px, 12vw, 112px); }
+.viewer-loading-logo {
+  width: 88px;
+  height: 88px;
+  object-fit: contain;
+  filter: drop-shadow(0 2px 4px rgb(0 0 0 / 60%));
+}
 .viewer-reference-popover {
   position: absolute;
   top: 12px;
@@ -1018,6 +1025,9 @@ select option:disabled { color: var(--content-secondary); }
   text-align: center;
   pointer-events: none;
 }
+/* Loading replaces the empty prompt, including the first asset and failed loads.
+   The normal empty-state visibility resumes when the loader is dismissed. */
+.viewer-selection-loading:not(.hidden) ~ .viewer-empty { display: none; }
 .viewer-empty strong { color: var(--content-primary); font-size: var(--font-size-label); font-weight: var(--font-weight-semibold); }
 .viewer-empty-mark {
   display: grid;
