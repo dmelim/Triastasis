@@ -1,4 +1,5 @@
 import type { GalleryMetadataPatch } from "./gallery-storage";
+import { parseProject, type LibraryProject } from "./projects";
 // Persistent gallery of past generations. The desktop app stores records in
 // Tauri's app-local data directory so development and packaged webview origins
 // see the same assets. Plain-browser builds retain the IndexedDB backend.
@@ -473,6 +474,13 @@ export async function createDerivedVersion(
   return record;
 }
 
+function applyProjectPatch(params: OperationParams, project: LibraryProject | null | undefined): OperationParams {
+  if (project === undefined) return params;
+  const { project: _previous, ...rest } = params;
+  const next = parseProject(project);
+  return next ? { ...rest, project: next } : rest;
+}
+
 const metadataWrites = new Map<string, Promise<unknown>>();
 async function updateVersion(versionId: string, patch: GalleryMetadataPatch): Promise<VersionRecord> {
   const prior = metadataWrites.get(versionId) ?? Promise.resolve();
@@ -490,7 +498,12 @@ async function updateVersionNow(
     ...record,
     ...(patch.label === undefined ? {} : { label: patch.label }),
     ...(patch.favorite === undefined ? {} : { favorite: patch.favorite }),
-    ...(patch.assetLabel === undefined ? {} : { operationParams: { ...record.operationParams, assetLabel: patch.assetLabel } }),
+    ...(patch.assetLabel === undefined && patch.project === undefined ? {} : {
+      operationParams: applyProjectPatch(
+        patch.assetLabel === undefined ? record.operationParams : { ...record.operationParams, assetLabel: patch.assetLabel },
+        patch.project,
+      ),
+    }),
   });
   if (await initializeNativeStore()) {
     try { await updateNativeMetadata(record.id, patch); mem.set(record.id, updated); }
@@ -509,6 +522,11 @@ export async function renameVersion(versionId: string, label: string): Promise<V
 export async function renameAssetLabel(versionId: string, label: string): Promise<VersionRecord> {
   if (!label.trim()) throw new Error("Asset label cannot be empty");
   return updateVersion(versionId, { assetLabel: label.trim() });
+}
+
+/** Assign a version to a project, or clear it with null. */
+export async function setVersionProject(versionId: string, project: LibraryProject | null): Promise<VersionRecord> {
+  return updateVersion(versionId, { project });
 }
 
 /** Mark or unmark a version as a user favorite. */

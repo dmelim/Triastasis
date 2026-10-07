@@ -1915,3 +1915,42 @@ input:focus-visible,
 }
 @keyframes asset-skeleton-pulse { 0%, 100% { opacity: .45; } 50% { opacity: .85; } }
 @media (prefers-reduced-motion: reduce) { .skeleton-block { animation: none; opacity: .6; } }
+
+/* Library projects: icon-only markers on cards, searched by name. */
+.project-icon { display: inline-block; width: 16px; height: 16px; flex: 0 0 auto; background-color: currentColor; mask-size: contain; mask-repeat: no-repeat; mask-position: center; -webkit-mask-size: contain; -webkit-mask-repeat: no-repeat; -webkit-mask-position: center; }
+.project-icon-none { background: none; border: 1.5px dashed currentColor; border-radius: 4px; width: 14px; height: 14px; }
+.project-icon-folder { mask-image: url("/icons/project-folder.svg"); -webkit-mask-image: url("/icons/project-folder.svg"); }
+.project-icon-cube { mask-image: url("/icons/project-cube.svg"); -webkit-mask-image: url("/icons/project-cube.svg"); }
+.project-icon-star { mask-image: url("/icons/project-star.svg"); -webkit-mask-image: url("/icons/project-star.svg"); }
+.project-icon-heart { mask-image: url("/icons/project-heart.svg"); -webkit-mask-image: url("/icons/project-heart.svg"); }
+.project-icon-flag { mask-image: url("/icons/project-flag.svg"); -webkit-mask-image: url("/icons/project-flag.svg"); }
+.project-icon-bookmark { mask-image: url("/icons/project-bookmark.svg"); -webkit-mask-image: url("/icons/project-bookmark.svg"); }
+.project-icon-zap { mask-image: url("/icons/project-zap.svg"); -webkit-mask-image: url("/icons/project-zap.svg"); }
+.project-icon-flame { mask-image: url("/icons/project-flame.svg"); -webkit-mask-image: url("/icons/project-flame.svg"); }
+.project-icon-leaf { mask-image: url("/icons/project-leaf.svg"); -webkit-mask-image: url("/icons/project-leaf.svg"); }
+.project-icon-gem { mask-image: url("/icons/project-gem.svg"); -webkit-mask-image: url("/icons/project-gem.svg"); }
+.project-icon-target { mask-image: url("/icons/project-target.svg"); -webkit-mask-image: url("/icons/project-target.svg"); }
+.project-icon-home { mask-image: url("/icons/project-home.svg"); -webkit-mask-image: url("/icons/project-home.svg"); }
+.project-action { color: var(--content-muted); }
+.project-action.assigned { color: var(--content-accent); }
+.project-modal-card { width: 400px; }
+.project-modal-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.project-list { display: flex; flex-direction: column; gap: 2px; max-height: 220px; overflow-y: auto; }
+.project-row { display: flex; align-items: center; gap: 4px; }
+.project-option {
+  display: flex; flex: 1 1 auto; align-items: center; gap: var(--space-2); min-width: 0;
+  padding: 6px var(--space-2); border: 1px solid transparent; border-radius: var(--radius-control);
+  background: none; color: var(--content-primary); font: inherit; text-align: left; cursor: pointer;
+}
+.project-option span:last-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.project-option:hover { background: var(--surface-control-hover); }
+.project-option.selected { border-color: var(--content-accent); background: var(--surface-accent); }
+.project-form { display: flex; flex-direction: column; gap: var(--space-2); padding-top: var(--space-3); border-top: 1px solid var(--border-default); }
+.project-icon-grid { display: grid; grid-template-columns: repeat(6, 1fr); gap: 4px; }
+.project-icon-choice {
+  display: flex; align-items: center; justify-content: center; height: 34px;
+  border: 1px solid var(--border-default); border-radius: var(--radius-control);
+  background: var(--surface-control); color: var(--content-secondary); cursor: pointer;
+}
+.project-icon-choice:hover { border-color: var(--border-strong); background: var(--surface-control-hover); }
+.project-icon-choice[aria-checked="true"] { border-color: var(--content-accent); background: var(--surface-accent); color: var(--content-accent); }

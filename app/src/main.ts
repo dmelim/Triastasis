@@ -64,7 +64,9 @@ import {
   matchingGenerationPreset,
   type GenerationPreset,
 } from "./generation-presets";
-import { filterLibraryEntries, type LibraryFilter, type LibrarySort } from "./library-filter";
+import { filterLibraryEntries, PROJECT_FILTER_ALL, PROJECT_FILTER_NONE, PROJECT_FILTER_PREFIX, type LibraryFilter, type LibrarySort } from "./library-filter";
+import { assetProject, projectEditTargets, projectsInRecords, projectKey, writeProjectToVersions, type LibraryProject } from "./projects";
+import { createProjectIcon, requestProject, type ProjectChoice } from "./project-picker";
 import {
   allowsGenerationAboveRecommendation,
   describeHardware,
@@ -92,6 +94,7 @@ import {
   put,
   renameVersion,
   renameAssetLabel,
+  setVersionProject,
   versionNeedsMemoryExport,
   refreshNativeLibrary,
   setVersionFavorite,
@@ -191,6 +194,7 @@ const assetDock = $("asset-dock");
 const libraryModeSummary = $("library-mode-summary");
 const librarySearch = $<HTMLInputElement>("library-search");
 const libraryFilter = $<HTMLSelectElement>("library-filter");
+const libraryProject = $<HTMLSelectElement>("library-project");
 const librarySort = $<HTMLSelectElement>("library-sort");
 const libraryResultsSummary = $("library-results-summary");
 const libraryGrid = $("library-grid");
@@ -2908,12 +2912,43 @@ function assetIsFavorite(records: VersionRecord[]): boolean {
   return records.length > 0 && records.every((record) => record.favorite);
 }
 
+async function applyProjectChoice(asset: AssetGroup, choice: ProjectChoice): Promise<void> {
+  const records = choice.kind === "edit"
+    ? projectEditTargets(currentAssetGroups.flatMap((group) => group.records), choice.from)
+    : asset.records;
+  const project = choice.kind === "set" ? choice.project : choice.kind === "edit" ? choice.to : null;
+  const { saved, error } = await writeProjectToVersions(records, project, async (record, next) => {
+    const updated = await setVersionProject(record.versionId, next);
+    // Preserve card event-handler references while applying only persisted metadata.
+    for (const group of currentAssetGroups) {
+      for (const current of group.records) {
+        if (current.versionId === updated.versionId) Object.assign(current, updated);
+      }
+    }
+  });
+  if (error) {
+    const detail = (error as Error).message || "Could not update project";
+    toast(saved ? `${detail}. ${saved} of ${records.length} versions were updated. Repeat the change to finish the rest.` : detail, "err");
+  }
+  renderLibraryViewNow(true);
+}
+
+async function chooseAssetProject(asset: AssetGroup): Promise<void> {
+  const choice = await requestProject({
+    assetName: assetDisplayName(asset.records),
+    current: assetProject(asset.records),
+    projects: projectsInRecords(currentAssetGroups.flatMap((group) => group.records)),
+  });
+  if (choice) await applyProjectChoice(asset, choice);
+}
+
 function renderLibraryAsset(asset: AssetGroup): HTMLElement {
   const records = asset.records;
   const representative = records.find((record) => record.id === activeId) ?? records[0];
   const assetName = assetDisplayName(records);
   const item = document.createElement("article");
   item.className = `asset-item library-asset-item${asset.assetId === selectedAssetId ? " active" : ""}`;
+  item.dataset.assetId = asset.assetId;
   item.tabIndex = 0;
   item.setAttribute("role", "button");
 
@@ -2923,6 +2958,21 @@ function renderLibraryAsset(asset: AssetGroup): HTMLElement {
   name.textContent = assetName;
   const actions = document.createElement("div");
   actions.className = "asset-actions";
+
+  const project = assetProject(records);
+  const projectBtn = createButton({
+    label: project ? `Project: ${project.name}. Change project` : "Add asset to a project",
+    variant: "icon",
+    size: "sm",
+    labelMode: "aria-only",
+    className: `g-action project-action${project ? " assigned" : ""}`,
+  });
+  projectBtn.append(createProjectIcon(project?.icon ?? "folder"));
+  projectBtn.addEventListener("click", (event) => {
+    event.stopPropagation();
+    void chooseAssetProject(asset);
+  });
+  actions.appendChild(projectBtn);
 
   const exportBtn = createButton({
     label: `Export ${assetName} as GLB`,
@@ -3020,7 +3070,7 @@ function renderLibraryAsset(asset: AssetGroup): HTMLElement {
   };
   item.addEventListener("click", () => void openAsset());
   item.addEventListener("keydown", (event) => {
-    if (event.key === "Enter" || event.key === " ") {
+    if (event.target === item && (event.key === "Enter" || event.key === " ")) {
       event.preventDefault();
       void openAsset();
     }
@@ -3045,28 +3095,75 @@ function renderAssetSkeletons(container: HTMLElement): void {
   container.replaceChildren(fragment);
 }
 
-function renderLibraryView(): void {
-  libraryUrls.forEach((url) => URL.revokeObjectURL(url));
-  libraryUrls = [];
-  libraryGrid.innerHTML = "";
+/** Rebuilds the Project dropdown from the projects in use, keeping the selection when it still exists. */
+function syncProjectFilter(): void {
+  const projects: LibraryProject[] = projectsInRecords(currentAssetGroups.flatMap((asset) => asset.records));
+  const options: [string, string, string][] = [
+    [PROJECT_FILTER_ALL, "All projects", "stack"],
+    [PROJECT_FILTER_NONE, "No project", "project-folder"],
+    ...projects.map((project): [string, string, string] => [PROJECT_FILTER_PREFIX + projectKey(project), project.name, `project-${project.icon}`]),
+  ];
+  const previous = libraryProject.value;
+  const signature = JSON.stringify(options);
+  if (libraryProject.dataset.signature !== signature) {
+    libraryProject.dataset.signature = signature;
+    libraryProject.replaceChildren(...options.map(([value, label, icon]) => {
+      const option = new Option(label, value);
+      option.dataset.icon = icon;
+      return option;
+    }));
+  }
+  libraryProject.value = options.some(([value]) => value === previous) ? previous : PROJECT_FILTER_ALL;
+  refreshSelect(libraryProject);
+}
+
+function renderLibraryView(): void { renderLibraryViewNow(false); }
+
+function renderLibraryViewNow(preserveCards: boolean): void {
+  if (!preserveCards) {
+    libraryUrls.forEach((url) => URL.revokeObjectURL(url));
+    libraryUrls = [];
+    libraryGrid.innerHTML = "";
+  }
+  syncProjectFilter();
   const filtered = filterLibraryEntries(
-    currentAssetGroups.map((asset) => ({
-      ...asset,
-      name: assetDisplayName(asset.records),
-      searchText: [
-        assetDisplayName(asset.records),
-        ...asset.records.flatMap((record) => [record.label, record.name, record.operation]),
-      ].join(" "),
-      favorite: assetIsFavorite(asset.records),
-      versionCount: asset.records.length,
-      createdAt: asset.records[0]?.createdAt ?? 0,
-    })),
+    currentAssetGroups.map((asset) => {
+      const project = assetProject(asset.records);
+      return {
+        ...asset,
+        name: assetDisplayName(asset.records),
+        searchText: [
+          assetDisplayName(asset.records),
+          ...projectsInRecords(asset.records).map((entry) => entry.name),
+          ...asset.records.flatMap((record) => [record.label, record.name, record.operation]),
+        ].join(" "),
+        favorite: assetIsFavorite(asset.records),
+        versionCount: asset.records.length,
+        createdAt: asset.records[0]?.createdAt ?? 0,
+        projectKey: project ? projectKey(project) : null,
+        projectKeys: projectsInRecords(asset.records).map(projectKey),
+      };
+    }),
     {
       query: librarySearch.value,
       filter: libraryFilter.value as LibraryFilter,
       sort: librarySort.value as LibrarySort,
+      project: libraryProject.value,
     },
   );
+
+  if (preserveCards) {
+    const visible = new Set(filtered.map((asset) => asset.assetId));
+    for (const child of Array.from(libraryGrid.children)) {
+      if (visible.has((child as HTMLElement).dataset.assetId ?? "")) continue;
+      const url = child.querySelector("img")?.src;
+      if (url) {
+        URL.revokeObjectURL(url);
+        libraryUrls = libraryUrls.filter((entry) => entry !== url);
+      }
+      child.remove();
+    }
+  }
 
   const totalVersions = currentAssetGroups.reduce((sum, asset) => sum + asset.records.length, 0);
   libraryModeSummary.textContent = `${currentAssetGroups.length} asset${currentAssetGroups.length === 1 ? "" : "s"}, ${totalVersions} version${totalVersions === 1 ? "" : "s"}`;
@@ -3088,11 +3185,26 @@ function renderLibraryView(): void {
     libraryGrid.appendChild(empty);
     return;
   }
-  for (const asset of filtered) libraryGrid.appendChild(renderLibraryAsset(asset));
+  const existing = new Map(Array.from(libraryGrid.children).map((element) => [(element as HTMLElement).dataset.assetId, element as HTMLElement]));
+  let position = libraryGrid.firstElementChild;
+  for (const asset of filtered) {
+    const card = existing.get(asset.assetId) ?? renderLibraryAsset(asset);
+    const project = assetProject(asset.records);
+    const button = card.querySelector<HTMLButtonElement>(".project-action")!;
+    const label = project ? `Project: ${project.name}. Change project` : "Add asset to a project";
+    button.title = label;
+    button.setAttribute("aria-label", label);
+    button.classList.toggle("assigned", Boolean(project));
+    const icon = button.querySelector<HTMLElement>(".project-icon")!;
+    icon.className = `project-icon project-icon-${project?.icon ?? "folder"}`;
+    if (card !== position) libraryGrid.insertBefore(card, position);
+    position = card.nextElementSibling;
+  }
 }
 
 librarySearch.addEventListener("input", renderLibraryView);
 libraryFilter.addEventListener("change", renderLibraryView);
+libraryProject.addEventListener("change", renderLibraryView);
 librarySort.addEventListener("change", renderLibraryView);
 dockFavoritesToggle.addEventListener("click", () => {
   dockFavoritesOnly = !dockFavoritesOnly;
@@ -3290,7 +3402,7 @@ async function refreshGalleryNow(): Promise<void> {
     };
     item.addEventListener("click", () => void openAsset());
     item.addEventListener("keydown", (event) => {
-      if (event.key === "Enter" || event.key === " ") {
+      if (event.target === item && (event.key === "Enter" || event.key === " ")) {
         event.preventDefault();
         void openAsset();
       }
@@ -3429,7 +3541,7 @@ async function refreshGalleryNow(): Promise<void> {
       };
       item.addEventListener("click", () => void openVersion());
       item.addEventListener("keydown", (event) => {
-        if (event.key === "Enter" || event.key === " ") {
+        if (event.target === item && (event.key === "Enter" || event.key === " ")) {
           event.preventDefault();
           void openVersion();
         }

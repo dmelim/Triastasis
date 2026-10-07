@@ -95,6 +95,17 @@ function selectedText(select: HTMLSelectElement): string {
   return option ? option.text : "";
 }
 
+/** Optional local SVG decoration; option text remains the accessible name. */
+function optionIcon(option: HTMLOptionElement | undefined): HTMLSpanElement | null {
+  const name = option?.dataset.icon;
+  if (!name || !/^[a-z0-9-]+$/.test(name)) return null;
+  const icon = document.createElement("span");
+  icon.className = "ds-select-option-icon";
+  icon.setAttribute("aria-hidden", "true");
+  icon.style.maskImage = `url("/icons/${name}.svg")`;
+  return icon;
+}
+
 function isPlaceholderOption(select: HTMLSelectElement): boolean {
   const option = select.selectedIndex >= 0 ? select.options[select.selectedIndex] : null;
   return Boolean(option && option.disabled);
@@ -121,6 +132,9 @@ function syncFromNative(ctrl: SelectController): void {
   ctrl.trigger.classList.toggle("is-disabled", disabled);
   ctrl.trigger.tabIndex = disabled ? -1 : 0;
   ctrl.valueLabel.textContent = selectedText(select);
+  ctrl.trigger.querySelector(".ds-select-option-icon")?.remove();
+  const icon = optionIcon(select.options[select.selectedIndex]);
+  if (icon) ctrl.trigger.insertBefore(icon, ctrl.valueLabel);
   ctrl.valueLabel.title = ctrl.isOpen ? "" : ctrl.valueLabel.textContent;
   ctrl.trigger.classList.toggle("is-placeholder", !disabled && isPlaceholderOption(select));
   syncAccessibilityState(ctrl);
@@ -154,6 +168,8 @@ function buildOptions(ctrl: SelectController): void {
     check.className = "ds-select-option-check";
     check.setAttribute("aria-hidden", "true");
     row.append(label, check);
+    const icon = optionIcon(option);
+    if (icon) row.insertBefore(icon, label);
     row.title = option.text;
 
     row.addEventListener("pointerenter", () => {

@@ -308,6 +308,17 @@ test("rename and favourite update metadata without rewriting or reading model bl
   assert.equal(reopened?.label, "Renamed"); assert.equal(reopened?.favorite, true);
   assert.equal(reopened?.operationParams?.assetLabel, "Collection name");
 });
+test("project assignment persists, survives later edits, and can be cleared", async () => {
+  const fs = new MemoryFs(); const store = createTransactionalGallery(fs, ROOT);
+  await store.writeRecord("r1", makeRecord());
+  await store.updateMetadata("r1", { project: { name: "Moon Base", icon: "gem" } });
+  await store.updateMetadata("r1", { label: "Renamed" });
+  const assigned = await createTransactionalGallery(fs, ROOT).loadRecord("r1");
+  assert.deepEqual(assigned?.operationParams?.project, { name: "Moon Base", icon: "gem" });
+  assert.equal(assigned?.label, "Renamed");
+  await store.updateMetadata("r1", { project: null });
+  assert.equal((await createTransactionalGallery(fs, ROOT).loadRecord("r1"))?.operationParams?.project, undefined);
+});
 test("interrupted metadata updates preserve the last complete label and model", async () => {
   const fs = new MemoryFs(); const store = createTransactionalGallery(fs, ROOT);
   await store.writeRecord("r1", makeRecord());

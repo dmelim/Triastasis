@@ -38,3 +38,40 @@ test("sort supports newest, oldest, and alphabetical order", () => {
     ["ship", "orb", "robot"],
   );
 });
+
+test("project filter selects one project, unassigned assets, or everything", () => {
+  const projected: Entry[] = [
+    { ...entries[0], projectKey: "alpha" },
+    { ...entries[1], projectKey: "beta" },
+    { ...entries[2], projectKey: null },
+  ];
+  const run = (project: string) => filterLibraryEntries(projected, { query: "", filter: "all", sort: "newest", project }).map((entry) => entry.id);
+  assert.deepEqual(run("all"), ["robot", "ship", "orb"]);
+  assert.deepEqual(run("project:alpha"), ["robot"]);
+  assert.deepEqual(run("none"), ["ship"]);
+});
+
+test("projects named like reserved filter values do not collide", () => {
+  const projected: Entry[] = [
+    { ...entries[0], projectKey: "all" },
+    { ...entries[1], projectKey: "none" },
+    { ...entries[2], projectKey: null },
+  ];
+  const run = (project: string) => filterLibraryEntries(projected, { query: "", filter: "all", sort: "newest", project }).map((entry) => entry.id);
+  assert.deepEqual(run("project:all"), ["robot"]);
+  assert.deepEqual(run("project:none"), ["orb"]);
+  assert.deepEqual(run("none"), ["ship"]);
+});
+
+test("searching a project name finds its assets through searchText", () => {
+  const tagged = entries.map((entry) => ({ ...entry, searchText: `${entry.searchText} ${entry.id === "orb" ? "Moon Base" : ""}` }));
+  assert.deepEqual(filterLibraryEntries(tagged, { query: "moon base", filter: "all", sort: "newest" }).map((entry) => entry.id), ["orb"]);
+});
+
+test("an asset matches every project present on any of its versions", () => {
+  const mixed: Entry[] = [{ ...entries[0], projectKey: "new", projectKeys: ["new", "old"] }, { ...entries[1], projectKey: null, projectKeys: [] }];
+  const run = (project: string) => filterLibraryEntries(mixed, { query: "", filter: "all", sort: "newest", project }).map((entry) => entry.id);
+  assert.deepEqual(run("project:old"), ["robot"]);
+  assert.deepEqual(run("project:new"), ["robot"]);
+  assert.deepEqual(run("none"), ["orb"]);
+});

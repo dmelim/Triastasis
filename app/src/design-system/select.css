@@ -70,6 +70,16 @@
   white-space: nowrap;
 }
 
+.ds-select-option-icon {
+  width: 16px;
+  height: 16px;
+  flex: 0 0 auto;
+  background: currentColor;
+  mask-size: contain;
+  mask-repeat: no-repeat;
+  mask-position: center;
+}
+
 .ds-select-trigger.is-placeholder .ds-select-value {
   color: var(--content-secondary);
 }
