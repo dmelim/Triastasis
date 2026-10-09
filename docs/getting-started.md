@@ -101,8 +101,7 @@ backend or ROCm cannot start.
 
 ## Portable availability
 
-Version 0.0.3 targets Windows installer distribution only. Portable distribution is deferred
-until Library storage is isolated from installed application data.
+The 0.0.4 prerelease includes a no-install ZIP. Runtime, models and configuration are stored beside the executable, but Library records still use Windows application data shared with the installed app. Use the normal installer for upgrades; the ZIP is not an isolated Library or a complete backup.
 
 ## Advanced installer options
 
