@@ -4,7 +4,7 @@
 
 The automation API uses the port immediately above the configured native server port. The default base URL is `http://127.0.0.1:8082`; pass the actual URL to the helper with `--api` when the server port was changed.
 
-The API is loopback-only and queues jobs serially. Multiple submissions do not mean parallel GPU inference. Requests with no `Origin`, including curl and this skill, are allowed. Tauri and same-machine development origins are also allowed. Remote browser origins are rejected.
+The API is loopback-only and queues jobs serially. Multiple submissions do not mean parallel GPU inference. Requests with no `Origin`, including curl and this skill, are allowed. Tauri and same-machine development origins are also allowed. Remote browser origins are rejected, and the `Host` header must address the loopback listener (`127.0.0.1`, `localhost`, or `[::1]` with the API port).
 
 | Method | Path | Purpose |
 |---|---|---|

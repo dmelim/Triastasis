@@ -1,6 +1,7 @@
 // trellis-server — resident HTTP wrapper around the TRELLIS.2 image->3D pipeline.
 //
 //   GET  /health     -> "ok"
+//   GET  /identity   -> {"service":"trellis-server","identityVersion":1}
 //   GET  /progress/{request_id}
 //                    -> canonical job progress JSON: status, stage id/label,
 //                       cumulative sampler steps, iteration-derived percent
@@ -31,6 +32,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cctype>
 #include <charconv>
 #include <cstdint>
 #include <cstdio>
@@ -340,6 +342,89 @@ void set_json_error(httplib::Response& res, int status, const std::string& messa
     res.set_content("{\"error\":\"" + json_escape(message) + "\"}", "application/json");
 }
 
+std::string lower_ascii(std::string value) {
+    std::transform(value.begin(), value.end(), value.begin(),
+                   [](unsigned char c) { return (char) std::tolower(c); });
+    return value;
+}
+
+bool all_digits(const std::string& value) {
+    return !value.empty() &&
+           std::all_of(value.begin(), value.end(), [](unsigned char c) { return std::isdigit(c) != 0; });
+}
+
+// Split "host", "host:port", "[v6]" or "[v6]:port". The returned host keeps
+// IPv6 brackets so it compares directly against "[::1]".
+bool split_authority(const std::string& authority, std::string& host, std::string& port) {
+    if (authority.empty() || authority.find_first_of("/@ ") != std::string::npos) return false;
+    if (authority.front() == '[') {
+        const size_t end = authority.find(']');
+        if (end == std::string::npos) return false;
+        host = authority.substr(0, end + 1);
+        const std::string rest = authority.substr(end + 1);
+        if (rest.empty()) {
+            port.clear();
+            return true;
+        }
+        if (rest.front() != ':') return false;
+        port = rest.substr(1);
+        return all_digits(port);
+    }
+    const size_t colon = authority.rfind(':');
+    if (colon == std::string::npos) {
+        host = authority;
+        port.clear();
+        return true;
+    }
+    host = authority.substr(0, colon);
+    port = authority.substr(colon + 1);
+    return !host.empty() && all_digits(port);
+}
+
+bool is_loopback_name(const std::string& host) {
+    return host == "localhost" || host == "127.0.0.1" || host == "[::1]";
+}
+
+// Browser origins allowed to drive this server: the Tauri webview and local
+// development pages. Mirrors allowed_origin() in the desktop automation API.
+// Requests without an Origin header (the desktop worker, scripts) are allowed;
+// browsers always attach Origin to the cross-origin POSTs this guards against.
+bool origin_allowed(const httplib::Request& req) {
+    if (!req.has_header("Origin")) return true;
+    const std::string origin = lower_ascii(req.get_header_value("Origin"));
+    std::string authority;
+    bool tauri_scheme = false;
+    if (origin.rfind("tauri://", 0) == 0) {
+        authority = origin.substr(8);
+        tauri_scheme = true;
+    } else if (origin.rfind("http://", 0) == 0) {
+        authority = origin.substr(7);
+    } else if (origin.rfind("https://", 0) == 0) {
+        authority = origin.substr(8);
+    } else {
+        return false;  // includes the opaque "null" origin
+    }
+    std::string host, port;
+    if (!split_authority(authority, host, port)) return false;
+    if (tauri_scheme) return host == "localhost" || host == "tauri.localhost";
+    return is_loopback_name(host) || host == "tauri.localhost";
+}
+
+// DNS-rebinding guard: the Host header must name this listener. A wildcard
+// bind cannot enumerate its addresses, so only the Origin check applies there.
+bool host_allowed(const httplib::Request& req, const std::string& bind_host, int bind_port) {
+    const std::string bind = lower_ascii(bind_host);
+    if (bind == "0.0.0.0" || bind == "::" || bind == "[::]") return true;
+    if (!req.has_header("Host")) return true;  // HTTP/1.0 clients; browsers always send Host
+    std::string host, port;
+    if (!split_authority(lower_ascii(req.get_header_value("Host")), host, port)) return false;
+    if (port.empty() ? bind_port != 80 : port != std::to_string(bind_port)) return false;
+    const std::string bracketed_bind = bind.find(':') != std::string::npos && bind.front() != '['
+                                           ? "[" + bind + "]"
+                                           : bind;
+    return is_loopback_name(host) || host == bracketed_bind;
+}
+
 // std::tmpnam on MSVC yields drive-root paths ("\sXXX.N") that a non-elevated
 // process cannot write; stage scratch files in the real temp directory instead.
 std::string temp_stem() {
@@ -374,6 +459,20 @@ int main(int argc, char** argv) {
     // browser-served UI is another port — so every response needs permissive CORS
     // headers, and a multipart POST with non-simple headers may be preflighted with
     // OPTIONS. Applied to every route via the post-routing hook + a catch-all OPTIONS.
+    // CORS headers only govern reading responses, so unrelated web pages are
+    // refused here, before routing and before any request body is read.
+    svr.set_pre_routing_handler([&base](const httplib::Request& req, httplib::Response& res) {
+        if (origin_allowed(req) && host_allowed(req, base.host, base.port)) {
+            return httplib::Server::HandlerResponse::Unhandled;
+        }
+        set_json_error(res, 403, "trellis-server only accepts the desktop app and local development origins");
+        return httplib::Server::HandlerResponse::Handled;
+    });
+    // One request per connection. A rejected request's body is never read, and
+    // this httplib version keeps a connection alive based on the request alone,
+    // so leftover body bytes would otherwise be parsed as a follow-up request
+    // that bypasses the check above. Loopback reconnects are cheap.
+    svr.set_keep_alive_max_count(1);
     svr.set_post_routing_handler([](const httplib::Request&, httplib::Response& res) {
         res.set_header("Access-Control-Allow-Origin", "*");
         res.set_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
@@ -386,6 +485,12 @@ int main(int argc, char** argv) {
 
     svr.Get("/health", [](const httplib::Request&, httplib::Response& res) {
         res.set_content("ok", "text/plain");
+    });
+
+    // Lets the desktop app tell this server apart from an unrelated process that
+    // happens to hold the port before adopting it. Not an authentication check.
+    svr.Get("/identity", [](const httplib::Request&, httplib::Response& res) {
+        res.set_content("{\"service\":\"trellis-server\",\"identityVersion\":1}", "application/json");
     });
 
     svr.Get(R"(/progress/([A-Za-z0-9._\-]+))", [&](const httplib::Request& req, httplib::Response& res) {

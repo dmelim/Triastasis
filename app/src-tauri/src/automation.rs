@@ -1131,6 +1131,31 @@ fn request_origins_allowed(request: &Request) -> bool {
         .all(|header| allowed_origin(Some(header.value.as_str())))
 }
 
+/// DNS-rebinding guard: a rebound page is same-origin with this listener, so its
+/// GET requests carry no Origin header. Requiring the Host header to name the
+/// loopback listener closes that path. Requests without Host (HTTP/1.0 tools)
+/// are allowed; browsers always send it.
+fn allowed_host(host: Option<&str>, api_port: u16) -> bool {
+    let Some(host) = host else {
+        return true;
+    };
+    let host = host.trim().to_ascii_lowercase();
+    let expected_port = api_port.to_string();
+    ["localhost", "127.0.0.1", "[::1]"].iter().any(|name| {
+        host.strip_prefix(name)
+            .and_then(|rest| rest.strip_prefix(':'))
+            .is_some_and(|port| port == expected_port)
+    })
+}
+
+fn request_host_allowed(request: &Request, api_port: u16) -> bool {
+    request
+        .headers()
+        .iter()
+        .filter(|header| header.field.equiv("Host"))
+        .all(|header| allowed_host(Some(header.value.as_str()), api_port))
+}
+
 fn gpu_capability(cfg: &Config, api_port: u16) -> AutomationInfo {
     let mut info = AutomationInfo {
         running: true,
@@ -2699,6 +2724,13 @@ fn handle_request(
         let _ = request.respond(error_response(
             403,
             "automation API only accepts loopback, Tauri, or same-machine development origins",
+        ));
+        return;
+    }
+    if !request_host_allowed(&request, info.port) {
+        let _ = request.respond(error_response(
+            403,
+            "automation API only accepts requests addressed to its loopback listener",
         ));
         return;
     }
@@ -4482,6 +4514,33 @@ mod tests {
             assert!(
                 !allowed_origin(origin),
                 "expected rejected origin: {origin:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn host_policy_requires_the_loopback_listener() {
+        for host in [
+            None,
+            Some("127.0.0.1:8082"),
+            Some("localhost:8082"),
+            Some("LOCALHOST:8082"),
+            Some("[::1]:8082"),
+        ] {
+            assert!(allowed_host(host, 8082), "expected allowed host: {host:?}");
+        }
+        for host in [
+            Some("127.0.0.1"),
+            Some("127.0.0.1:8083"),
+            Some("localhost:80820"),
+            Some("evil.example:8082"),
+            Some("127.0.0.1.evil:8082"),
+            Some("localhost.evil:8082"),
+            Some(""),
+        ] {
+            assert!(
+                !allowed_host(host, 8082),
+                "expected rejected host: {host:?}"
             );
         }
     }
