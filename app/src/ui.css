@@ -682,7 +682,21 @@ select option:disabled { color: var(--content-secondary); }
 
 #generate-mode-panel .quality-picker { margin-top: 12px; }
 #generate-mode-panel .advanced-settings { margin-top: 10px; }
-#generate-mode-panel .generate-actions { margin-top: 12px; }
+#generate-mode-panel .generate-actions {
+  position: sticky;
+  bottom: 0;
+  z-index: 1;
+  margin-top: 12px;
+  padding-top: 10px;
+  background: var(--surface-panel);
+  /* Cover the panel's bottom padding, which sits outside the sticky area. */
+  box-shadow: 0 16px 0 0 var(--surface-panel);
+}
+#ctl-target-faces-mode-wrap:has(+ .custom-param.hidden) { grid-column: 1 / -1; }
+/* Keep each custom value under its own mode select, whichever ones are visible. */
+#ctl-atlas-size-wrap { grid-column: 1; }
+#ctl-remesh-band-wrap { grid-column: 2; }
+#ctl-sweep-count-wrap { grid-column: 1; }
 
 /* ---- progress ---- */
 .progress { display: flex; flex-direction: column; gap: 10px; }

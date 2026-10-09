@@ -298,7 +298,7 @@ export async function renderSettings(
       try {
         await openLogsDir();
       } catch (e) {
-        alert(`Could not open the logs folder: ${(e as Error).message ?? e}`);
+        onError(`Could not open the logs folder: ${(e as Error).message ?? e}`);
       }
     };
 
@@ -313,7 +313,7 @@ export async function renderSettings(
       try {
         await openOutputDir();
       } catch (e) {
-        alert(`Could not open the output folder: ${(e as Error).message ?? e}`);
+        onError(`Could not open the output folder: ${(e as Error).message ?? e}`);
       }
     };
 
@@ -359,7 +359,7 @@ export async function renderSettings(
           ${section(
             "settings-generation",
             "Generation",
-            "Control experimental limits for this browser and detected hardware.",
+            "Control experimental limits for the detected hardware.",
             hardwareRecommendationField(hardware),
           )}
           ${section(
@@ -393,7 +393,7 @@ export async function renderSettings(
         const validated = runtimeNumbers("0", port);
         await saveConfig({ host, port: validated.port });
         onSaved("Connection settings saved");
-      } catch (error) { alert(error instanceof Error ? error.message : String(error)); }
+      } catch (error) { onError(error instanceof Error ? error.message : String(error)); }
     };
   }
 }

@@ -405,7 +405,8 @@ async function removeAssetRecords(records: VersionRecord[]): Promise<void> {
     if (generating) { toast("Wait for generation to finish before removing assets", "err"); return; }
     const replacesCurrent = records.some((record) => record.id === activeId);
     if (replacesCurrent && !(await resolveUnsavedEdits())) return;
-    if (!confirm(`Remove this asset and its ${records.length} version(s)?`)) return;
+    const versionCount = `${records.length} ${records.length === 1 ? "version" : "versions"}`;
+    if (!(await confirmDestructive("Remove asset", `Remove this asset and its ${versionCount}?`, "Remove asset"))) return;
     const before = await all();
     const ids = new Set(records.flatMap((record) => [record.id, record.versionId]));
     if (before.some((record) => !ids.has(record.id) && record.parentVersionId && ids.has(record.parentVersionId))) {
@@ -422,12 +423,29 @@ function runEditorAction(action: () => Promise<unknown>): void {
   void modelOperations.run(action).catch((error) => toast(String(error instanceof Error ? error.message : error), "err"));
 }
 
-async function resolveUnsavedEdits(): Promise<boolean> {
-  if (!editorSession?.history.dirty) return true;
+interface DialogChoice {
+  value: string;
+  label: string;
+  variant: "primary" | "secondary" | "danger";
+}
+
+async function chooseInDialog(title: string, message: string, choices: DialogChoice[]): Promise<string> {
   const dialog = document.createElement("dialog");
   dialog.className = "unsaved-dialog";
-  dialog.innerHTML = '<h2>Unsaved edits</h2><p>Save your edit copy before replacing this model?</p><div class="unsaved-actions"><button class="button button--primary" value="save">Save derived version</button><button class="button button--secondary" value="discard">Discard edits</button><button class="button button--secondary" value="cancel">Cancel</button></div>';
-  if (!activeId) dialog.querySelector('button[value="save"]')!.textContent = "Export edited GLB";
+  const heading = document.createElement("h2");
+  heading.textContent = title;
+  const text = document.createElement("p");
+  text.textContent = message;
+  const actions = document.createElement("div");
+  actions.className = "unsaved-actions";
+  for (const choice of choices) {
+    const button = document.createElement("button");
+    button.className = `button button--${choice.variant}`;
+    button.value = choice.value;
+    button.textContent = choice.label;
+    actions.append(button);
+  }
+  dialog.append(heading, text, actions);
   document.body.appendChild(dialog);
   const choice = await new Promise<string>((resolve) => {
     dialog.addEventListener("click", (event) => {
@@ -439,6 +457,23 @@ async function resolveUnsavedEdits(): Promise<boolean> {
     dialog.querySelector<HTMLButtonElement>('button[value="cancel"]')!.focus();
   });
   dialog.remove();
+  return choice;
+}
+
+async function confirmDestructive(title: string, message: string, confirmLabel: string): Promise<boolean> {
+  return (await chooseInDialog(title, message, [
+    { value: "confirm", label: confirmLabel, variant: "danger" },
+    { value: "cancel", label: "Cancel", variant: "secondary" },
+  ])) === "confirm";
+}
+
+async function resolveUnsavedEdits(): Promise<boolean> {
+  if (!editorSession?.history.dirty) return true;
+  const choice = await chooseInDialog("Unsaved edits", "Save your edit copy before replacing this model?", [
+    { value: "save", label: activeId ? "Save derived version" : "Export edited GLB", variant: "primary" },
+    { value: "discard", label: "Discard edits", variant: "secondary" },
+    { value: "cancel", label: "Cancel", variant: "secondary" },
+  ]);
   if (choice === "discard") return true;
   if (choice !== "save") return false;
   return activeId ? saveEditedDerivedVersion() : exportEditedModel();
@@ -733,9 +768,11 @@ function updateCustomParamVisibility(): void {
   targetFacesMode.disabled = !textureEnabled;
   targetFacesInput.disabled = !textureEnabled || targetFacesMode.value !== "custom";
   targetFacesWrap.classList.toggle("hidden", !textureEnabled || targetFacesMode.value !== "custom");
-  targetFacesHelp.textContent = textureEnabled
-    ? "Custom target faces is applied by the current textured QEM path."
-    : "Geometry-only output currently uses the backend's automatic face target; custom target faces is unavailable.";
+  targetFacesHelp.textContent = !textureEnabled
+    ? "Geometry-only models always use an automatic face count."
+    : targetFacesMode.value === "custom"
+      ? "Lower counts give lighter meshes; higher counts keep more detail."
+      : "Auto picks a face count for the selected resolution.";
 
   const supportsExplicit1024 = resolutionSelect.value === "1024";
   const texture1024Option = textureResolutionSelect.querySelector<HTMLOptionElement>('option[value="1024"]');
@@ -1589,7 +1626,7 @@ function applyHardwareGuardrails(normalizeSelection = true): void {
   const resolutionLocked = !override && maximum < 1536;
   hardwareResolutionNote.classList.toggle("hidden", !resolutionLocked);
   hardwareResolutionNote.querySelector("span")!.textContent = resolutionLocked
-    ? `1536 is disabled: it is experimental and recommended only for GPUs with 16 GB+ VRAM. Detected ${hardwareLabel}; recommended max ${maximum}.`
+    ? `1536 is experimental and needs a GPU with 16 GB+ VRAM. ${hardwareLabel}; recommended max ${maximum}.`
     : "";
 }
 
@@ -1887,7 +1924,7 @@ function updateGenerateEnabled(): void {
   generateBtn.disabled = !enabled;
   sweepBtn.disabled = !enabled;
   previewMaskBtn.disabled = !inputImage || generating || !isTauri();
-  clearGalleryBtn.disabled = generating;
+  clearGalleryBtn.disabled = generating || currentAssetGroups.length === 0;
   clearCandidatesBtn.disabled = generating;
   generateBtn.textContent = generating || generationQueue.length ? "Add to queue" : "Generate 3D";
   clearQueueBtn.disabled = generationQueue.length === 0;
@@ -1901,7 +1938,7 @@ function generationBackendReady(): boolean {
     void openModelSetup(message);
     return false;
   }
-  toast("The model server is offline. Wait for it to finish starting, or review Models in Settings.", "err");
+  toast("The model server is offline. Wait for it to finish starting, or retry it from the banner above.", "err");
   return false;
 }
 
@@ -3721,10 +3758,10 @@ clearGalleryBtn.addEventListener("click", async () => {
     if (!(await resolveUnsavedEdits())) return;
 
   if (generating) {
-    toast("Wait for generation to finish before clearing the gallery", "err");
+    toast("Wait for generation to finish before clearing the Library", "err");
     return;
   }
-  if (!confirm("Delete all saved generations?")) return;
+  if (!(await confirmDestructive("Clear Library", "Delete every saved asset and version from the Library?", "Delete all"))) return;
   try {
     await clearStore();
     candidates = [];
@@ -3734,7 +3771,7 @@ clearGalleryBtn.addEventListener("click", async () => {
     if (viewer) renderMeshParts(viewer);
     await refreshGallery();
   } catch (error) {
-    toast((error as Error).message || "Could not clear the gallery", "err");
+    toast((error as Error).message || "Could not clear the Library", "err");
   }
 
  }).catch((error) => toast((error as Error).message, "err"));
@@ -3836,7 +3873,7 @@ async function pollHealthInternal(): Promise<void> {
     } else {
       (setupBanner.querySelector("span") as HTMLElement).textContent = serverRecoveryError
         ? "The model server did not start. Try again, or review the server logs if the problem continues."
-        : "The model server is unavailable. Triastasis can restart it automatically.";
+        : "The model server is unavailable. Retry to restart it.";
       setupBannerButton.textContent = "Retry server";
       setupBannerButton.disabled = false;
       setupBanner.dataset.action = "retry-server";

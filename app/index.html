@@ -202,6 +202,10 @@
                 <option value="1536">1536 experimental</option>
               </select>
             </div>
+            <label class="ctl">
+              <span>Seed</span>
+              <input id="ctl-seed" type="number" min="0" step="1" value="42" />
+            </label>
             <div id="hardware-resolution-note" class="hardware-limit-note control-wide hidden" role="status">
               <span></span>
               <button id="hardware-resolution-settings" class="link-btn" type="button">Review in Settings</button>
@@ -221,35 +225,10 @@
                 <option value="box">Box, faster</option>
               </select>
             </div>
-            <label class="ctl">
-              <span>Seed</span>
-              <input id="ctl-seed" type="number" min="0" step="1" value="42" />
-            </label>
-            <div class="ctl control-wide">
-              <label id="ctl-sweep-count-label" for="ctl-sweep-count">Sweep candidates</label>
-              <select id="ctl-sweep-count">
-                <option value="4" selected>4 seeds</option>
-                <option value="6">6 seeds</option>
-                <option value="8">8 seeds</option>
-              </select>
-            </div>
-            <div class="ctl">
-              <label id="ctl-target-faces-mode-label" for="ctl-target-faces-mode">Target faces</label>
-              <select id="ctl-target-faces-mode" aria-describedby="ctl-target-faces-error">
-                <option value="auto" selected>Auto by resolution</option>
-                <option value="custom">Custom target</option>
-              </select>
-            </div>
-            <label id="ctl-target-faces-wrap" class="ctl custom-param hidden">
-              <span>Custom faces</span>
-              <input id="ctl-target-faces" type="number" min="10000" max="1000000" step="1" value="150000" />
-            </label>
-            <span id="ctl-target-faces-error" data-param-error="targetFaces" class="field-error control-wide" role="alert"></span>
-            <span id="ctl-target-faces-help" class="field-help control-wide" role="note"></span>
             <div class="ctl">
               <label id="ctl-texture-label" for="ctl-texture">Textures</label>
               <select id="ctl-texture">
-                <option value="on" selected>Generate texture</option>
+                <option value="on" selected>Textured</option>
                 <option value="off">Geometry only</option>
               </select>
             </div>
@@ -262,18 +241,26 @@
               </select>
             </div>
             <span id="texture-resolution-help" class="field-help control-wide" role="note">1024 px decode is available with 1024 geometry; 512 px works at every geometry resolution.</span>
+            <div id="ctl-target-faces-mode-wrap" class="ctl">
+              <label id="ctl-target-faces-mode-label" for="ctl-target-faces-mode">Target faces</label>
+              <select id="ctl-target-faces-mode" aria-describedby="ctl-target-faces-error">
+                <option value="auto" selected>Auto</option>
+                <option value="custom">Custom target</option>
+              </select>
+            </div>
+            <label id="ctl-target-faces-wrap" class="ctl custom-param hidden">
+              <span>Custom faces</span>
+              <input id="ctl-target-faces" type="number" min="10000" max="1000000" step="1" value="150000" />
+            </label>
+            <span id="ctl-target-faces-error" data-param-error="targetFaces" class="field-error control-wide" role="alert"></span>
+            <span id="ctl-target-faces-help" class="field-help control-wide" role="note"></span>
             <div class="ctl">
               <label id="ctl-atlas-size-mode-label" for="ctl-atlas-size-mode">Atlas size</label>
               <select id="ctl-atlas-size-mode" aria-describedby="ctl-atlas-size-error">
-                <option value="auto" selected>Auto by resolution</option>
+                <option value="auto" selected>Auto</option>
                 <option value="custom">Custom atlas</option>
               </select>
             </div>
-            <label id="ctl-atlas-size-wrap" class="ctl custom-param hidden">
-              <span>Custom atlas</span>
-              <input id="ctl-atlas-size" type="number" min="128" max="4096" step="1" value="2048" />
-            </label>
-            <span id="ctl-atlas-size-error" data-param-error="atlasSize" class="field-error control-wide" role="alert"></span>
             <div class="ctl">
               <label id="ctl-remesh-band-mode-label" for="ctl-remesh-band-mode">Remesh band</label>
               <select id="ctl-remesh-band-mode" aria-describedby="ctl-remesh-band-error">
@@ -281,12 +268,25 @@
                 <option value="custom">Custom band</option>
               </select>
             </div>
+            <label id="ctl-atlas-size-wrap" class="ctl custom-param hidden">
+              <span>Custom atlas</span>
+              <input id="ctl-atlas-size" type="number" min="128" max="4096" step="1" value="2048" />
+            </label>
             <label id="ctl-remesh-band-wrap" class="ctl custom-param hidden">
               <span>Custom band</span>
               <input id="ctl-remesh-band" type="number" min="0" max="8" step="1" value="2" />
             </label>
+            <span id="ctl-atlas-size-error" data-param-error="atlasSize" class="field-error control-wide" role="alert"></span>
             <span id="ctl-remesh-band-error" data-param-error="remeshBand" class="field-error control-wide" role="alert"></span>
-            <div class="ctl control-wide">
+            <div id="ctl-sweep-count-wrap" class="ctl">
+              <label id="ctl-sweep-count-label" for="ctl-sweep-count">Sweep candidates</label>
+              <select id="ctl-sweep-count">
+                <option value="4" selected>4 seeds</option>
+                <option value="6">6 seeds</option>
+                <option value="8">8 seeds</option>
+              </select>
+            </div>
+            <div class="ctl">
               <label id="ctl-texture-encoding-label" for="ctl-texture-encoding">Texture encoding</label>
               <select id="ctl-texture-encoding">
                 <option value="auto" selected>Auto</option>
@@ -307,7 +307,7 @@
         <section id="view-mode-panel" class="mode-panel hidden">
           <div class="panel-heading">
             <div>
-              <h1>Inspect</h1>
+              <h1>View</h1>
               <p>Read the mesh and inspect its triangle topology.</p>
             </div>
             <button id="viewer-reference-toggle" class="button button--secondary panel-heading-action hidden" type="button" aria-expanded="false" aria-controls="viewer-reference-popover">Source image</button>
@@ -315,7 +315,7 @@
 
           <div id="inspect-empty" class="inspect-empty">
             <strong>No model loaded</strong>
-            <span>Generate a model or choose one from the gallery.</span>
+            <span>Generate a model or choose one from the Library.</span>
           </div>
 
           <div id="inspect-content" class="inspect-content hidden">
@@ -530,7 +530,7 @@
           <div id="viewer-empty" class="viewer-empty">
             <span class="viewer-empty-mark" aria-hidden="true">3D</span>
             <strong>Your model will appear here</strong>
-            <span>Generate from an image or reopen a gallery result.</span>
+            <span>Generate from an image or reopen a Library version.</span>
           </div>
           <span id="viewer-caption" class="viewer-caption viewer-caption-overlay muted"></span>
           <div id="progress" class="progress viewer-progress hidden" role="status" aria-live="polite">
@@ -563,7 +563,7 @@
             </div>
             <button id="progress-chip" class="progress-chip hidden" type="button" aria-expanded="false" aria-controls="progress-card" title="Expand job card.">
               <span id="progress-chip-title" class="progress-chip-title"></span>
-              <span id="progress-chip-percent" class="progress-chip-percent">2%</span>
+              <span id="progress-chip-percent" class="progress-chip-percent"></span>
               <span id="progress-chip-elapsed" class="progress-chip-elapsed">0:00</span>
               <span id="progress-chip-queued" class="progress-chip-queued hidden"></span>
               <span class="button-icon icon-plus progress-chip-expand" aria-hidden="true"></span>
