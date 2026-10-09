@@ -1,7 +1,7 @@
 Triastasis - portable (no-install) build
 ============================================
 
-This portable build keeps its app-managed files inside this folder and does not
+This no-install build keeps runtime, models and configuration inside this folder and does not
 need an installer. Setup downloads the selected runtime and model files, but it
 does not require a terminal, PowerShell, or manual archive extraction.
 
@@ -25,6 +25,10 @@ Advanced users can instead put an existing compatible runtime in the "runtime"
 folder or select a custom model folder in Settings. Manual setup is optional.
 Custom model files are unverified and remain under their upstream terms.
 
-To uninstall: delete this folder.
+Library limitation: saved Library records still use Windows application data and
+are shared with an installed Triastasis copy. This ZIP is not an isolated Library
+or a complete backup. Deleting this folder does not remove those Library records.
+
+To remove the no-install app: delete this folder.
 
 Linux note: the app needs the system webkit2gtk-4.1 runtime installed.

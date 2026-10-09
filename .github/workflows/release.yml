@@ -7,7 +7,7 @@ on:
       release_tag:
         description: "Release tag to attach binaries to"
         required: true
-        default: "triastasis-v0.0.3"
+        default: "triastasis-v0.0.4"
 
 permissions:
   contents: write
@@ -33,6 +33,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
+          ref: ${{ inputs.release_tag }}
           submodules: recursive
 
       - name: MSVC dev shell (Windows)
@@ -192,6 +193,8 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.release_tag }}
 
       - name: Node
         uses: actions/setup-node@v4
@@ -234,8 +237,20 @@ jobs:
           exe=$(find "$base/nsis" -name '*-setup.exe' | head -1)
           test -n "$exe" || { echo "NSIS installer not found under $base/nsis"; ls -R "$base" || true; exit 1; }
           cp "$exe" triastasis-windows-x64-setup.exe
+          mkdir -p portable/licenses
+          cp app/src-tauri/target/release/triastasis.exe portable/
+          touch portable/portable.dat
+          cp install/portable-readme.txt portable/README.txt
+          cp LICENSE portable/licenses/Triastasis-LICENSE.txt
+          cp THIRD_PARTY_NOTICES.md portable/licenses/
+          cp app/node_modules/three/LICENSE portable/licenses/three-LICENSE.txt
+          cp app/node_modules/@tauri-apps/api/LICENSE_MIT portable/licenses/Tauri-LICENSE-MIT.txt
+          cp app/node_modules/@tauri-apps/api/LICENSE_APACHE-2.0 portable/licenses/Tauri-LICENSE-APACHE-2.0.txt
+          cp app/public/fonts/LICENSE.txt portable/licenses/Inter-LICENSE.txt
+          cp app/public/icons/LICENSE-lucide.txt portable/licenses/Lucide-LICENSE.txt
+          (cd portable && 7z a -y ../triastasis-windows-x64-portable.zip ./* >/dev/null)
           gh release upload "${{ steps.tag.outputs.value }}" \
-            triastasis-windows-x64-setup.exe \
+            triastasis-windows-x64-setup.exe triastasis-windows-x64-portable.zip \
             --clobber --repo "${{ github.repository }}"
 
   checksums:
@@ -258,5 +273,6 @@ jobs:
             test -f "packages/trellis-$backend-windows-x64.zip"
           done
           test -f packages/triastasis-windows-x64-setup.exe
+          test -f packages/triastasis-windows-x64-portable.zip
           (cd packages && sha256sum -- *.exe *.zip) > SHA256SUMS
           gh release upload "$RELEASE_TAG" SHA256SUMS --clobber --repo "$RELEASE_REPO"
