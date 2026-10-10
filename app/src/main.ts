@@ -1,4 +1,4 @@
-import { scanRuntime } from "./runtime-manager";
+import { scanRuntime, type RuntimeStatus } from "./runtime-manager";
 import { runtimeNotice } from "./runtime-presentation";
 import { loadVersionModel } from "./store";
 import { OperationQueue } from "./operation-queue";
@@ -4952,7 +4952,29 @@ $("import-generation-folder-btn").addEventListener("click", async () => {
 
 
 let runtimeVersionBanner: HTMLElement | null = null;
-let dismissedRuntimeNotice: string | null = null;
+const RUNTIME_NOTICE_DISMISSED_KEY = "triastasis.runtimeNoticeDismissed";
+
+/** A dismissal lasts until the app version or the configured runtime changes. */
+function runtimeNoticeScope(runtime: RuntimeStatus): string {
+  return `${runtime.targetVersion}|${runtime.path}`;
+}
+
+function dismissedRuntimeNotice(runtime: RuntimeStatus): string | null {
+  try {
+    const saved = JSON.parse(localStorage.getItem(RUNTIME_NOTICE_DISMISSED_KEY) ?? "null") as { scope?: unknown; notice?: unknown } | null;
+    return saved?.scope === runtimeNoticeScope(runtime) && typeof saved.notice === "string" ? saved.notice : null;
+  } catch {
+    return null;
+  }
+}
+
+function dismissRuntimeNotice(runtime: RuntimeStatus, notice: string): void {
+  try {
+    localStorage.setItem(RUNTIME_NOTICE_DISMISSED_KEY, JSON.stringify({ scope: runtimeNoticeScope(runtime), notice }));
+  } catch {
+    /* the banner simply returns next launch */
+  }
+}
 let runtimeNoticeRequest = 0;
 window.addEventListener("runtime-status-changed", () => { void showRuntimeVersionNotice(); });
 
@@ -4962,7 +4984,7 @@ async function showRuntimeVersionNotice(): Promise<void> {
   try {
     const runtime = await scanRuntime();
     if (request !== runtimeNoticeRequest) return;
-    const notice = runtimeNotice(runtime, dismissedRuntimeNotice);
+    const notice = runtimeNotice(runtime, dismissedRuntimeNotice(runtime));
     runtimeVersionBanner?.remove();
     runtimeVersionBanner = null;
     if (!notice) return;
@@ -4980,7 +5002,7 @@ async function showRuntimeVersionNotice(): Promise<void> {
     dismiss.className = "link-btn";
     dismiss.type = "button";
     dismiss.textContent = "Dismiss";
-    dismiss.onclick = () => { dismissedRuntimeNotice = notice; banner.remove(); runtimeVersionBanner = null; };
+    dismiss.onclick = () => { dismissRuntimeNotice(runtime, notice); banner.remove(); runtimeVersionBanner = null; };
     banner.append(message, settings, dismiss);
     runtimeVersionBanner = banner;
     setupBanner.insertAdjacentElement("afterend", banner);

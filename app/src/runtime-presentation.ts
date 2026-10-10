@@ -11,7 +11,9 @@ export interface RuntimePresentation {
 export function runtimePresentation(runtime: RuntimeStatus): RuntimePresentation {
   const target = runtime.targetVersion;
   const version = runtime.version ?? "unknown";
-  const recorded = runtime.managed ? `Installed runtime version: ${version}.` : `Custom runtime receipt reports version ${version}.`;
+  const recorded = runtime.managed
+    ? `Installed runtime version: ${version}.`
+    : runtime.version ? `Custom runtime receipt reports version ${version}.` : "This custom runtime has no version receipt.";
   if (!runtime.installed) return { description: "No runtime is installed.", nextStep: "Complete runtime setup to generate models.", notice: null, downloadLabel: null, showRelease: true };
   if (runtime.pendingVersion && runtime.versionState !== "newer") return {
     description: `${recorded} Version ${runtime.pendingVersion} is downloaded and verified.`,
@@ -23,10 +25,14 @@ export function runtimePresentation(runtime: RuntimeStatus): RuntimePresentation
   if (runtime.versionState === "newer") return { description: `${recorded} It is newer than Triastasis ${target}.`, nextStep: "Triastasis will keep this runtime. Review its compatibility through your original installation source.", notice: null, downloadLabel: null, showRelease: true };
   const description = runtime.versionState === "older"
     ? `${recorded} It is older than Triastasis ${target}.`
-    : `This runtime's version could not be confirmed against Triastasis ${target}.`;
+    : !runtime.managed && !runtime.version
+      ? `This custom runtime has no version receipt, so its version could not be confirmed against Triastasis ${target}.`
+      : `This runtime's version could not be confirmed against Triastasis ${target}.`;
   const notice = runtime.versionState === "older"
     ? runtime.managed ? `Runtime ${version} is older than Triastasis ${target}. Install the matching runtime in Settings > Runtime.` : `Custom runtime receipt reports version ${version}, older than Triastasis ${target}. Review Settings > Runtime.`
-    : `Runtime version could not be confirmed. Review the matching release in Settings > Runtime.`;
+    : runtime.managed
+      ? `Runtime version could not be confirmed. Review the matching release in Settings > Runtime.`
+      : `This custom runtime has no version receipt, so Triastasis cannot confirm it matches ${target}. Review Settings > Runtime.`;
   if (runtime.updateAvailable) return {
     description,
     nextStep: `Download the runtime matching Triastasis ${target}, then quit and reopen the app to apply it. Your model storage stays in place.`,

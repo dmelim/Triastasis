@@ -22,6 +22,7 @@ test("unknown custom runtime provides release guidance without claiming it is ol
   const presentation = runtimePresentation({ ...current, managed: false, version: null, versionState: "unknown" });
   assert.match(presentation.description, /could not be confirmed/);
   assert.doesNotMatch(presentation.notice!, /is older/);
+  assert.match(presentation.notice!, /custom runtime has no version receipt/);
   assert.match(presentation.nextStep, /trellis-cuda-windows-x64.zip/);
   assert.match(presentation.nextStep, /custom binary path/);
   assert.equal(presentation.downloadLabel, null);
