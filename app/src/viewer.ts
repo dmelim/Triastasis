@@ -1,6 +1,6 @@
 import * as THREE from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
-import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
+import { GLTFLoader, type GLTF } from "three/examples/jsm/loaders/GLTFLoader.js";
 
 export type DisplayMode =
   | "textured"
@@ -256,7 +256,13 @@ export class Viewer {
 
   async load(glb: Blob, beforeAdopt: () => void = () => { }): Promise<ViewerStats> {
     const buffer = await glb.arrayBuffer();
-    const result = await this.loader.parseAsync(buffer, "");
+    let result: GLTF;
+    try {
+      result = await this.loader.parseAsync(buffer, "");
+    } catch (error) {
+      console.warn("GLB parse failed", error);
+      throw new Error("This file could not be read as a GLB model.");
+    }
     try { beforeAdopt(); } catch (error) { this.disposeObjectResources(result.scene); throw error; }
     return this.loadRoot(result.scene, glb.size, result.animations.length);
   }

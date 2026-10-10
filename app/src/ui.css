@@ -692,6 +692,7 @@ select option:disabled { color: var(--content-secondary); }
   /* Cover the panel's bottom padding, which sits outside the sticky area. */
   box-shadow: 0 16px 0 0 var(--surface-panel);
 }
+#generate-mode-panel .generate-actions .field-error { grid-column: 1 / -1; }
 #ctl-target-faces-mode-wrap:has(+ .custom-param.hidden) { grid-column: 1 / -1; }
 /* Keep each custom value under its own mode select, whichever ones are visible. */
 #ctl-atlas-size-wrap { grid-column: 1; }

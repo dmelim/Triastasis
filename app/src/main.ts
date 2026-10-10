@@ -1670,8 +1670,12 @@ function showParamError(error: unknown): void {
   const message = error instanceof Error ? error.message : "Check the generation settings.";
   const field = error instanceof GenParamsValidationError ? error.field : null;
   const target = field ? document.querySelector<HTMLElement>(`[data-param-error="${field}"]`) : null;
-  if (target) target.textContent = message;
-  else $("generation-param-error").textContent = message;
+  if (target) {
+    target.textContent = message;
+    target.scrollIntoView({ block: "center" });
+  } else {
+    $("generation-param-error").textContent = message;
+  }
 }
 
 // ---- toasts ----
@@ -1717,7 +1721,21 @@ function clearCurrentModelState(): void {
   updateGenerateEnabled();
 }
 
-function setInput(blob: Blob, name: string): void {
+async function imageDecodes(blob: Blob): Promise<boolean> {
+  try {
+    const bitmap = await createImageBitmap(blob);
+    bitmap.close();
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function setInput(blob: Blob, name: string): Promise<void> {
+  if (!(await imageDecodes(blob))) {
+    toast(`${name || "This file"} could not be read as an image. Choose a valid PNG, JPEG, WebP, BMP or GIF file.`, "err");
+    return;
+  }
   inputImage = blob;
   inputName = name || "input.png";
   setInputPreviewBlob(blob);
@@ -1826,7 +1844,9 @@ dropzone.addEventListener("keydown", (e) => {
 });
 fileInput.addEventListener("change", () => {
   const f = fileInput.files?.[0];
-  if (f) setInput(f, f.name);
+  // Clear the picker so choosing the same file again still fires `change`.
+  fileInput.value = "";
+  if (f) void setInput(f, f.name);
 });
 ["dragenter", "dragover"].forEach((ev) =>
   dropzone.addEventListener(ev, (e) => {
@@ -1842,7 +1862,7 @@ fileInput.addEventListener("change", () => {
 );
 dropzone.addEventListener("drop", (e) => {
   const f = (e as DragEvent).dataTransfer?.files?.[0];
-  if (f && f.type.startsWith("image/")) setInput(f, f.name);
+  if (f && f.type.startsWith("image/")) void setInput(f, f.name);
 });
 void listenForNativeFileDrops(async (event) => {
   if (event.type === "enter" || event.type === "over") {
@@ -1864,7 +1884,7 @@ void listenForNativeFileDrops(async (event) => {
       return;
     }
     const image = await readDroppedImage(droppedPath);
-    setInput(image.blob, image.name);
+    await setInput(image.blob, image.name);
   } catch (error) {
     toast((error as Error).message || "Could not open the dropped file", "err");
   }
