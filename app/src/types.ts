@@ -46,8 +46,8 @@ export type GenParamField = keyof GenParams;
 export class GenParamsValidationError extends Error {
   readonly field: GenParamField;
 
-  constructor(field: GenParamField, message: string) {
-    super(`${field}: ${message}`);
+  constructor(field: GenParamField, message: string, displayMessage = `${field}: ${message}`) {
+    super(displayMessage);
     this.name = "GenParamsValidationError";
     this.field = field;
   }
@@ -78,6 +78,19 @@ function integerInRange(field: GenParamField, value: unknown, min: number, max: 
     return invalid(field, `must be between ${min} and ${max}`);
   }
   return value;
+}
+
+/** Validate the complete input value before any integer conversion can truncate it. */
+export function parseGenerationSeed(value: string): number {
+  const { min, max } = GEN_PARAM_LIMITS.seed;
+  if (!value.trim()) {
+    throw new GenParamsValidationError("seed", "is required", `Enter a seed from ${min} to ${max}.`);
+  }
+  const seed = Number(value);
+  if (!Number.isSafeInteger(seed) || seed < min || seed > max) {
+    throw new GenParamsValidationError("seed", "is invalid", `Seed must be a whole number from ${min} to ${max}.`);
+  }
+  return seed;
 }
 
 function normalizeChoice<T extends string | number>(

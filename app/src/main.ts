@@ -135,6 +135,7 @@ import {
   DEFAULT_PARAMS,
   GenParamsValidationError,
   normalizeGenParams,
+  parseGenerationSeed,
   type GenParams,
   type ModelMetrics,
   type NormalizedGenParams,
@@ -1513,10 +1514,10 @@ updateCustomParamVisibility();
 // ---- controls -> params ----
 function readParams(): GenParams {
   const res = parseInt(($("ctl-res") as HTMLSelectElement).value, 10);
-  const seed = parseInt(($("ctl-seed") as HTMLInputElement).value, 10);
+  const seed = parseGenerationSeed(($("ctl-seed") as HTMLInputElement).value);
   return normalizeGenParams({
     resolution: (res === 512 || res === 1536 ? res : 1024) as GenParams["resolution"],
-    seed: isNaN(seed) ? DEFAULT_PARAMS.seed : seed,
+    seed,
     bgRemoval: ($("ctl-bg") as HTMLSelectElement).value as GenParams["bgRemoval"],
     uv: ($("ctl-uv") as HTMLSelectElement).value as GenParams["uv"],
     targetFaces: targetFacesMode.value === "custom" ? Number(targetFacesInput.value) : "auto",
