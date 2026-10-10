@@ -388,8 +388,10 @@ pub fn start(
     }
 
     let mut cmd = Command::new(&cfg.server_bin);
+    // Configs saved by older versions may hold a Windows `\\?\` verbatim path,
+    // which breaks the runtime's `/`-joined model file paths.
     cmd.arg("--models")
-        .arg(&cfg.models_dir)
+        .arg(dunce::simplified(std::path::Path::new(cfg.models_dir.trim())))
         .arg("--gpu")
         .arg(cfg.gpu.to_string())
         .arg("--host")

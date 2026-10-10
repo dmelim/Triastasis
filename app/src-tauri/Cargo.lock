@@ -4508,6 +4508,7 @@ name = "triastasis"
 version = "0.0.4"
 dependencies = [
  "dirs 5.0.1",
+ "dunce",
  "libc",
  "reqwest",
  "serde",

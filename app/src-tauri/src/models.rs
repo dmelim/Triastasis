@@ -411,7 +411,9 @@ fn scan_legacy_dir(dir: &Path, cat: &ModelCatalog) -> LegacyMatch {
 }
 
 pub fn inspect_custom_model_dir(dir: &Path) -> Result<(PathBuf, usize), String> {
-    let canonical = std::fs::canonicalize(dir)
+    // dunce avoids Windows `\\?\` verbatim paths: the runtime joins model files
+    // with `/`, which verbatim paths do not accept as a separator.
+    let canonical = dunce::canonicalize(dir)
         .map_err(|e| format!("could not open custom model folder {}: {e}", dir.display()))?;
     if !canonical.is_dir() {
         return Err(format!(
@@ -932,7 +934,8 @@ mod tests {
 
         std::fs::write(dir.join("community-model.GGUF"), b"not catalog verified").unwrap();
         let (canonical, count) = inspect_custom_model_dir(&dir).unwrap();
-        assert_eq!(canonical, std::fs::canonicalize(&dir).unwrap());
+        assert_eq!(canonical, dunce::canonicalize(&dir).unwrap());
+        assert!(!canonical.to_string_lossy().starts_with(r"\\?\"));
         assert_eq!(count, 1);
         std::fs::remove_dir_all(&dir).ok();
     }
