@@ -244,7 +244,10 @@ pub fn status() -> Result<RuntimeStatus, String> {
         .or_else(|| config.as_ref().map(|cfg| cfg.backend.as_str()))
         .unwrap_or("unknown");
     let version_state = version_state(version.as_deref(), &target_version).to_string();
-    let pending_version = managed
+    // Custom runtimes may also opt in to a verified release. It is staged in the
+    // app-managed folder; the custom binary itself is never modified.
+    let pending_version = configured
+        .is_some()
         .then(|| receipt(&root.with_extension("pending")))
         .flatten()
         .filter(|receipt| {
@@ -255,7 +258,7 @@ pub fn status() -> Result<RuntimeStatus, String> {
         .map(|receipt| receipt.version);
     let release_url =
         format!("https://github.com/{REPO}/releases/tag/triastasis-v{target_version}");
-    let update_available = managed
+    let update_available = configured.is_some()
         && matches!(installed_backend, "cuda" | "cuda12" | "rocm" | "vulkan")
         && matches!(version_state.as_str(), "older" | "unknown")
         && pending_version.as_deref() != Some(target_version.as_str());
@@ -487,7 +490,10 @@ fn activate(root: &Path, staging: &Path, backend: &str) -> Result<(), String> {
     });
     config.server_bin = root.join(server_name()).to_string_lossy().into_owned();
     config.backend = backend.into();
-    if config.models_root.trim().is_empty() {
+    // An empty models root with a configured models directory means "derive the
+    // root from that directory" (including legacy flat layouts). Only fill in
+    // defaults when no model location is configured at all.
+    if config.models_root.trim().is_empty() && config.models_dir.trim().is_empty() {
         config.models_root = models.to_string_lossy().into_owned();
     }
     if config.models_dir.trim().is_empty() {
@@ -523,11 +529,8 @@ fn install_or_stage(
     let _install_guard = operation_guard()?;
     let current = status()?;
     if update {
-        if !current.installed || !current.managed {
-            return Err(
-                "only app-managed runtimes can be updated; custom binary paths are preserved"
-                    .into(),
-            );
+        if !current.installed {
+            return Err("no runtime is installed; complete runtime setup first".into());
         }
         if backend != current.backend {
             return Err("the update backend must match the installed runtime".into());
@@ -644,9 +647,6 @@ pub fn activate_pending(state: &crate::server::ServerState) -> Result<(), String
         return Ok(());
     }
     let current = status()?;
-    if !current.managed {
-        return Err("staged runtime update retained because a custom binary is configured".into());
-    }
     if current.version_state == "newer" {
         return Err(
             "staged update retained because the installed runtime is newer than this app".into(),

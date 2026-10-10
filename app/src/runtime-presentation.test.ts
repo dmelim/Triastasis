@@ -28,6 +28,13 @@ test("unknown custom runtime provides release guidance without claiming it is ol
   assert.equal(presentation.downloadLabel, null);
   assert.equal(presentation.showRelease, true);
 });
+test("custom runtime with a known backend can switch to the verified release", () => {
+  const presentation = runtimePresentation({ ...current, managed: false, version: null, versionState: "unknown", updateAvailable: true });
+  assert.equal(presentation.downloadLabel, "Switch to verified runtime 0.0.4");
+  assert.match(presentation.description, /no version receipt/);
+  assert.match(presentation.nextStep, /custom build stays on disk/);
+  assert.match(presentation.notice!, /custom runtime has no version receipt/);
+});
 test("custom receipt is reported metadata rather than executable verification", () => {
   const presentation = runtimePresentation({ ...current, managed: false, version: "0.0.3", versionState: "older" });
   assert.match(presentation.description, /receipt reports version/);

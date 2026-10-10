@@ -33,6 +33,13 @@ export function runtimePresentation(runtime: RuntimeStatus): RuntimePresentation
     : runtime.managed
       ? `Runtime version could not be confirmed. Review the matching release in Settings > Runtime.`
       : `This custom runtime has no version receipt, so Triastasis cannot confirm it matches ${target}. Review Settings > Runtime.`;
+  if (runtime.updateAvailable && !runtime.managed) return {
+    description,
+    nextStep: `Switch to the verified runtime published with Triastasis ${target}. It is downloaded into Triastasis's own runtime folder and becomes active after you quit and reopen the app. Your custom build stays on disk, and your model storage stays in place.`,
+    notice,
+    downloadLabel: `Switch to verified runtime ${target}`,
+    showRelease: true,
+  };
   if (runtime.updateAvailable) return {
     description,
     nextStep: `Download the runtime matching Triastasis ${target}, then quit and reopen the app to apply it. Your model storage stays in place.`,
