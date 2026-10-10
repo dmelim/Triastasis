@@ -282,6 +282,7 @@ export class Viewer {
     this.setDisplayMode(this.displayMode);
     this.setCameraPreset("isometric");
     if (previousCamera) this.restoreCameraView(previousCamera);
+    this.userCameraView = previousCamera !== null;
     return this.getStats();
   }
 
@@ -466,6 +467,7 @@ export class Viewer {
 
   resetView(): void {
     this.setCameraPreset("isometric");
+    this.userCameraView = false;
   }
 
   setDisplayMode(mode: DisplayMode): void {
@@ -627,6 +629,7 @@ export class Viewer {
 
   setCameraPreset(preset: CameraPreset): void {
     if (!this.loadedRoot || this.bounds.isEmpty()) return;
+    this.userCameraView = true;
     const direction = new THREE.Vector3(1, 0.72, 1);
     if (preset === "front") direction.set(0, 0, 1);
     if (preset === "back") direction.set(0, 0, -1);
@@ -802,12 +805,18 @@ export class Viewer {
     controls.maxZoom = 20;
     controls.autoRotateSpeed = 1.4;
     controls.addEventListener("change", this.handleControlsChange);
+    controls.addEventListener("start", this.handleCameraInteraction);
     return controls;
   }
 
   private readonly handleControlsChange = (): void => {
     this.requestRender();
     this.updateTopologyVisibility();
+  };
+
+  private userCameraView = false;
+  private readonly handleCameraInteraction = (): void => {
+    this.userCameraView = true;
   };
 
   private resize(): void {
@@ -868,9 +877,9 @@ export class Viewer {
     this.updateTopologyVisibility();
   }
 
-  /** Preserve the user's orbit direction and zoom when switching assets. */
+  /** Preserve deliberate camera changes, not an automatic fit for a differently shaped asset. */
   private captureCameraView(): CameraViewState | null {
-    if (!this.loadedRoot || this.bounds.isEmpty()) return null;
+    if (!this.userCameraView || !this.loadedRoot || this.bounds.isEmpty()) return null;
     const center = this.bounds.getCenter(new THREE.Vector3());
     const size = this.bounds.getSize(new THREE.Vector3());
     const extent = Math.max(size.x, size.y, size.z, 0.01);
