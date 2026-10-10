@@ -137,6 +137,7 @@ import {
   GenParamsValidationError,
   normalizeGenParams,
   parseGenerationSeed,
+  fillMissingMetrics,
   type GenParams,
   type ModelMetrics,
   type NormalizedGenParams,
@@ -2919,8 +2920,9 @@ async function loadRecordDataNow(rec: VersionRecord): Promise<void> {
   updateGenerateEnabled();
   let recordChanged = false;
   const measuredMetrics = statsToMetrics(stats);
-  if (!rec.metrics || !rec.metrics.dimensions) {
-    rec.metrics = measuredMetrics;
+  const filledMetrics = fillMissingMetrics(rec.metrics, measuredMetrics);
+  if (filledMetrics) {
+    rec.metrics = filledMetrics;
     recordChanged = true;
   }
   const measuredWarning = detectPlaneCollapse(measuredMetrics.dimensions);

@@ -311,6 +311,16 @@ export interface ModelMetrics {
   dimensions?: ModelDimensions;
 }
 
+/**
+ * Fill measurements a stored record is missing, such as the triangle count of
+ * a generated version saved before the viewer measured it. Returns null when
+ * nothing needs saving.
+ */
+export function fillMissingMetrics(stored: ModelMetrics | null | undefined, measured: ModelMetrics): ModelMetrics | null {
+  if (stored?.dimensions && stored.triangles !== undefined) return null;
+  return { ...stored, ...measured };
+}
+
 /** A detected geometry quality problem. */
 export interface GenerationQualityWarning {
   code: "collapsed-plane" | "background-plane-attached";

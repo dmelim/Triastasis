@@ -3,6 +3,7 @@ import test from "node:test";
 import { build } from "esbuild";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { fillMissingMetrics } from "./types";
 
 interface Fixture { native: unknown[]; legacy: unknown[]; migrated: boolean; fail: boolean; writes: number }
 let serial = 0;
@@ -119,4 +120,28 @@ test("a new generated asset keeps its own favorite default", async () => {
   const api = await store({ native: [], legacy: [], migrated: true, fail: false, writes: 0 });
   await api.putGeneratedVersion({ ...record("fresh"), favorite: false } as Parameters<typeof api.putGeneratedVersion>[0]);
   assert.equal((await api.get("same"))?.favorite, false);
+});
+
+test("opening a generated version saves its missing triangle count without changing the favorite", async () => {
+  const fixture = { native: [], legacy: [], migrated: true, fail: false, writes: 0 };
+  const api = await store(fixture);
+  const dimensions = { x: 1, y: 2, z: 3 };
+  const saved = { ...record("generated"), favorite: false, metrics: { fileSize: 5, dimensions } } as Parameters<typeof api.putGeneratedVersion>[0];
+  await api.putGeneratedVersion(saved);
+  await api.setAssetFavorite("asset", true);
+  // The open path works from a copy loaded before the favorite changed.
+  const opened = { ...saved, favorite: false };
+  const filled = fillMissingMetrics(opened.metrics, { triangles: 1234, fileSize: 5, dimensions });
+  assert.ok(filled);
+  opened.metrics = filled;
+  await api.putGeneratedVersion(opened);
+  const stored = await api.get("same");
+  assert.equal(stored?.metrics?.triangles, 1234);
+  assert.equal(stored?.favorite, true);
+  assert.equal(fillMissingMetrics(stored?.metrics, { triangles: 99, dimensions }), null, "complete metrics need no further save");
+});
+
+test("a measured zero triangle count is treated as present", () => {
+  assert.equal(fillMissingMetrics({ triangles: 0, dimensions: { x: 1, y: 1, z: 1 } }, { triangles: 5 }), null);
+  assert.deepEqual(fillMissingMetrics(null, { triangles: 0 }), { triangles: 0 });
 });
