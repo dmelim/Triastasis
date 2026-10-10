@@ -97,7 +97,8 @@ import {
   setVersionProject,
   versionNeedsMemoryExport,
   refreshNativeLibrary,
-  setVersionFavorite,
+  setAssetFavorite,
+  putGeneratedVersion,
 } from "./store";
 import {
   automationInfo,
@@ -2457,7 +2458,7 @@ async function generateRecord(
     }
   }
 
-  const librarySave = await put(rec);
+  const librarySave = await putGeneratedVersion(rec);
   if (!librarySave.persisted && !warnedEphemeral) {
     warnedEphemeral = true;
     toast(
@@ -2526,13 +2527,13 @@ async function generateRecord(
     updateViewerCaption();
     renderViewerStats(stats, normalizedParams);
     renderMeshParts(instance);
-    await put(rec);
+    await putGeneratedVersion(rec);
     setWorkspaceMode("view");
     clearStandaloneView();
     const thumb = await instance.thumbnail();
     if (thumb) {
       rec.thumb = thumb;
-      await put(rec);
+      await putGeneratedVersion(rec);
       await refreshGallery();
     }
     });
@@ -2935,7 +2936,10 @@ async function loadRecordDataNow(rec: VersionRecord): Promise<void> {
       recordChanged = true;
     }
   }
-  if (recordChanged) await put(rec);
+  if (recordChanged) {
+    if (rec.operation === "generated") await putGeneratedVersion(rec);
+    else await put(rec);
+  }
   await refreshGallery();
   renderCandidates();
 }
@@ -3136,7 +3140,7 @@ function renderLibraryAsset(asset: AssetGroup): HTMLElement {
   favoriteBtn.addEventListener("click", async (event) => {
     event.stopPropagation();
     try {
-      for (const record of records) await setVersionFavorite(record.versionId, !favorite);
+      await setAssetFavorite(representative.assetId, !favorite);
       await refreshGallery();
     } catch (error) {
       toast((error as Error).message || "Could not update favourite", "err");
@@ -3469,7 +3473,7 @@ async function refreshGalleryNow(): Promise<void> {
     favoriteBtn.addEventListener("click", async (event) => {
       event.stopPropagation();
       try {
-        for (const record of records) await setVersionFavorite(record.versionId, !assetIsFavorite);
+        await setAssetFavorite(representative.assetId, !assetIsFavorite);
         await refreshGallery();
       } catch (error) {
         toast((error as Error).message || "Could not update favorite", "err");

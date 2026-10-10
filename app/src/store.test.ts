@@ -23,7 +23,7 @@ async function store(fixture: Fixture): Promise<typeof import("./store")> {
 export async function loadNativeGallery(){return globalThis.fixture.native;}
 export async function nativeMigrationWasCompleted(){return globalThis.fixture.migrated;}
 export async function writeNativeRecord(record){globalThis.fixture.writes++; if(globalThis.fixture.fail) throw new Error('synthetic write failure'); globalThis.fixture.native = globalThis.fixture.native.filter(r=>r.id!==record.id).concat(record);}
-export async function updateNativeMetadata(){if(globalThis.fixture.fail) throw new Error('synthetic write failure');}
+export async function updateNativeMetadata(id,patch){if(globalThis.fixture.fail) throw new Error('synthetic write failure'); globalThis.fixture.native=globalThis.fixture.native.map(record=>record.id===id?{...record,...patch}:record);}
 export function nativeGalleryRecoveryCount(){return 0;}
 export async function markNativeMigrationCompleted(){}
 export async function clearNativeGallery(){}
@@ -93,4 +93,30 @@ test("failed save remains exportable until a successful retry releases cached by
   assert.equal((await api.put(unsaved)).persisted, true);
   assert.equal((await api.get("same"))!.glb, null);
   assert.equal(api.versionNeedsMemoryExport("same"), false);
+});
+
+test("sweep candidates inherit favorite toggles, including concurrent arrivals and stale preview saves", async () => {
+  const fixture = { native: [], legacy: [], migrated: true, fail: false, writes: 0 };
+  const api = await store(fixture);
+  const candidate = (id: string) => ({ ...record(id), id, versionId: id, favorite: false }) as Parameters<typeof api.putGeneratedVersion>[0];
+  const first = candidate("candidate-1");
+  await api.putGeneratedVersion(first);
+  await Promise.all([api.setAssetFavorite("asset", true), api.putGeneratedVersion(candidate("candidate-2"))]);
+  assert.ok((await api.listAssetVersions("asset")).every(item => item.favorite));
+  assert.ok((fixture.native as Array<{favorite: boolean}>).every(item => item.favorite), "favorites are persisted, not only cached");
+  // The caller retained the original false value while it rendered a thumbnail.
+  await api.putGeneratedVersion(first);
+  assert.equal((await api.get(first.id))?.favorite, true);
+  assert.equal(first.favorite, true);
+  await Promise.all([api.putGeneratedVersion(candidate("candidate-3")), api.setAssetFavorite("asset", false)]);
+  await api.putGeneratedVersion(candidate("candidate-4"));
+  await api.putGeneratedVersion(first);
+  assert.ok((await api.listAssetVersions("asset")).every(item => !item.favorite));
+  assert.ok((fixture.native as Array<{favorite: boolean}>).every(item => !item.favorite));
+});
+
+test("a new generated asset keeps its own favorite default", async () => {
+  const api = await store({ native: [], legacy: [], migrated: true, fail: false, writes: 0 });
+  await api.putGeneratedVersion({ ...record("fresh"), favorite: false } as Parameters<typeof api.putGeneratedVersion>[0]);
+  assert.equal((await api.get("same"))?.favorite, false);
 });

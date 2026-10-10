@@ -326,6 +326,34 @@ export function newId(): string {
 /** Store a record while retaining the legacy `id`, fields, and blobs. */
 export interface SaveOutcome { persisted: boolean; error?: unknown }
 
+const assetWrites = new Map<string, Promise<unknown>>();
+function withAssetWrite<T>(assetId: string, write: () => Promise<T>): Promise<T> {
+  const previous = assetWrites.get(assetId) ?? Promise.resolve();
+  const next = previous.then(write, write);
+  assetWrites.set(assetId, next);
+  void next.finally(() => { if (assetWrites.get(assetId) === next) assetWrites.delete(assetId); }).catch(() => undefined);
+  return next;
+}
+
+/** New candidates inherit the asset favorite; later preview saves retain current metadata. */
+export function putGeneratedVersion(record: VersionRecord): Promise<SaveOutcome> {
+  return withAssetWrite(record.assetId, async () => {
+    const current = await getVersion(record.versionId);
+    const siblings = current ? [] : await listAssetVersions(record.assetId);
+    const favorite = current?.favorite ?? (siblings.length ? siblings.every(item => item.favorite) : record.favorite);
+    const result = await put({ ...record, favorite });
+    record.favorite = favorite;
+    return result;
+  });
+}
+
+/** Use current membership, serialized with candidate saves, rather than a rendered card snapshot. */
+export function setAssetFavorite(assetId: string, favorite: boolean): Promise<void> {
+  return withAssetWrite(assetId, async () => {
+    for (const record of await listAssetVersions(assetId)) await setVersionFavorite(record.versionId, favorite);
+  });
+}
+
 export async function put(rec: GenRecord, requirePersistent = false): Promise<SaveOutcome> {
   const normalized = normalizeRecord(rec);
   try {
