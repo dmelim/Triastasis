@@ -1,4 +1,4 @@
-import type { RuntimeStatus } from "./runtime-manager";
+import type { RuntimeProgress, RuntimeStatus } from "./runtime-manager";
 
 export interface RuntimePresentation {
   description: string;
@@ -62,6 +62,21 @@ export function runtimeDownloadError(error: unknown, target: string): string {
   return message.includes("404")
     ? `Runtime download is not available for Triastasis ${target} yet. Open the matching release page to check availability.`
     : message;
+}
+
+/** Completed fraction of a download, or null while the step has no measurable size. */
+export function runtimeProgressFraction(progress: RuntimeProgress): number | null {
+  if (progress.phase !== "download" || progress.total <= 0) return null;
+  return Math.min(1, progress.downloaded / progress.total);
+}
+
+export function runtimeProgressLabel(progress: RuntimeProgress): string {
+  if (progress.phase === "verify") return "Verifying the download...";
+  if (progress.phase === "extract") return "Unpacking the runtime...";
+  const megabytes = (bytes: number) => Math.round(bytes / 1e6).toLocaleString("en-US");
+  const fraction = runtimeProgressFraction(progress);
+  if (fraction === null) return `Downloading runtime... ${megabytes(progress.downloaded)} MB`;
+  return `Downloading runtime... ${megabytes(progress.downloaded)} of ${megabytes(progress.total)} MB (${Math.floor(fraction * 100)}%)`;
 }
 
 export function runtimeNotice(runtime: RuntimeStatus, dismissed: string | null): string | null {

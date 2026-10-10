@@ -38,6 +38,7 @@ import {
 } from "./model-terms";
 import { isTauri, pickDirectory } from "./tauri";
 import { installRuntime, runtimeLabel, scanRuntime, type RuntimeStatus } from "./runtime-manager";
+import { withRuntimeProgress } from "./runtime-progress-view";
 
 function escapeHtml(value: string): string {
   return value
@@ -875,7 +876,10 @@ function bindActions(root: HTMLElement, scan: ModelsScan, runtime: RuntimeStatus
             control.disabled = true;
           });
           showMessage(root, `Downloading and verifying the ${runtimeLabel(backend)} runtime...`, false);
-          const installed = await installRuntime(backend);
+          const messageBox = root.querySelector<HTMLElement>("#model-setup-message");
+          const installed = messageBox
+            ? await withRuntimeProgress(messageBox, () => installRuntime(backend))
+            : await installRuntime(backend);
           if (!installed.installed) {
             throw new Error("Runtime installation did not finish. Please try again.");
           }

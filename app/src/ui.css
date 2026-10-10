@@ -1863,6 +1863,8 @@ input:focus-visible,
 .model-legacy { margin-top: 16px; padding: 12px 14px; border-radius: var(--radius-card); background: var(--surface-warning); display: flex; flex-direction: column; gap: 6px; align-items: flex-start; }
 .model-legacy p { margin: 0; font-size: .88rem; }
 .model-progress { margin-top: 16px; }
+.runtime-progress { display: flex; flex-direction: column; gap: 6px; width: 100%; margin-top: var(--space-2); }
+.runtime-progress p { margin: 0; color: var(--content-secondary); font-size: var(--font-size-caption); font-variant-numeric: tabular-nums; }
 .model-progress-bar { height: 8px; border-radius: var(--radius-pill); background: var(--surface-control); overflow: hidden; }
 .model-progress-bar > div { height: 100%; background: var(--color-accent); transition: width .3s ease; }
 .model-progress p { margin: 6px 0 0; font-size: .84rem; }

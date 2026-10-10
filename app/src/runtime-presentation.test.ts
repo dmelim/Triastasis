@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { runtimeDownloadError, runtimeNotice, runtimePresentation } from "./runtime-presentation";
+import { runtimeDownloadError, runtimeNotice, runtimePresentation, runtimeProgressFraction, runtimeProgressLabel } from "./runtime-presentation";
 import type { RuntimeStatus } from "./runtime-manager";
 const current: RuntimeStatus = { installed: true, managed: true, version: "0.0.4", versionState: "current", releaseUrl: "https://github.com/dmelim/Triastasis/releases/tag/triastasis-v0.0.4", targetVersion: "0.0.4", updateAvailable: false, pendingVersion: null, pendingPath: null, backend: "cuda", path: "runtime/trellis-server.exe", portable: false, recommendedBackend: "cuda", recommendation: "" };
 
@@ -45,6 +45,14 @@ test("pending verified update requires deliberate quit and reopen", () => {
   assert.match(presentation.description, /downloaded and verified/);
   assert.match(presentation.nextStep, /quit Triastasis from the system tray/);
   assert.equal(presentation.downloadLabel, null);
+});
+test("runtime progress reports size and percent, and steps without a size", () => {
+  const downloading = { phase: "download" as const, downloaded: 312_000_000, total: 728_588_398 };
+  assert.equal(runtimeProgressLabel(downloading), "Downloading runtime... 312 of 729 MB (42%)");
+  assert.equal(runtimeProgressFraction({ ...downloading, total: 0 }), null);
+  assert.equal(runtimeProgressLabel({ ...downloading, total: 0 }), "Downloading runtime... 312 MB");
+  assert.equal(runtimeProgressFraction({ phase: "verify", downloaded: 0, total: 0 }), null);
+  assert.match(runtimeProgressLabel({ phase: "extract", downloaded: 0, total: 0 }), /Unpacking/);
 });
 test("unpublished release assets give a concrete next action", () => {
   assert.match(runtimeDownloadError(new Error("download failed with HTTP 404"), "0.0.4"), /Open the matching release/);

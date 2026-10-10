@@ -32,6 +32,18 @@ pub struct RuntimeStatus {
 
 const RECEIPT: &str = "triastasis-runtime.json";
 
+/// Progress payload emitted as `runtime-download-progress` while a runtime is
+/// downloaded, verified and unpacked. `total` is 0 when the size is unknown.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RuntimeProgress {
+    pub phase: &'static str,
+    pub downloaded: u64,
+    pub total: u64,
+}
+
+pub type ProgressFn<'a> = &'a (dyn Fn(RuntimeProgress) + Send + Sync);
+
 #[derive(Debug, Deserialize, Serialize)]
 struct RuntimeReceipt {
     version: String,
@@ -363,6 +375,7 @@ fn download(
     url: &str,
     path: &Path,
     resume: bool,
+    progress: Option<ProgressFn>,
 ) -> Result<(), String> {
     let offset = if resume {
         std::fs::metadata(path)
@@ -380,7 +393,7 @@ fn download(
         .map_err(|error| format!("download request failed: {error}"))?;
     if offset > 0 && response.status() == reqwest::StatusCode::RANGE_NOT_SATISFIABLE {
         std::fs::remove_file(path).ok();
-        return download(client, url, path, false);
+        return download(client, url, path, false, progress);
     }
     let appending = offset > 0 && response.status() == reqwest::StatusCode::PARTIAL_CONTENT;
     if !response.status().is_success() {
@@ -396,8 +409,36 @@ fn download(
     let mut file = options
         .open(path)
         .map_err(|error| format!("could not create {}: {error}", path.display()))?;
-    std::io::copy(&mut response, &mut file)
-        .map_err(|error| format!("could not save {}: {error}", path.display()))?;
+    let Some(progress) = progress else {
+        std::io::copy(&mut response, &mut file)
+            .map_err(|error| format!("could not save {}: {error}", path.display()))?;
+        return file
+            .flush()
+            .map_err(|error| format!("could not finish download: {error}"));
+    };
+    let mut downloaded = if appending { offset } else { 0 };
+    let total = response
+        .content_length()
+        .map(|length| length + downloaded)
+        .unwrap_or(0);
+    let mut buffer = vec![0u8; 256 * 1024];
+    let mut last_report = std::time::Instant::now();
+    progress(RuntimeProgress { phase: "download", downloaded, total });
+    loop {
+        let read = response.read(&mut buffer)
+            .map_err(|error| format!("could not save {}: {error}", path.display()))?;
+        if read == 0 {
+            break;
+        }
+        file.write_all(&buffer[..read])
+            .map_err(|error| format!("could not save {}: {error}", path.display()))?;
+        downloaded += read as u64;
+        if last_report.elapsed() >= std::time::Duration::from_millis(250) {
+            last_report = std::time::Instant::now();
+            progress(RuntimeProgress { phase: "download", downloaded, total });
+        }
+    }
+    progress(RuntimeProgress { phase: "download", downloaded, total });
     file.flush()
         .map_err(|error| format!("could not finish download: {error}"))
 }
@@ -520,6 +561,7 @@ fn install_or_stage(
     backend: &str,
     update: bool,
     state: Option<&crate::server::ServerState>,
+    progress: ProgressFn,
 ) -> Result<RuntimeStatus, String> {
     if !matches!(backend, "cuda" | "cuda12" | "rocm" | "vulkan") {
         return Err("choose CUDA, CUDA 12 compatibility, ROCm, or Vulkan".into());
@@ -576,14 +618,16 @@ fn install_or_stage(
     };
     let client = client_builder.build().map_err(|error| error.to_string())?;
     let result = (|| {
-        download(&client, &download_url("SHA256SUMS")?, &checksum, false)?;
-        download(&client, &download_url(&artifact)?, &archive, true)?;
+        download(&client, &download_url("SHA256SUMS")?, &checksum, false, None)?;
+        download(&client, &download_url(&artifact)?, &archive, true, Some(progress))?;
         let text = std::fs::read_to_string(&checksum).map_err(|error| error.to_string())?;
         let expected = checksum_for(&text, &artifact)?;
+        progress(RuntimeProgress { phase: "verify", downloaded: 0, total: 0 });
         if hash(&archive)? != expected {
             std::fs::remove_file(&archive).ok();
             return Err("SHA-256 verification failed. The runtime was not installed.".into());
         }
+        progress(RuntimeProgress { phase: "extract", downloaded: 0, total: 0 });
         inspect_archive(&archive)?;
         extract(&archive, &staging)?;
         if !staging.join(server_name()).is_file() {
@@ -624,17 +668,21 @@ fn install_or_stage(
 }
 
 #[cfg(target_os = "windows")]
-pub fn install(backend: &str, state: &crate::server::ServerState) -> Result<RuntimeStatus, String> {
-    install_or_stage(backend, false, Some(state))
+pub fn install(
+    backend: &str,
+    state: &crate::server::ServerState,
+    progress: ProgressFn,
+) -> Result<RuntimeStatus, String> {
+    install_or_stage(backend, false, Some(state), progress)
 }
 
 #[cfg(target_os = "windows")]
-pub fn update(backend: &str) -> Result<RuntimeStatus, String> {
-    install_or_stage(backend, true, None)
+pub fn update(backend: &str, progress: ProgressFn) -> Result<RuntimeStatus, String> {
+    install_or_stage(backend, true, None, progress)
 }
 
 #[cfg(not(target_os = "windows"))]
-pub fn update(_backend: &str) -> Result<RuntimeStatus, String> {
+pub fn update(_backend: &str, _progress: ProgressFn) -> Result<RuntimeStatus, String> {
     Err("automatic runtime updates are currently available on Windows only".into())
 }
 
@@ -667,6 +715,7 @@ pub fn activate_pending(state: &crate::server::ServerState) -> Result<(), String
 pub fn install(
     _backend: &str,
     _state: &crate::server::ServerState,
+    _progress: ProgressFn,
 ) -> Result<RuntimeStatus, String> {
     Err("automatic runtime installation is currently available on Windows only".into())
 }

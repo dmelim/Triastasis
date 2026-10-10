@@ -312,8 +312,16 @@ fn runtime_status() -> Result<runtime::RuntimeStatus, String> {
 }
 
 #[tauri::command]
-async fn update_runtime(backend: String) -> Result<runtime::RuntimeStatus, String> {
-    tauri::async_runtime::spawn_blocking(move || runtime::update(&backend))
+async fn update_runtime(
+    app: tauri::AppHandle,
+    backend: String,
+) -> Result<runtime::RuntimeStatus, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let progress = |payload: runtime::RuntimeProgress| {
+            let _ = app.emit("runtime-download-progress", payload);
+        };
+        runtime::update(&backend, &progress)
+    })
         .await
         .map_err(|error| format!("runtime update task failed: {error}"))?
 }
@@ -324,7 +332,10 @@ async fn install_runtime(
     backend: String,
 ) -> Result<runtime::RuntimeStatus, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        runtime::install(&backend, app.state::<ServerState>().inner())
+        let progress = |payload: runtime::RuntimeProgress| {
+            let _ = app.emit("runtime-download-progress", payload);
+        };
+        runtime::install(&backend, app.state::<ServerState>().inner(), &progress)
     })
     .await
     .map_err(|error| format!("runtime installation task failed: {error}"))?

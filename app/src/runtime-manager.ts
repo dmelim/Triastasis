@@ -1,4 +1,4 @@
-import { invoke } from "./tauri";
+import { invoke, listen } from "./tauri";
 
 export interface RuntimeStatus {
   installed: boolean;
@@ -15,6 +15,18 @@ export interface RuntimeStatus {
   portable: boolean;
   recommendedBackend: string;
   recommendation: string;
+}
+
+/** Payload of `runtime-download-progress`; `total` is 0 when the size is unknown. */
+export interface RuntimeProgress {
+  phase: "download" | "verify" | "extract";
+  downloaded: number;
+  total: number;
+}
+
+/** Subscribe to runtime download progress (noop in the browser). */
+export function onRuntimeProgress(handler: (progress: RuntimeProgress) => void): Promise<() => void> {
+  return listen<RuntimeProgress>("runtime-download-progress", handler);
 }
 
 export function scanRuntime(): Promise<RuntimeStatus> {

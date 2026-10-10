@@ -1,6 +1,7 @@
 import { runtimeDownloadError, runtimePresentation } from "./runtime-presentation";
 import { scanRuntime, updateRuntime, runtimeLabel } from "./runtime-manager";
 import { notifySettingsAction, runtimeNumbers, saveAndRestart } from "./settings-actions";
+import { withRuntimeProgress } from "./runtime-progress-view";
 // Settings page: shows the resolved config and lets the user adjust the bits
 // that make sense per environment. In Tauri, saving hands the config to the shell
 // (which restarts the server); in the browser we only expose host/port.
@@ -191,7 +192,7 @@ async function renderRuntimeUpdate(body: HTMLElement): Promise<void> {
       button.setAttribute("aria-busy", "true");
       button.textContent = "Downloading and verifying runtime...";
       try {
-        await updateRuntime(runtime.backend);
+        await withRuntimeProgress(area, () => updateRuntime(runtime.backend));
         window.dispatchEvent(new Event("runtime-status-changed"));
         await renderRuntimeUpdate(body);
       } catch (error) {
