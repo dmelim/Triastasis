@@ -543,6 +543,7 @@ let abort: AbortController | null = null;
 let elapsedTimer: number | null = null;
 let galleryUrls: string[] = [];
 let libraryUrls: string[] = [];
+const libraryPreviewBlobs = new WeakMap<HTMLImageElement, Blob>();
 let candidateUrls: string[] = [];
 let warnedEphemeral = false;
 let maskObjectUrl: string | null = null;
@@ -3068,7 +3069,7 @@ async function applyProjectChoice(asset: AssetGroup, choice: ProjectChoice): Pro
     const detail = (error as Error).message || "Could not update project";
     toast(saved ? `${detail}. ${saved} of ${records.length} versions were updated. Repeat the change to finish the rest.` : detail, "err");
   }
-  renderLibraryViewNow(true);
+  renderLibraryViewNow();
 }
 
 async function chooseAssetProject(asset: AssetGroup): Promise<void> {
@@ -3080,11 +3081,11 @@ async function chooseAssetProject(asset: AssetGroup): Promise<void> {
   if (choice) await applyProjectChoice(asset, choice);
 }
 
-function renderLibraryAsset(asset: AssetGroup): HTMLElement {
+function renderLibraryAsset(asset: AssetGroup, existing?: HTMLElement): HTMLElement {
   const records = asset.records;
   const representative = records.find((record) => record.id === activeId) ?? records[0];
   const assetName = assetDisplayName(records);
-  const item = document.createElement("article");
+  const item = existing ?? document.createElement("article");
   item.className = `asset-item library-asset-item${asset.assetId === selectedAssetId ? " active" : ""}`;
   item.dataset.assetId = asset.assetId;
   item.tabIndex = 0;
@@ -3185,14 +3186,24 @@ function renderLibraryAsset(asset: AssetGroup): HTMLElement {
   });
   actions.appendChild(removeBtn);
   itemHead.append(name, actions);
-  item.appendChild(itemHead);
+  const previousHead = item.querySelector(".asset-item-head");
+  if (previousHead) previousHead.replaceWith(itemHead);
+  else item.appendChild(itemHead);
 
-  const img = document.createElement("img");
+  const img = item.querySelector("img") ?? document.createElement("img");
   img.loading = "lazy";
   img.decoding = "async";
-  const url = URL.createObjectURL(representative.thumb ?? representative.input);
-  libraryUrls.push(url);
-  img.src = url;
+  const preview = representative.thumb ?? representative.input;
+  if (libraryPreviewBlobs.get(img) !== preview) {
+    if (img.src) {
+      URL.revokeObjectURL(img.src);
+      libraryUrls = libraryUrls.filter((url) => url !== img.src);
+    }
+    const url = URL.createObjectURL(preview);
+    libraryUrls.push(url);
+    img.src = url;
+    libraryPreviewBlobs.set(img, preview);
+  }
   img.alt = `${representative.name} asset preview`;
   const text = document.createElement("div");
   text.className = "asset-item-meta";
@@ -3201,18 +3212,21 @@ function renderLibraryAsset(asset: AssetGroup): HTMLElement {
   const latest = document.createElement("span");
   latest.textContent = `Latest: ${representative.label}`;
   text.append(count, latest);
-  item.append(img, text);
+  if (!img.parentElement) item.appendChild(img);
+  const previousMeta = item.querySelector(".asset-item-meta");
+  if (previousMeta) previousMeta.replaceWith(text);
+  else item.appendChild(text);
 
   const openAsset = async (): Promise<void> => {
     await loadRecordData(representative);
   };
-  item.addEventListener("click", () => void openAsset());
-  item.addEventListener("keydown", (event) => {
+  item.onclick = () => void openAsset();
+  item.onkeydown = (event) => {
     if (event.target === item && (event.key === "Enter" || event.key === " ")) {
       event.preventDefault();
       void openAsset();
     }
-  });
+  };
   return item;
 }
 
@@ -3255,14 +3269,9 @@ function syncProjectFilter(): void {
   refreshSelect(libraryProject);
 }
 
-function renderLibraryView(): void { renderLibraryViewNow(false); }
+function renderLibraryView(): void { renderLibraryViewNow(); }
 
-function renderLibraryViewNow(preserveCards: boolean): void {
-  if (!preserveCards) {
-    libraryUrls.forEach((url) => URL.revokeObjectURL(url));
-    libraryUrls = [];
-    libraryGrid.innerHTML = "";
-  }
+function renderLibraryViewNow(): void {
   syncProjectFilter();
   const filtered = filterLibraryEntries(
     currentAssetGroups.map((asset) => {
@@ -3290,7 +3299,7 @@ function renderLibraryViewNow(preserveCards: boolean): void {
     },
   );
 
-  if (preserveCards) {
+  {
     const visible = new Set(filtered.map((asset) => asset.assetId));
     for (const child of Array.from(libraryGrid.children)) {
       if (visible.has((child as HTMLElement).dataset.assetId ?? "")) continue;
@@ -3326,7 +3335,7 @@ function renderLibraryViewNow(preserveCards: boolean): void {
   const existing = new Map(Array.from(libraryGrid.children).map((element) => [(element as HTMLElement).dataset.assetId, element as HTMLElement]));
   let position = libraryGrid.firstElementChild;
   for (const asset of filtered) {
-    const card = existing.get(asset.assetId) ?? renderLibraryAsset(asset);
+    const card = renderLibraryAsset(asset, existing.get(asset.assetId));
     const project = assetProject(asset.records);
     const button = card.querySelector<HTMLButtonElement>(".project-action")!;
     const label = project ? `Project: ${project.name}. Change project` : "Add asset to a project";
