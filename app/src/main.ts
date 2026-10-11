@@ -14,6 +14,7 @@ import type { BufferGeometry, Mesh, Object3D } from "three";
 import { generate, getGenerationProgress, health, type NativeProgress } from "./api";
 import { loadConfig } from "./config";
 import { createButton } from "./design-system/button";
+import { bindDialog, createDialog } from "./design-system/dialog";
 import { destroySelect, enhanceSelect, refreshSelect } from "./design-system/select";
 import {
   busyContentFor,
@@ -255,13 +256,12 @@ const editRedoBtn = $<HTMLButtonElement>("edit-redo");
 const editExportBtn = $<HTMLButtonElement>("edit-export-glb");
 const editSaveDerivedBtn = $<HTMLButtonElement>("edit-save-derived");
 const editLimitations = $("edit-limitations");
-const renameModal = $("rename-modal");
+const renameModal = $<HTMLDialogElement>("rename-modal");
 const renameTitle = $("rename-title");
 const renameLabel = $("rename-label");
 const renameForm = $<HTMLFormElement>("rename-form");
 const renameInput = $<HTMLInputElement>("rename-input");
 const renameError = $("rename-error");
-const renameCloseBtn = $<HTMLButtonElement>("rename-close");
 const renameCancelBtn = $<HTMLButtonElement>("rename-cancel");
 
 const targetFacesMode = $<HTMLSelectElement>("ctl-target-faces-mode");
@@ -313,25 +313,21 @@ document.addEventListener("keydown", (event) => {
 
 type RenameKind = "asset" | "version";
 let resolveRename: ((value: string | null) => void) | null = null;
-let renameOpener: HTMLElement | null = null;
+const renameDialog = bindDialog(renameModal, () => closeRenameModal(null));
 let initialRenameValue = "";
 
 function closeRenameModal(value: string | null): void {
   if (!resolveRename) return;
   const resolve = resolveRename;
   resolveRename = null;
-  renameModal.classList.add("hidden");
+  renameDialog.close();
   renameInput.removeAttribute("aria-invalid");
   renameError.textContent = "";
-  const opener = renameOpener;
-  renameOpener = null;
   resolve(value);
-  if (opener && document.contains(opener)) opener.focus();
 }
 
 function requestRename(kind: RenameKind, currentValue: string): Promise<string | null> {
   if (resolveRename) closeRenameModal(null);
-  renameOpener = document.activeElement as HTMLElement | null;
   initialRenameValue = currentValue.trim();
   const noun = kind === "asset" ? "asset" : "version";
   renameTitle.textContent = `Rename ${noun}`;
@@ -339,11 +335,8 @@ function requestRename(kind: RenameKind, currentValue: string): Promise<string |
   renameInput.value = currentValue;
   renameInput.removeAttribute("aria-invalid");
   renameError.textContent = "";
-  renameModal.classList.remove("hidden");
-  requestAnimationFrame(() => {
-    renameInput.focus();
-    renameInput.select();
-  });
+  renameDialog.open(renameInput);
+  renameInput.select();
   return new Promise((resolve) => {
     resolveRename = resolve;
   });
@@ -365,32 +358,7 @@ renameInput.addEventListener("input", () => {
   renameInput.removeAttribute("aria-invalid");
   renameError.textContent = "";
 });
-renameCloseBtn.addEventListener("click", () => closeRenameModal(null));
 renameCancelBtn.addEventListener("click", () => closeRenameModal(null));
-renameModal.addEventListener("click", (event) => {
-  if (event.target === renameModal) closeRenameModal(null);
-});
-renameModal.addEventListener("keydown", (event) => {
-  if (event.key === "Escape") {
-    event.preventDefault();
-    closeRenameModal(null);
-    return;
-  }
-  if (event.key !== "Tab") return;
-  const focusable = Array.from(
-    renameModal.querySelectorAll<HTMLElement>('button, input, [tabindex]:not([tabindex="-1"])'),
-  ).filter((element) => !(element as HTMLButtonElement).disabled && element.offsetParent !== null);
-  if (!focusable.length) return;
-  const first = focusable[0];
-  const last = focusable[focusable.length - 1];
-  if (event.shiftKey && document.activeElement === first) {
-    event.preventDefault();
-    last.focus();
-  } else if (!event.shiftKey && document.activeElement === last) {
-    event.preventDefault();
-    first.focus();
-  }
-});
 
 // ---- state ----
 let viewer: Viewer | null = null;
@@ -433,34 +401,33 @@ interface DialogChoice {
 }
 
 async function chooseInDialog(title: string, message: string, choices: DialogChoice[]): Promise<string> {
-  const dialog = document.createElement("dialog");
-  dialog.className = "unsaved-dialog";
-  const heading = document.createElement("h2");
-  heading.textContent = title;
-  const text = document.createElement("p");
-  text.textContent = message;
-  const actions = document.createElement("div");
-  actions.className = "unsaved-actions";
-  for (const choice of choices) {
-    const button = document.createElement("button");
-    button.className = `button button--${choice.variant}`;
-    button.value = choice.value;
-    button.textContent = choice.label;
-    actions.append(button);
-  }
-  dialog.append(heading, text, actions);
-  document.body.appendChild(dialog);
-  const choice = await new Promise<string>((resolve) => {
-    dialog.addEventListener("click", (event) => {
-      const target = (event.target as HTMLElement).closest<HTMLButtonElement>("button[value]");
-      if (target) dialog.close(target.value);
-    });
-    dialog.addEventListener("close", () => resolve(dialog.returnValue || "cancel"), { once: true });
-    dialog.showModal();
-    dialog.querySelector<HTMLButtonElement>('button[value="cancel"]')!.focus();
+  return new Promise<string>((resolve) => {
+    const finish = (value: string): void => {
+      dialog.close();
+      dialog.element.remove();
+      resolve(value);
+    };
+    const dialog = createDialog(title, () => finish("cancel"));
+    dialog.element.dataset.dialogKind = "choice";
+    const text = document.createElement("p");
+    text.textContent = message;
+    const actions = document.createElement("footer");
+    actions.className = "modal-actions";
+    const ordered = [
+      ...choices.filter((choice) => choice.value === "cancel"),
+      ...choices.filter((choice) => choice.value !== "cancel" && choice.variant === "secondary"),
+      ...choices.filter((choice) => choice.value !== "cancel" && choice.variant !== "secondary"),
+    ];
+    for (const choice of ordered) {
+      const button = createButton(choice);
+      button.value = choice.value;
+      button.addEventListener("click", () => finish(choice.value));
+      actions.append(button);
+    }
+    dialog.body.append(text, actions);
+    document.body.append(dialog.element);
+    dialog.open(actions.querySelector<HTMLButtonElement>('button[value="cancel"]'));
   });
-  dialog.remove();
-  return choice;
 }
 
 async function confirmDestructive(title: string, message: string, confirmLabel: string): Promise<boolean> {
@@ -4010,13 +3977,13 @@ document.addEventListener("visibilitychange", () => {
 });
 
 // ---- Triastasis manifest import / standalone GLB / recovery ----
-const manifestModal = $("manifest-modal");
+const manifestModal = $<HTMLDialogElement>("manifest-modal");
+const manifestDialog = bindDialog(manifestModal, closeManifestModal);
 const manifestTitle = $("manifest-title");
 const manifestBody = $("manifest-body");
 const recoveryBanner = $("recovery-banner");
 let previewUrlCleanup: (() => void) | null = null;
 let standaloneView: { glbPath: string | null; linkedPath: string | null } | null = null;
-let manifestOpener: HTMLElement | null = null;
 
 function manifestFocusables(): HTMLElement[] {
   return Array.from(
@@ -4028,29 +3995,6 @@ function manifestFocusables(): HTMLElement[] {
       element.offsetParent !== null,
   );
 }
-
-// Focus trap + Escape; initial focus and restore-on-close live in
-// openManifestPreview/closeManifestModal.
-manifestModal.addEventListener("keydown", (event) => {
-  if (event.key === "Escape") {
-    event.preventDefault();
-    closeManifestModal();
-    return;
-  }
-  if (event.key !== "Tab") return;
-  const items = manifestFocusables();
-  if (!items.length) return;
-  const first = items[0];
-  const last = items[items.length - 1];
-  const active = document.activeElement as HTMLElement | null;
-  if (event.shiftKey && (active === first || !manifestModal.contains(active))) {
-    event.preventDefault();
-    last.focus();
-  } else if (!event.shiftKey && active === last) {
-    event.preventDefault();
-    first.focus();
-  }
-});
 
 // 1x1 transparent PNG placeholder for assets imported without a source image.
 const PLACEHOLDER_PNG_B64 =
@@ -4065,22 +4009,15 @@ function closeManifestModal(): void {
   // Every user close path (Escape, backdrop, header, footer) is blocked while
   // an import/requeue is in flight. Success uses completeManifestSuccess().
   if (manifestBusy) return;
-  manifestModal.classList.add("hidden");
+  manifestDialog.close();
   cleanupManifestModal();
-  const opener = manifestOpener;
-  manifestOpener = null;
-  if (opener && document.contains(opener)) opener.focus();
 }
 
 /** Success-only completion: un-busy first, then close and clean up. */
 function completeManifestSuccess(): void {
   endManifestBusy();
-  manifestModal.classList.add("hidden");
+  manifestDialog.close();
   cleanupManifestModal();
-  const opener = manifestOpener;
-  manifestOpener = null;
-  if (opener && document.contains(opener)) opener.focus();
-  else manifestBody.querySelector<HTMLButtonElement>("button")?.focus();
 }
 
 function cleanupManifestModal(): void {
@@ -4089,11 +4026,6 @@ function cleanupManifestModal(): void {
     previewUrlCleanup = null;
   }
 }
-
-$("manifest-close").addEventListener("click", closeManifestModal);
-manifestModal.addEventListener("click", (e) => {
-  if (e.target === manifestModal) closeManifestModal();
-});
 
 function renderManifestFacts(m: GenerationManifest): string {
   const facts: string[] = [
@@ -4171,14 +4103,13 @@ async function openManifestPreview(path: string): Promise<void> {
       <div>
         ${renderManifestFacts(m)}
         ${issuesHtml}
-        <div class="modal-actions">
-          <button id="manifest-cancel" class="button button--secondary" type="button">Close</button>
-          ${actions.join("")}
-        </div>
       </div>
-    </div>`;
-  manifestOpener = (document.activeElement as HTMLElement) ?? null;
-  manifestModal.classList.remove("hidden");
+    </div>
+    <footer class="modal-actions">
+      <button id="manifest-cancel" class="button button--secondary" type="button">Close</button>
+      ${actions.join("")}
+    </footer>`;
+  manifestDialog.open();
   const initialFocus =
     manifestBody.querySelector<HTMLElement>("#manifest-import, #manifest-requeue") ??
     manifestFocusables()[0];
@@ -4836,8 +4767,7 @@ async function openSweepRecoveryView(groupId: string, anchorPath: string): Promi
         }
       </div>
     </div>`;
-  manifestOpener = (document.activeElement as HTMLElement) ?? null;
-  manifestModal.classList.remove("hidden");
+  manifestDialog.open();
   (
     manifestBody.querySelector<HTMLElement>("#sweep-requeue") ??
     manifestBody.querySelector<HTMLElement>("#manifest-cancel")

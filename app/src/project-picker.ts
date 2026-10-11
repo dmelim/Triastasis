@@ -1,4 +1,5 @@
 import { createButton } from "./design-system/button";
+import { createDialog } from "./design-system/dialog";
 import {
   DEFAULT_PROJECT_ICON,
   MAX_PROJECT_NAME_LENGTH,
@@ -31,24 +32,8 @@ let active: ((choice: ProjectChoice | null) => void) | null = null;
 /** Opens the project dialog and resolves with the user's choice, or null if dismissed. */
 export function requestProject(options: ProjectPickerOptions): Promise<ProjectChoice | null> {
   active?.(null);
-  const opener = document.activeElement as HTMLElement | null;
-
-  const modal = document.createElement("div");
-  modal.className = "modal";
-  modal.setAttribute("role", "dialog");
-  modal.setAttribute("aria-modal", "true");
-  modal.setAttribute("aria-label", "Choose project");
-  const card = document.createElement("div");
-  card.className = "modal-card project-modal-card";
-  const head = document.createElement("div");
-  head.className = "modal-head";
-  const title = document.createElement("span");
-  title.textContent = `Project for ${options.assetName}`;
-  title.className = "project-modal-title";
-  const closeBtn = createButton({ label: "Close project dialog", variant: "icon", icon: "x", className: "modal-close" });
-  head.append(title, closeBtn);
-  const body = document.createElement("div");
-  body.className = "modal-body";
+  const dialog = createDialog(`Project for ${options.assetName}`, () => active?.(null), "project-modal-card");
+  const { body } = dialog;
 
   const list = document.createElement("div");
   list.className = "project-list";
@@ -75,7 +60,7 @@ export function requestProject(options: ProjectPickerOptions): Promise<ProjectCh
   error.setAttribute("role", "alert");
   const actions = document.createElement("div");
   actions.className = "modal-actions";
-  const cancelEdit = createButton({ label: "Cancel edit", variant: "ghost", className: "hidden" });
+  const cancelEdit = createButton({ label: "Cancel", variant: "secondary" });
   const submit = createButton({ label: "Create and assign", variant: "primary" });
   submit.type = "submit";
   actions.append(cancelEdit, submit);
@@ -112,7 +97,6 @@ export function requestProject(options: ProjectPickerOptions): Promise<ProjectCh
     editing = project;
     formTitle.textContent = project ? `Edit ${project.name}` : "New project";
     setSubmitLabel(project ? "Save changes" : "Create and assign");
-    cancelEdit.classList.toggle("hidden", !project);
     nameInput.value = project?.name ?? "";
     chooseIcon(project?.icon ?? DEFAULT_PROJECT_ICON);
     error.textContent = "";
@@ -123,9 +107,9 @@ export function requestProject(options: ProjectPickerOptions): Promise<ProjectCh
     const finish = (choice: ProjectChoice | null): void => {
       if (active !== finish) return;
       active = null;
-      modal.remove();
+      dialog.close();
+      dialog.element.remove();
       resolve(choice);
-      if (opener && document.contains(opener)) opener.focus();
     };
     active = finish;
 
@@ -179,26 +163,11 @@ export function requestProject(options: ProjectPickerOptions): Promise<ProjectCh
       hint.textContent = merging ? `Merges into the existing project "${merging.name}".` : "";
       setSubmitLabel(editing ? (merging ? `Merge into ${merging.name}` : "Save changes") : "Create and assign");
     });
-    cancelEdit.addEventListener("click", () => setMode(null));
-    closeBtn.addEventListener("click", () => finish(null));
-    modal.addEventListener("click", (event) => { if (event.target === modal) finish(null); });
-    modal.addEventListener("keydown", (event) => {
-      if (event.key === "Escape") { event.preventDefault(); finish(null); return; }
-      if (event.key !== "Tab") return;
-      const focusable = Array.from(modal.querySelectorAll<HTMLElement>("button, input"))
-        .filter((element) => !(element as HTMLButtonElement).disabled && element.offsetParent !== null);
-      if (!focusable.length) return;
-      const first = focusable[0];
-      const last = focusable[focusable.length - 1];
-      if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus(); }
-      else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
-    });
+    cancelEdit.addEventListener("click", () => finish(null));
 
     setMode(null);
     body.append(list, form);
-    card.append(head, body);
-    modal.append(card);
-    document.body.append(modal);
-    requestAnimationFrame(() => (list.querySelector<HTMLElement>(".project-option.selected") ?? nameInput).focus());
+    document.body.append(dialog.element);
+    dialog.open(list.querySelector<HTMLElement>(".project-option.selected") ?? nameInput);
   });
 }

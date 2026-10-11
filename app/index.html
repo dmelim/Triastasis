@@ -686,22 +686,22 @@
     </main>
 
 
-    <div id="manifest-modal" class="modal hidden">
+    <dialog id="manifest-modal" class="modal hidden" aria-labelledby="manifest-title">
       <div class="modal-card">
         <div class="modal-head">
-          <span id="manifest-title">Generation</span>
+          <h2 class="modal-title" id="manifest-title">Generation</h2>
           <button id="manifest-close" class="button button--icon modal-close" type="button" aria-label="Close" title="Close">
             <span class="button-icon icon-x" aria-hidden="true"></span>
           </button>
         </div>
         <div id="manifest-body" class="modal-body" aria-live="polite"></div>
       </div>
-    </div>
+    </dialog>
 
-    <div id="rename-modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="rename-title">
+    <dialog id="rename-modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="rename-title">
       <div class="modal-card rename-modal-card">
         <div class="modal-head">
-          <span id="rename-title">Rename asset</span>
+          <h2 class="modal-title" id="rename-title">Rename asset</h2>
           <button id="rename-close" class="button button--icon modal-close" type="button" aria-label="Close rename dialog" title="Close">
             <span class="button-icon icon-x" aria-hidden="true"></span>
           </button>
@@ -718,7 +718,7 @@
           </div>
         </form>
       </div>
-    </div>
+    </dialog>
 
     <div id="toasts" class="toasts" aria-live="polite"></div>
 

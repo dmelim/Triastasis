@@ -19,6 +19,7 @@
   --font-mono: var(--font-family-mono);
   --font-size-body: 14px;
   --font-size-title: 17px;
+  --font-size-dialog-title: 16px;
   --font-size-label: 13px;
   --font-size-caption: 12px;
   --font-size-micro: 11px;
@@ -100,6 +101,9 @@
   --surface-accent: var(--color-accent-surface);
   --surface-success: var(--color-success-surface);
   --surface-danger: var(--color-danger-surface);
+  --surface-danger-action: #b53730;
+  --surface-danger-action-hover: #a12e28;
+  --content-on-danger: var(--color-text);
   --surface-warning: var(--color-warning-surface);
 
   /* Semantic content. */

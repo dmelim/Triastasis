@@ -11,7 +11,7 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const out = path.join(root, 'src-tauri/target/ui-review');
 await fs.mkdir(out, { recursive: true });
 const profile = path.join(out, 'profile-' + Date.now());
-const server = await createServer({ root, plugins: [{ name: 'test-only-hooks', transform(code, id) { if (id.endsWith('/src/main.ts')) return code + '\nwindow.__review = {viewer:()=>viewer, beginManifestBusy, endManifestBusy, closeManifestModal, loadRecordData, candidates:(slots)=>{ candidates=slots;renderCandidates(); }};'; } }], server: { host: '127.0.0.1', port: 1421, strictPort: true, watch: { ignored: ["**/src-tauri/target/**"] } } });
+const server = await createServer({ root, optimizeDeps: { entries: ['index.html'], include: ['three', 'three/examples/jsm/controls/OrbitControls.js', 'three/examples/jsm/loaders/GLTFLoader.js'] }, plugins: [{ name: 'test-only-hooks', transform(code, id) { if (id.endsWith('/src/main.ts')) return code + '\nwindow.__review = {viewer:()=>viewer, beginManifestBusy, endManifestBusy, closeManifestModal, manifestDialog, loadRecordData, candidates:(slots)=>{ candidates=slots;renderCandidates(); }};'; } }], server: { host: '127.0.0.1', port: 1421, strictPort: true, watch: { ignored: ["**/src-tauri/target/**"] } } });
 await server.listen();
 const browser = process.env.TRIASTASIS_TEST_BROWSER ?? 'C:/Program Files/Google/Chrome/Application/chrome.exe';
 const chrome = spawn(browser, ['--headless=new', '--disable-extensions', '--disable-background-networking', '--no-first-run', '--no-default-browser-check', '--remote-debugging-port=0', '--user-data-dir=' + profile, '--window-size=1280,900', '--enable-unsafe-swiftshader', 'about:blank'], { windowsHide: true, stdio: 'ignore' });
@@ -35,6 +35,7 @@ try {
   async function evaluate(expression) { const r = await call('Runtime.evaluate', { expression, awaitPromise: true, returnByValue: true }); if (r.exceptionDetails) throw Error(r.exceptionDetails.exception?.description ?? r.exceptionDetails.text); return r.result.value; }
   async function until(expression) { for (let i = 0;i < 100;i++) { if (await evaluate(expression)) return; await new Promise(r => setTimeout(r, 100)); } console.log('PAGE', await evaluate('location.href + document.body.innerText.slice(0,1500)')); console.log('ERRORS', errors); throw Error('Timed out: ' + expression); }
   await call('Runtime.enable'); await call('Page.enable');
+  await call('Page.addScriptToEvaluateOnNewDocument', { source: 'Element.prototype.requestPointerLock = function() { return Promise.resolve(); };' });
   await call('Page.navigate', { url: 'http://127.0.0.1:1421/' });
   await until(`!!document.querySelector('#gallery') && document.querySelector('#gallery').getAttribute('aria-busy') === 'false'`);
   console.log('UI booted', await evaluate(`document.querySelector('#gallery').textContent`));
@@ -58,9 +59,9 @@ try {
   await until(`document.querySelector('#edit-status').textContent.includes('pending change')`);
   assert.equal(Number(await evaluate(`document.querySelector('#edit-position-x').value`)), 2);
   await evaluate(`document.querySelectorAll('.asset-item')[1].click()`);
-  await until(`!!document.querySelector('.unsaved-dialog[open]')`);
-  await evaluate(`document.querySelector('.unsaved-dialog button[value=cancel]').click()`);
-  await until(`!document.querySelector('.unsaved-dialog')`);
+  await until(`!!document.querySelector('dialog[data-dialog-kind="choice"][open]')`);
+  await evaluate(`document.querySelector('dialog[data-dialog-kind="choice"] button[value=cancel]').click()`);
+  await until(`!document.querySelector('dialog[data-dialog-kind="choice"]')`);
   assert.equal(Number(await evaluate(`document.querySelector('#edit-position-x').value`)), 2);
   await evaluate(`document.querySelector('#edit-save-derived').click()`);
   await until(`document.querySelector('#edit-status').textContent.includes('no unsaved changes')`);
@@ -68,9 +69,9 @@ try {
   await evaluate(`document.querySelector('#edit-position-x').value='3';document.querySelector('#edit-apply-transform').click()`);
   await until(`document.querySelector('#edit-status').textContent.includes('pending change') && !document.querySelector('#edit-save-derived').disabled`);
   await evaluate(`(async()=>{const {get}=await import('/src/store.ts');void window.__review.loadRecordData({...await get('A'),glb:new Blob(['bad'])});})()`);
-  await until(`!!document.querySelector('.unsaved-dialog[open]')`);
-  await evaluate(`document.querySelector('.unsaved-dialog button[value=discard]').click()`);
-  await until(`!document.querySelector('.unsaved-dialog') && !document.querySelector('#edit-save-derived').disabled`);
+  await until(`!!document.querySelector('dialog[data-dialog-kind="choice"][open]')`);
+  await evaluate(`document.querySelector('dialog[data-dialog-kind="choice"] button[value=discard]').click()`);
+  await until(`!document.querySelector('dialog[data-dialog-kind="choice"]') && !document.querySelector('#edit-save-derived').disabled`);
   assert.equal(Number(await evaluate(`document.querySelector('#edit-position-x').value`)), 3);
   console.log('PASS: invalid replacement preserves the original dirty edit copy');
   await evaluate(`window.__review.candidates([{seed:2147483647,status:'generating'},{seed:2147483646,status:'failed',error:'Synthetic failure detail'}])`);
@@ -78,7 +79,7 @@ try {
   assert.equal(layout.length, 2); assert.ok(layout.every(c => c.height >= 88 && c.direction === 'column')); assert.ok(layout[1].text.includes('Synthetic failure detail'));
   await call('Page.captureScreenshot', { format: 'png' }).then(r => fs.writeFile(path.join(out, 'candidates.png'), Buffer.from(r.data, 'base64')));
   console.log('PASS: candidate previews retain height with long seeds and visible failure details');
-  await evaluate(`document.querySelector('#manifest-modal').classList.remove('hidden');window.__review.beginManifestBusy();document.querySelector('#manifest-close').click();document.dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',bubbles:true}));`);
+  await evaluate(`window.__review.manifestDialog.open();window.__review.beginManifestBusy();document.querySelector('#manifest-close').click();document.querySelector('#manifest-modal').dispatchEvent(new Event('cancel',{cancelable:true}));`);
   assert.equal(await evaluate(`document.querySelector('#manifest-modal').classList.contains('hidden')`), false);
   await evaluate(`window.__review.endManifestBusy();document.querySelector('#manifest-close').click();`);
   assert.equal(await evaluate(`document.querySelector('#manifest-modal').classList.contains('hidden')`), true);
