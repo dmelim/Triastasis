@@ -1863,10 +1863,14 @@ input:focus-visible,
 .model-legacy { margin-top: 16px; padding: 12px 14px; border-radius: var(--radius-card); background: var(--surface-warning); display: flex; flex-direction: column; gap: 6px; align-items: flex-start; }
 .model-legacy p { margin: 0; font-size: .88rem; }
 .model-progress { margin-top: 16px; }
-.runtime-progress { display: flex; flex-direction: column; gap: 6px; width: 100%; margin-top: var(--space-2); }
-.runtime-progress p { margin: 0; color: var(--content-secondary); font-size: var(--font-size-caption); font-variant-numeric: tabular-nums; }
-.model-progress-bar { height: 8px; border-radius: var(--radius-pill); background: var(--surface-control); overflow: hidden; }
-.model-progress-bar > div { height: 100%; background: var(--color-accent); transition: width .3s ease; }
+.model-progress-bar { display: block; appearance: none; width: 100%; height: 8px; border: 0; border-radius: var(--radius-pill); background: var(--surface-control); overflow: hidden; }
+.model-progress-bar::-webkit-progress-bar { background: var(--surface-control); border-radius: var(--radius-pill); }
+.model-progress-bar::-webkit-progress-value { background: var(--color-accent); border-radius: var(--radius-pill); }
+.model-progress-bar::-moz-progress-bar { background: var(--color-accent); border-radius: var(--radius-pill); }
+.model-progress-bar:indeterminate { background: linear-gradient(90deg, var(--surface-control) 0%, var(--color-accent) 50%, var(--surface-control) 100%); background-size: 200% 100%; animation: download-progress-pulse 1.5s linear infinite; }
+.model-progress-bar:indeterminate::-webkit-progress-bar { background: transparent; }
+@keyframes download-progress-pulse { to { background-position: -200% 0; } }
+@media (prefers-reduced-motion: reduce) { .model-progress-bar:indeterminate { animation: none; } }
 .model-progress p { margin: 6px 0 0; font-size: .84rem; }
 .model-progress span { color: var(--content-secondary); font-size: .8rem; }
 .model-progress--failed { color: var(--content-danger); }

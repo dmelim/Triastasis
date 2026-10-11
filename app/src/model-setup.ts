@@ -39,6 +39,7 @@ import {
 import { isTauri, pickDirectory } from "./tauri";
 import { installRuntime, runtimeLabel, scanRuntime, type RuntimeStatus } from "./runtime-manager";
 import { withRuntimeProgress } from "./runtime-progress-view";
+import { downloadProgressHtml } from "./download-progress-view";
 
 function escapeHtml(value: string): string {
   return value
@@ -530,7 +531,7 @@ async function renderSetup(
       ? renderActivationStatus(activationFeedback.message, activationFeedback.state === "failed")
       : progress
         ? ["preparing", "downloading", "verifying"].includes(progress.state)
-          ? renderProgress(progress)
+          ? renderModelDownloadProgress(progress)
           : progress.state === "failed"
             ? renderDownloadFailure(progress)
             : ""
@@ -663,6 +664,7 @@ async function renderSetup(
             ).join("")}
           </div>
         </details>`}
+      <div id="runtime-setup-progress"></div>
       <p class="model-note">${runtime.portable ? "Portable mode installs the runtime beside Triastasis." : "The runtime is installed in your local application data and can be replaced by a future verified update."}</p>
     </section>`;
 
@@ -732,24 +734,25 @@ async function renderSetup(
   }
 }
 
-function renderProgress(progress: NonNullable<ReturnType<typeof modelDownloadSnapshot>["progress"]>): string {
-  const pct = progress.totalBytesTotal
-    ? Math.min(100, Math.round((progress.totalBytesDone / progress.totalBytesTotal) * 100))
-    : 0;
+export function renderModelDownloadProgress(progress: NonNullable<ReturnType<typeof modelDownloadSnapshot>["progress"]>): string {
+  const pct = progress.totalBytesTotal > 0
+    ? Math.max(0, Math.min(100, Math.floor((progress.totalBytesDone / progress.totalBytesTotal) * 100)))
+    : null;
   const detail =
     progress.state === "verifying"
-      ? "Verifying downloaded files..."
+      ? progress.fileName ? `Checking ${progress.fileName}...` : "Checking the model bundle..."
       : progress.fileName
-        ? `${escapeHtml(progress.fileName)} (${formatGigabytes(progress.fileBytesDone)} of ${formatGigabytes(progress.fileBytesTotal)})`
+        ? `${progress.fileName} (${formatGigabytes(progress.fileBytesDone)} of ${formatGigabytes(progress.fileBytesTotal)})`
         : "Preparing...";
-  const summary = progress.state === "preparing"
+  const summary = progress.state === "verifying" ? "Verifying downloaded files..." : progress.state === "preparing"
     ? "Starting download..."
-    : `${pct}%, ${formatSpeed(progress.bytesPerSecond)}, ${formatEta(progress.etaSeconds)} remaining`;
-  return `
-    <div class="model-progress" role="status" aria-label="Model download progress">
-      <div class="model-progress-bar" aria-hidden="true"><div style="width:${pct}%"></div></div>
-      <p>${summary}<br><span>${detail}</span></p>
-    </div>`;
+    : `${pct === null ? "Downloading..." : `${pct}%`}${progress.bytesPerSecond > 0 ? `, ${formatSpeed(progress.bytesPerSecond)}` : ""}${progress.etaSeconds !== null ? `, ${formatEta(progress.etaSeconds)} remaining` : ""}`;
+  return downloadProgressHtml({
+    fraction: progress.state === "downloading" && progress.totalBytesTotal > 0
+      ? progress.totalBytesDone / progress.totalBytesTotal : null,
+    summary,
+    detail,
+  }, "Model download progress");
 }
 
 function renderActivationStatus(message: string, isError: boolean): string {
@@ -872,11 +875,12 @@ function bindActions(root: HTMLElement, scan: ModelsScan, runtime: RuntimeStatus
           runtimeInstallInProgress = true;
           runtimeInstallError = null;
           ++setupRefreshVersion;
+          root.querySelector<HTMLElement>("#model-setup-message")?.classList.toggle("hidden", true);
+          btn.textContent = "Downloading...";
           root.querySelectorAll<HTMLButtonElement>("[data-act]").forEach((control) => {
             control.disabled = true;
           });
-          showMessage(root, `Downloading and verifying the ${runtimeLabel(backend)} runtime...`, false);
-          const messageBox = root.querySelector<HTMLElement>("#model-setup-message");
+          const messageBox = root.querySelector<HTMLElement>("#runtime-setup-progress");
           const installed = messageBox
             ? await withRuntimeProgress(messageBox, () => installRuntime(backend))
             : await installRuntime(backend);

@@ -112,7 +112,8 @@ test("runtime installation survives a pending render and errors survive polling 
     hardwareWait.resolve(null);
     await pendingRefresh;
     assert.equal(root.renders, rendersAtStart, "a hardware probe started before the click must not restore the idle screen");
-    assert.match(root.message.label.textContent, /Downloading and verifying/);
+    assert.match(root.innerHTML, /id="runtime-setup-progress"/);
+    assert.equal(root.message.classList.contains("hidden"), true, "downloads do not use a warning banner");
     assert.ok(root.buttons.every((button) => button.disabled));
 
     installation.reject(new Error("Test network failure"));
@@ -130,7 +131,7 @@ test("runtime installation survives a pending render and errors survive polling 
     installation = deferred<typeof missingRuntime>();
     const retry = root.buttons.find((button) => button.dataset.act === "install-runtime")!.onclick!();
     assert.equal(installCalls, 2);
-    assert.match(root.message.label.textContent, /Downloading and verifying/);
+    assert.equal(root.message.classList.contains("hidden"), true);
     runtime = { ...missingRuntime, installed: true, backend: "vulkan" };
     installation.resolve(runtime);
     await retry;
