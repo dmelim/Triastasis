@@ -52,7 +52,7 @@ import { escapeHtml, hasBlockingCoreIssue, manifestIssueText } from "./manifest-
 import { initModelDownloadState } from "./model-download-state";
 import { initModelSetup, openModelSetup } from "./model-setup";
 import { subscribeModelStorageRefresh } from "./model-settings";
-import { ensureServerReady } from "./server-startup";
+import { ensureServerReady, serverConnectionState } from "./server-startup";
 import type { ManifestMetrics, ManifestQualityWarning } from "./types";
 import {
   detectPlaneCollapse,
@@ -3857,14 +3857,17 @@ $("banner-settings").addEventListener("click", () => {
 // ---- server status ----
 let serverRecoveryInProgress = false;
 let serverRecoveryError: string | null = null;
+let serverStartupPending = isTauri();
 
 function showServerStarting(): void {
   serverDot.className = "dot";
   serverLabel.textContent = "starting";
   setupBanner.classList.remove("hidden");
+  setupBanner.classList.add("loading");
+  setupBanner.setAttribute("role", "status");
   (setupBanner.querySelector("span") as HTMLElement).textContent =
-    "Starting the local model server. This can take a few seconds.";
-  setupBannerButton.textContent = "Starting…";
+    "Starting the model server… This can take a few seconds.";
+  setupBannerButton.innerHTML = '<span class="spinner" aria-hidden="true"></span> Starting…';
   setupBannerButton.disabled = true;
   setupBanner.dataset.action = "retry-server";
 }
@@ -3892,19 +3895,22 @@ async function pollHealthInternal(): Promise<void> {
   serverConfigured = cfg.configured;
   backendBadge.textContent = cfg.backend !== "unknown" ? cfg.backend : "-";
   const ok = await health();
+  const connection = serverConnectionState(ok, cfg.configured, serverStartupPending, serverRecoveryInProgress);
   serverOnline = ok;
-  serverDot.className = "dot " + (ok ? "ok" : "err");
-  serverLabel.textContent = ok ? "ready" : cfg.configured ? "offline" : "setup needed";
+  serverDot.className = "dot " + (ok ? "ok" : connection === "starting" ? "" : "err");
+  serverLabel.textContent = connection === "setup" ? "setup needed" : connection;
+  setupBanner.classList.remove("loading");
   const needSetup = !ok && !cfg.configured;
   setupBanner.classList.toggle("hidden", !needSetup);
   if (needSetup) {
+    setupBannerButton.disabled = false;
     (setupBanner.querySelector("span") as HTMLElement).textContent =
       "No model bundle is ready. Complete onboarding before generating.";
     $("banner-settings").textContent = "Complete onboarding";
     setupBanner.dataset.action = "onboarding";
   } else if (!ok && cfg.configured) {
     setupBanner.classList.remove("hidden");
-    if (serverRecoveryInProgress) {
+    if (connection === "starting") {
       showServerStarting();
     } else {
       (setupBanner.querySelector("span") as HTMLElement).textContent = serverRecoveryError
@@ -5033,8 +5039,13 @@ async function boot(): Promise<void> {
   await refreshHardwareGuardrails();
   subscribeModelStorageRefresh();
   const cfg = await loadConfig(true);
-  if (isTauri() && cfg.configured && !(await health(800))) {
-    await recoverServer();
+  try {
+    if (isTauri() && cfg.configured) {
+      showServerStarting();
+      if (!(await health(800))) await recoverServer();
+    }
+  } finally {
+    serverStartupPending = false;
   }
   await pollHealth();
   void showRuntimeVersionNotice();
@@ -5049,6 +5060,8 @@ async function boot(): Promise<void> {
   }
 }
 void boot().catch((error) => {
+  serverStartupPending = false;
+  setupBanner.classList.remove("loading");
   if (document.body.classList.contains("startup-pending")) {
     document.body.classList.remove("startup-pending", "model-setup-active");
     $("model-setup").classList.add("hidden");

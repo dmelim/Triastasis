@@ -76,6 +76,8 @@ output {
   background: var(--surface-warning); color: var(--content-warning); padding: var(--space-2) var(--space-4);
   flex: 0 0 auto;
 }
+.banner.loading { background: var(--surface-panel); color: var(--content-secondary); }
+.banner.loading .link-btn { display: inline-flex; align-items: center; gap: 6px; }
 #recovery-review, #gallery-recovery-import { color: var(--content-warning); font-size: inherit; text-decoration: underline; }
 #recovery-review:hover:not(:disabled), #gallery-recovery-import:hover:not(:disabled) { color: var(--content-warning); }
 #recovery-review:disabled, #gallery-recovery-import:disabled { text-decoration: underline; }

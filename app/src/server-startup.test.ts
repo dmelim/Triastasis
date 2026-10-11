@@ -1,8 +1,16 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { ensureServerReady } from "./server-startup";
+import { ensureServerReady, serverConnectionState } from "./server-startup";
 
 const noDelay = async (): Promise<void> => {};
+
+test("shows loading until startup settles, then offers recovery only while offline", () => {
+  assert.equal(serverConnectionState(false, true, true, false), "starting");
+  assert.equal(serverConnectionState(false, true, false, true), "starting");
+  assert.equal(serverConnectionState(false, true, false, false), "offline");
+  assert.equal(serverConnectionState(true, true, true, true), "ready");
+  assert.equal(serverConnectionState(false, false, true, false), "setup");
+});
 
 test("accepts a server that is already ready", async () => {
   let restarts = 0;
