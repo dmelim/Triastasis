@@ -89,6 +89,11 @@ try {
   await evaluate('window.__review.beginManifestBusy()');
   await key('Escape');
   assert.equal(await evaluate("document.querySelector('#manifest-modal').open"),true);
+  // Without a user activation in between, Chromium no longer lets cancel be prevented.
+  await key('Escape');
+  await new Promise(r => setTimeout(r, 100));
+  assert.equal(await evaluate("document.querySelector('#manifest-modal').open && !document.querySelector('#manifest-modal').classList.contains('hidden')"),true);
+  assert.match(await evaluate("document.querySelector('#manifest-body').textContent"),/ready to import/);
   await evaluate('window.__review.endManifestBusy()');
   await evaluate("document.querySelector('#manifest-close').focus()");
   await key('Tab','Tab',8);

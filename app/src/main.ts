@@ -3978,7 +3978,7 @@ document.addEventListener("visibilitychange", () => {
 
 // ---- Triastasis manifest import / standalone GLB / recovery ----
 const manifestModal = $<HTMLDialogElement>("manifest-modal");
-const manifestDialog = bindDialog(manifestModal, closeManifestModal);
+const manifestDialog = bindDialog(manifestModal, closeManifestModal, () => !manifestBusy);
 const manifestTitle = $("manifest-title");
 const manifestBody = $("manifest-body");
 const recoveryBanner = $("recovery-banner");

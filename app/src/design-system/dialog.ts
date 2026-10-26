@@ -1,12 +1,31 @@
 import { createButton } from "./button";
 
 /** Shared lifecycle for static and generated dialog shells. Native modality
- * keeps focus inside the top dialog and makes the background inert. */
-export function bindDialog(element: HTMLDialogElement, dismiss: () => void) {
+ * keeps focus inside the top dialog and makes the background inert.
+ * `canDismiss` returning false keeps the dialog open while work is in flight. */
+export function bindDialog(element: HTMLDialogElement, dismiss: () => void, canDismiss: () => boolean = () => true) {
   let opener: HTMLElement | null = null;
+  // `close` is dispatched as a task, after close() returns.
+  let expectedClose = false;
+  const finishClose = (): void => {
+    element.classList.add("hidden");
+    if (opener?.isConnected) opener.focus();
+    opener = null;
+  };
   element.setAttribute("aria-modal", "true");
   element.addEventListener("cancel", (event) => {
     event.preventDefault();
+    dismiss();
+  });
+  // Chromium (and WebView2) honours preventDefault() on `cancel` only once per
+  // user activation, so a repeated Escape closes the dialog natively.
+  element.addEventListener("close", () => {
+    if (expectedClose) { expectedClose = false; return; }
+    if (!canDismiss()) {
+      element.showModal();
+      return;
+    }
+    finishClose();
     dismiss();
   });
   element.addEventListener("click", (event) => {
@@ -40,10 +59,9 @@ export function bindDialog(element: HTMLDialogElement, dismiss: () => void) {
     },
     close() {
       if (!element.open) return;
+      expectedClose = true;
       element.close();
-      element.classList.add("hidden");
-      if (opener?.isConnected) opener.focus();
-      opener = null;
+      finishClose();
     },
   };
 }
