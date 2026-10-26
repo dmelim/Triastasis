@@ -16,9 +16,41 @@ permissions:
 #   trellis-<backend>-<os>-x64.<tar.gz|zip>
 # cuda12 is an additional legacy artifact selected by the standalone installer
 # for Pascal/Volta devices; it does not replace the current-CUDA asset.
+#
+# The runtime is versioned separately from the app (RUNTIME_VERSION in
+# app/src-tauri/src/runtime.rs). When it equals the release version, the
+# runtimes are built. Otherwise this is an app-only release: the archives of
+# triastasis-v<RUNTIME_VERSION> are verified against that release's SHA256SUMS
+# and republished unchanged.
 jobs:
+  plan:
+    name: Runtime source
+    runs-on: ubuntu-latest
+    outputs:
+      runtime_tag: ${{ steps.plan.outputs.runtime_tag }}
+      build_runtimes: ${{ steps.plan.outputs.build_runtimes }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.release_tag }}
+
+      - name: Read the runtime version
+        id: plan
+        shell: bash
+        run: |
+          set -euo pipefail
+          version=$(sed -n 's/^const RUNTIME_VERSION: &str = "\(.*\)";$/\1/p' app/src-tauri/src/runtime.rs)
+          test -n "$version"
+          runtime_tag="triastasis-v$version"
+          if [ "$runtime_tag" = "${{ inputs.release_tag }}" ]; then build=true; else build=false; fi
+          echo "runtime_tag=$runtime_tag" >> "$GITHUB_OUTPUT"
+          echo "build_runtimes=$build" >> "$GITHUB_OUTPUT"
+          echo "Runtime $version from $runtime_tag; build runtimes: $build"
+
   build:
     name: ${{ matrix.os }} · ${{ matrix.release_backend || matrix.backend }}
+    needs: plan
+    if: needs.plan.outputs.build_runtimes == 'true'
     runs-on: ${{ matrix.runner }}
     continue-on-error: ${{ matrix.experimental == true }}
     strategy:
@@ -179,6 +211,34 @@ jobs:
           set -e
           gh release upload "${{ steps.tag.outputs.value }}" "$ASSET" --clobber --repo "${{ github.repository }}"
 
+  copy_runtimes:
+    name: Copy verified runtimes from ${{ needs.plan.outputs.runtime_tag }}
+    needs: plan
+    if: needs.plan.outputs.build_runtimes == 'false'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download, verify and republish the runtime archives
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SOURCE_TAG: ${{ needs.plan.outputs.runtime_tag }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+          RELEASE_REPO: ${{ github.repository }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir runtimes
+          cd runtimes
+          gh release download "$SOURCE_TAG" --repo "$RELEASE_REPO" --pattern 'trellis-*-windows-x64.zip' --pattern SHA256SUMS
+          for backend in vulkan cuda cuda12; do
+            test -f "trellis-$backend-windows-x64.zip"
+          done
+          # Each archive must match exactly one line of the source release's manifest.
+          for archive in trellis-*-windows-x64.zip; do
+            test "$(awk -v name="$archive" '$2 == name' SHA256SUMS | wc -l)" -eq 1
+            awk -v name="$archive" '$2 == name' SHA256SUMS | sha256sum --check --strict
+          done
+          gh release upload "$RELEASE_TAG" trellis-*-windows-x64.zip --clobber --repo "$RELEASE_REPO"
+
   # Triastasis desktop app (Tauri). Small, backend-agnostic installers that
   # the install/ scripts fetch by these stable, version-less names:
   #   triastasis-windows-x64-setup.exe
@@ -255,8 +315,8 @@ jobs:
 
   checksums:
     name: Release checksum manifest
-    needs: [build, studio]
-    if: ${{ always() && needs.build.result == 'success' && needs.studio.result == 'success' }}
+    needs: [build, copy_runtimes, studio]
+    if: ${{ always() && needs.studio.result == 'success' && (needs.build.result == 'success' || needs.copy_runtimes.result == 'success') }}
     runs-on: ubuntu-latest
     steps:
       - name: Hash every release package

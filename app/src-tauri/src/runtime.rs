@@ -9,6 +9,11 @@ use std::{
 };
 
 const REPO: &str = "dmelim/Triastasis";
+/// Version of the native runtime this app uses, tracked separately from the app
+/// version. Bump it only when the runtime archives are rebuilt because native
+/// code, the server protocol or the runtime build changed. App-only releases
+/// keep it and republish the verified archives of `triastasis-v{RUNTIME_VERSION}`.
+const RUNTIME_VERSION: &str = "0.0.4";
 static INSTALL_LOCK: Mutex<()> = Mutex::new(());
 
 #[derive(Clone, Debug, Serialize)]
@@ -20,6 +25,7 @@ pub struct RuntimeStatus {
     pub version_state: String,
     pub release_url: String,
     pub target_version: String,
+    pub app_version: String,
     pub update_available: bool,
     pub pending_version: Option<String>,
     pub pending_path: Option<String>,
@@ -249,7 +255,8 @@ pub fn status() -> Result<RuntimeStatus, String> {
     let version = installed_receipt
         .as_ref()
         .map(|receipt| receipt.version.clone());
-    let target_version = env!("CARGO_PKG_VERSION").to_string();
+    let target_version = RUNTIME_VERSION.to_string();
+    let app_version = env!("CARGO_PKG_VERSION").to_string();
     let installed_backend = installed_receipt
         .as_ref()
         .map(|receipt| receipt.backend.as_str())
@@ -268,8 +275,7 @@ pub fn status() -> Result<RuntimeStatus, String> {
                 && root.with_extension("pending").join(server_name()).is_file()
         })
         .map(|receipt| receipt.version);
-    let release_url =
-        format!("https://github.com/{REPO}/releases/tag/triastasis-v{target_version}");
+    let release_url = format!("https://github.com/{REPO}/releases/tag/triastasis-v{app_version}");
     let update_available = configured.is_some()
         && matches!(installed_backend, "cuda" | "cuda12" | "rocm" | "vulkan")
         && matches!(version_state.as_str(), "older" | "unknown")
@@ -283,6 +289,7 @@ pub fn status() -> Result<RuntimeStatus, String> {
         version_state,
         release_url,
         target_version,
+        app_version,
         update_available,
         pending_path: pending_version.as_ref().map(|_| {
             root.with_extension("pending")
@@ -634,7 +641,7 @@ fn install_or_stage(
             return Err("trellis-server.exe was not found in the runtime archive".into());
         }
         let receipt = RuntimeReceipt {
-            version: env!("CARGO_PKG_VERSION").into(),
+            version: RUNTIME_VERSION.into(),
             backend: backend.into(),
             archive_sha256: expected,
         };
@@ -697,7 +704,7 @@ pub fn activate_pending(state: &crate::server::ServerState) -> Result<(), String
     let current = status()?;
     if current.version_state == "newer" {
         return Err(
-            "staged update retained because the installed runtime is newer than this app".into(),
+            "staged update retained because the installed runtime is newer than the runtime this app uses".into(),
         );
     }
     let cfg = crate::config::load().ok_or("runtime configuration is unavailable")?;
@@ -705,8 +712,8 @@ pub fn activate_pending(state: &crate::server::ServerState) -> Result<(), String
         return Err("staged runtime update retained because the server is still running".into());
     }
     let receipt = receipt(&pending).ok_or("staged runtime update receipt is invalid")?;
-    if !pending_matches(&receipt, &current.backend, env!("CARGO_PKG_VERSION")) {
-        return Err("staged runtime update does not match this app version and backend".into());
+    if !pending_matches(&receipt, &current.backend, RUNTIME_VERSION) {
+        return Err("staged runtime update does not match this app's runtime version and backend".into());
     }
     activate(&root, &pending, &receipt.backend)
 }
@@ -725,6 +732,20 @@ mod tests {
     use super::{
         checksum_for, pending_matches, receipt, recommendation_for_capability, RuntimeReceipt,
     };
+
+    #[test]
+    fn runtime_version_is_valid_and_never_ahead_of_the_app() {
+        // Archives are published on the app's own release page, so a runtime
+        // version can lag the app version but never exceed it.
+        assert!(matches!(
+            super::version_state(Some(super::RUNTIME_VERSION), env!("CARGO_PKG_VERSION")),
+            "current" | "older"
+        ));
+        assert!(super::release_url("SHA256SUMS").contains(&format!(
+            "/triastasis-v{}/",
+            env!("CARGO_PKG_VERSION")
+        )));
+    }
 
     #[test]
     fn local_download_override_is_debug_only_and_numeric_loopback_only() {

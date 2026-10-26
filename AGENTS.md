@@ -75,6 +75,12 @@ unless a concrete failure makes it necessary.
 - Keep installer defaults, documentation, the GitHub release tag, and the
   version-derived runtime download URL aligned. For `0.0.1-alpha.1`, the tag is
   `triastasis-v0.0.1-alpha.1`.
+- The native runtime has its own version, `RUNTIME_VERSION` in
+  `app/src-tauri/src/runtime.rs`. Bump it, to the version being released, only
+  when native code, the server protocol, or the runtime build changes in a way
+  the app needs. Never bump it just because the app version changed. Installed
+  runtimes are compared against it, so an app-only release asks nobody to
+  download a runtime.
 - Before publishing, build the frontend, Rust application, NSIS installer, and
   portable ZIP locally from the intended release commit. Use an isolated Cargo
   target directory when validating a clean package build, and stage local test
@@ -87,14 +93,26 @@ unless a concrete failure makes it necessary.
   version 0.0.3, retain matching runtime and installer `.sha256` files.
 - Use `.github/workflows/release.yml` for the Vulkan, CUDA, CUDA 12
   compatibility, and experimental ROCm runtime archives. The workflow may also
-  rebuild the desktop packages; that redundant clean build is desirable.
+  rebuild the desktop packages; that redundant clean build is desirable. Push
+  the tag before dispatching the workflow, because it checks out that tag.
+- Every release page carries the runtime archives the app downloads. When
+  `RUNTIME_VERSION` matches the release, the workflow builds them. For an
+  app-only release it does not rebuild: it copies the archives from
+  `triastasis-v<RUNTIME_VERSION>`, verifies each against that release's
+  `SHA256SUMS`, and republishes them unchanged. Confirm the new `SHA256SUMS`
+  lines for the runtime archives match the source release.
+- State the runtime version in the release notes. For an app-only release, say
+  the runtime is unchanged and name the release it was copied from, for example
+  "Runtime 0.0.4, unchanged, copied from triastasis-v0.0.4".
 - Publish the version tag as a quiet GitHub prerelease and verify that the NSIS
   installer, portable ZIP, required runtime archives, and the single `SHA256SUMS` file are
   present. ROCm is experimental and is not a release blocker; Vulkan, CUDA, and
   CUDA 12 compatibility are required.
 - Treat a clean Windows installation as the acceptance gate. Test installation,
   GPU recommendation, runtime and model download, restart persistence,
-  generation, GLB export, portable mode when practical, and uninstall.
+  generation, GLB export, portable mode when practical, and uninstall. For an
+  app-only release, also upgrade from the previous version and confirm there is
+  no runtime notice or download and generation still works.
 - Do not silently replace binaries after publication. Document minor alpha
   limitations, and use the next alpha version for a blocking shipped defect.
 - Do not create or push commits, tags, or releases unless the user explicitly

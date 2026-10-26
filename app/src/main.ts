@@ -4901,7 +4901,7 @@ const RUNTIME_NOTICE_DISMISSED_KEY = "triastasis.runtimeNoticeDismissed";
 
 /** A dismissal lasts until the app version or the configured runtime changes. */
 function runtimeNoticeScope(runtime: RuntimeStatus): string {
-  return `${runtime.targetVersion}|${runtime.path}`;
+  return `${runtime.appVersion}|${runtime.path}`;
 }
 
 function dismissedRuntimeNotice(runtime: RuntimeStatus): string | null {

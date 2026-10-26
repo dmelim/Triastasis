@@ -10,6 +10,7 @@ export interface RuntimePresentation {
 
 export function runtimePresentation(runtime: RuntimeStatus): RuntimePresentation {
   const target = runtime.targetVersion;
+  const app = runtime.appVersion;
   const version = runtime.version ?? "unknown";
   const recorded = runtime.managed
     ? `Installed runtime version: ${version}.`
@@ -21,28 +22,28 @@ export function runtimePresentation(runtime: RuntimeStatus): RuntimePresentation
     notice: `Runtime ${runtime.pendingVersion} is ready after you quit and reopen Triastasis.`,
     downloadLabel: null, showRelease: false,
   };
-  if (runtime.versionState === "current") return { description: `${recorded} It matches Triastasis ${target}.`, nextStep: "No runtime update is needed.", notice: null, downloadLabel: null, showRelease: false };
-  if (runtime.versionState === "newer") return { description: `${recorded} It is newer than Triastasis ${target}.`, nextStep: "Triastasis will keep this runtime. Review its compatibility through your original installation source.", notice: null, downloadLabel: null, showRelease: true };
+  if (runtime.versionState === "current") return { description: `${recorded} It matches runtime ${target}, which Triastasis ${app} uses.`, nextStep: "No runtime update is needed.", notice: null, downloadLabel: null, showRelease: false };
+  if (runtime.versionState === "newer") return { description: `${recorded} It is newer than runtime ${target}, which Triastasis ${app} uses.`, nextStep: "Triastasis will keep this runtime. Review its compatibility through your original installation source.", notice: null, downloadLabel: null, showRelease: true };
   const description = runtime.versionState === "older"
-    ? `${recorded} It is older than Triastasis ${target}.`
+    ? `${recorded} It is older than runtime ${target}, which Triastasis ${app} uses.`
     : !runtime.managed && !runtime.version
-      ? `This custom runtime has no version receipt, so its version could not be confirmed against Triastasis ${target}.`
-      : `This runtime's version could not be confirmed against Triastasis ${target}.`;
+      ? `This custom runtime has no version receipt, so its version could not be confirmed against runtime ${target}.`
+      : `This runtime's version could not be confirmed against runtime ${target}.`;
   const notice = runtime.versionState === "older"
-    ? runtime.managed ? `Runtime ${version} is older than Triastasis ${target}. Install the matching runtime in Settings > Runtime.` : `Custom runtime receipt reports version ${version}, older than Triastasis ${target}. Review Settings > Runtime.`
+    ? runtime.managed ? `Runtime ${version} is older than runtime ${target}, which Triastasis ${app} uses. Install the matching runtime in Settings > Runtime.` : `Custom runtime receipt reports version ${version}, older than runtime ${target}, which Triastasis ${app} uses. Review Settings > Runtime.`
     : runtime.managed
       ? `Runtime version could not be confirmed. Review the matching release in Settings > Runtime.`
-      : `This custom runtime has no version receipt, so Triastasis cannot confirm it matches ${target}. Review Settings > Runtime.`;
+      : `This custom runtime has no version receipt, so Triastasis cannot confirm it matches runtime ${target}. Review Settings > Runtime.`;
   if (runtime.updateAvailable && !runtime.managed) return {
     description,
-    nextStep: `Switch to the verified runtime published with Triastasis ${target}. It is downloaded into Triastasis's own runtime folder and becomes active after you quit and reopen the app. Your custom build stays on disk, and your model storage stays in place.`,
+    nextStep: `Switch to verified runtime ${target}, published with Triastasis ${app}. It is downloaded into Triastasis's own runtime folder and becomes active after you quit and reopen the app. Your custom build stays on disk, and your model storage stays in place.`,
     notice,
     downloadLabel: `Switch to verified runtime ${target}`,
     showRelease: true,
   };
   if (runtime.updateAvailable) return {
     description,
-    nextStep: `Download the runtime matching Triastasis ${target}, then quit and reopen the app to apply it. Your model storage stays in place.`,
+    nextStep: `Download verified runtime ${target}, then quit and reopen the app to apply it. Your model storage stays in place.`,
     notice,
     downloadLabel: runtime.versionState === "older" ? `Download runtime ${target}` : `Install verified runtime ${target}`,
     showRelease: true,
@@ -57,10 +58,10 @@ export function runtimePresentation(runtime: RuntimeStatus): RuntimePresentation
   };
 }
 
-export function runtimeDownloadError(error: unknown, target: string): string {
+export function runtimeDownloadError(error: unknown, appVersion: string): string {
   const message = error instanceof Error ? error.message : String(error);
   return message.includes("404")
-    ? `Runtime download is not available for Triastasis ${target} yet. Open the matching release page to check availability.`
+    ? `Runtime download is not available for Triastasis ${appVersion} yet. Open the matching release page to check availability.`
     : message;
 }
 

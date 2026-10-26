@@ -184,7 +184,7 @@ async function renderRuntimeUpdate(body: HTMLElement): Promise<void> {
       ${runtime.installed ? `<p>Active runtime: <code>${escapeHtml(runtime.path)}</code></p>` : ""}
       ${runtime.pendingPath ? `<p>Staged runtime folder: <code>${escapeHtml(runtime.pendingPath)}</code></p>` : ""}
       ${presentation.downloadLabel ? `<button type="button" class="button button--secondary" data-update-runtime>${escapeHtml(presentation.downloadLabel)}</button>` : ""}
-      ${presentation.showRelease ? `<a class="link-btn" href="${escapeHtml(runtime.releaseUrl)}" target="_blank" rel="noopener noreferrer">Open Triastasis ${escapeHtml(runtime.targetVersion)} release</a>` : ""}`;
+      ${presentation.showRelease ? `<a class="link-btn" href="${escapeHtml(runtime.releaseUrl)}" target="_blank" rel="noopener noreferrer">Open Triastasis ${escapeHtml(runtime.appVersion)} release</a>` : ""}`;
     bindExternalLinks(area);
     const button = area.querySelector<HTMLButtonElement>("[data-update-runtime]");
     if (button) button.onclick = async () => {
@@ -201,7 +201,7 @@ async function renderRuntimeUpdate(body: HTMLElement): Promise<void> {
         button.textContent = "Retry runtime update";
         let message = area.querySelector<HTMLElement>("[data-runtime-error]");
         if (!message) { message = document.createElement("p"); message.dataset.runtimeError = ""; area.append(message); }
-        message.textContent = runtimeDownloadError(error, runtime.targetVersion);
+        message.textContent = runtimeDownloadError(error, runtime.appVersion);
       }
     };
   } catch (error) {

@@ -6,7 +6,10 @@ export interface RuntimeStatus {
   version: string | null;
   versionState: "current" | "older" | "newer" | "unknown";
   releaseUrl: string;
+  /** Runtime version this app uses; it changes only when the runtime is rebuilt. */
   targetVersion: string;
+  /** App version; the verified runtime archives are published on its release page. */
+  appVersion: string;
   updateAvailable: boolean;
   pendingVersion: string | null;
   pendingPath: string | null;

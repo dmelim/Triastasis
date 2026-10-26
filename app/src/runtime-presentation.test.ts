@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { runtimeDownloadError, runtimeNotice, runtimePresentation, runtimeProgressFraction, runtimeProgressLabel } from "./runtime-presentation";
 import type { RuntimeStatus } from "./runtime-manager";
-const current: RuntimeStatus = { installed: true, managed: true, version: "0.0.4", versionState: "current", releaseUrl: "https://github.com/dmelim/Triastasis/releases/tag/triastasis-v0.0.4", targetVersion: "0.0.4", updateAvailable: false, pendingVersion: null, pendingPath: null, backend: "cuda", path: "runtime/trellis-server.exe", portable: false, recommendedBackend: "cuda", recommendation: "" };
+const current: RuntimeStatus = { installed: true, managed: true, version: "0.0.4", versionState: "current", releaseUrl: "https://github.com/dmelim/Triastasis/releases/tag/triastasis-v0.0.4", targetVersion: "0.0.4", appVersion: "0.0.5", updateAvailable: false, pendingVersion: null, pendingPath: null, backend: "cuda", path: "runtime/trellis-server.exe", portable: false, recommendedBackend: "cuda", recommendation: "" };
 
 test("current and newer runtimes never offer replacement or a startup update notice", () => {
   for (const value of [current, { ...current, version: "0.0.5", versionState: "newer" as const }, { ...current, version: "0.0.5", versionState: "newer" as const, pendingVersion: "0.0.4" }]) {
@@ -11,9 +11,15 @@ test("current and newer runtimes never offer replacement or a startup update not
     assert.equal(presentation.notice, null);
   }
 });
+test("app-only release keeps the installed runtime current without a download or notice", () => {
+  const presentation = runtimePresentation(current);
+  assert.match(presentation.description, /matches runtime 0.0.4, which Triastasis 0.0.5 uses/);
+  assert.equal(presentation.downloadLabel, null);
+  assert.equal(runtimeNotice(current, null), null);
+});
 test("known older managed runtime offers matching download and preserves models", () => {
   const presentation = runtimePresentation({ ...current, version: "0.0.3", versionState: "older", updateAvailable: true });
-  assert.match(presentation.description, /older than Triastasis 0.0.4/);
+  assert.match(presentation.description, /older than runtime 0.0.4, which Triastasis 0.0.5 uses/);
   assert.equal(presentation.downloadLabel, "Download runtime 0.0.4");
   assert.match(presentation.nextStep, /model storage stays in place/);
   assert.match(presentation.notice!, /Settings > Runtime/);
