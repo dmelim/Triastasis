@@ -1875,6 +1875,7 @@ fn cleanup_export_stage(stage: &Path, source_name: &str) {
     for name in [
         source_name,
         "asset-static.glb",
+        "generation.trg",
         "job.json",
         "asset-static.triastasis.json",
         &manifest_temp,
@@ -2007,7 +2008,7 @@ fn export_job_package(
     job: DurableJob,
     destination: &Path,
 ) -> Result<ExportJobResponse, (u16, String)> {
-    export_package(job, destination, None, None)
+    export_package(job, destination, None, None, None)
 }
 
 fn export_package(
@@ -2015,6 +2016,7 @@ fn export_package(
     destination: &Path,
     library_manifest: Option<crate::manifest::GenerationManifest>,
     library_metadata: Option<serde_json::Value>,
+    generation_data: Option<PathBuf>,
 ) -> Result<ExportJobResponse, (u16, String)> {
     if job.status != JobStatus::Succeeded {
         return Err((409, "only succeeded jobs can be exported".to_string()));
@@ -2081,6 +2083,9 @@ fn export_package(
             copy_file_verified(&image_source, &source_target, "sourceImage")?,
             copy_file_verified(&model_source, &model_target, "glb")?,
         ];
+        if let Some(bundle) = generation_data.as_deref() {
+            files.push(copy_file_verified(bundle, &stage.join("generation.trg"), "generationData")?);
+        }
 
         let mut exported_job = job.clone();
         exported_job.source_image_path = source_name.clone();

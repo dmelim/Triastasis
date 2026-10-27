@@ -20,6 +20,7 @@
 #include <queue>
 #include <unordered_map>
 #include <array>
+#include <stdexcept>
 
 namespace trellis {
 
@@ -29,20 +30,26 @@ namespace {
 // corner stays unwritten and is filled by seam dilation, matching the
 // reference's inpaint step.
 struct VoxSampler {
-    std::unordered_map<uint64_t, int> map;
+    using Index = std::unordered_map<uint64_t, int>;
+    Index owned_index;
+    const Index* index;
     const std::vector<float>* feats;
     int res;
     const TriBvh* snap;
     static uint64_t key(int x, int y, int z) {
         return ((uint64_t)(uint32_t)x << 40) | ((uint64_t)(uint32_t)y << 20) | (uint32_t)z;
     }
-    explicit VoxSampler(const VoxelPbr& v) : feats(v.feats), res(v.res), snap(v.snap) {
-        map.reserve(v.coords->size() * 2);
+    explicit VoxSampler(const VoxelPbr& v, const Index* shared_index = nullptr)
+        : index(shared_index ? shared_index : &owned_index), feats(v.feats), res(v.res), snap(v.snap) {
+        if (shared_index) return;
+        owned_index.reserve(v.coords->size() * 2);
         for (size_t i = 0; i < v.coords->size(); ++i) {
             const auto& c = (*v.coords)[i];
-            map[key(c[0], c[1], c[2])] = (int)i;
+            owned_index[key(c[0], c[1], c[2])] = (int)i;
         }
     }
+    VoxSampler(const VoxSampler&) = delete;
+    VoxSampler& operator=(const VoxSampler&) = delete;
     bool trilinear(const float p[3], float out[6]) const {
         float w[3]; int b[3];
         for (int a = 0; a < 3; ++a) {
@@ -54,8 +61,8 @@ struct VoxSampler {
         for (int dz = 0; dz < 2; ++dz) for (int dy = 0; dy < 2; ++dy) for (int dx = 0; dx < 2; ++dx) {
             const float ww = (dx ? w[0] : 1-w[0]) * (dy ? w[1] : 1-w[1]) * (dz ? w[2] : 1-w[2]);
             if (ww <= 0.f) continue;
-            auto it = map.find(key(b[0]+dx, b[1]+dy, b[2]+dz));
-            if (it == map.end()) continue;
+            auto it = index->find(key(b[0]+dx, b[1]+dy, b[2]+dz));
+            if (it == index->end()) continue;
             const float* f = &(*feats)[(size_t)it->second * 6];
             for (int k = 0; k < 6; ++k) acc[k] += ww * f[k];
             wsum += ww;
@@ -79,8 +86,8 @@ struct VoxSampler {
             float racc[6] = {0,0,0,0,0,0}; int hits = 0;
             for (int dz = -r; dz <= r; ++dz) for (int dy = -r; dy <= r; ++dy) for (int dx = -r; dx <= r; ++dx) {
                 if (std::max({std::abs(dx), std::abs(dy), std::abs(dz)}) != r) continue;
-                auto it = map.find(key(b[0]+dx, b[1]+dy, b[2]+dz));
-                if (it == map.end()) continue;
+                auto it = index->find(key(b[0]+dx, b[1]+dy, b[2]+dz));
+                if (it == index->end()) continue;
                 const float* f = &(*feats)[(size_t)it->second * 6];
                 for (int k = 0; k < 6; ++k) racc[k] += f[k];
                 ++hits;
@@ -237,6 +244,63 @@ void telea_inpaint(std::vector<uint8_t>& base, std::vector<uint8_t>& mr,
     }
 }
 }  // namespace
+
+size_t sample_pbr_vertices(const std::vector<float>& vertices, const VoxelPbr& field,
+                           std::vector<float>& preview) {
+    if (!field.ok() || vertices.size() % 3 || field.feats->size() != field.coords->size() * 6)
+        throw std::runtime_error("invalid preview sampling inputs");
+    VoxSampler sampler(field); size_t missing = 0;
+    preview.resize(vertices.size() * 2);
+    for (size_t v = 0; v < vertices.size() / 3; ++v) {
+        float* pbr = preview.data() + v * 6;
+        if (!sampler.sample(vertices.data() + v * 3, pbr)) {
+            ++missing; pbr[0] = pbr[1] = pbr[2] = .5f; pbr[3] = 0; pbr[4] = .8f; pbr[5] = 1;
+        }
+    }
+    return missing;
+}
+
+struct PbrVertexSampler::Impl {
+    std::vector<std::array<int,3>> coordinates;
+    std::vector<float> dense_vertices;
+    std::vector<int32_t> dense_faces;
+    TriBvh bvh;
+    VoxSampler::Index index;
+    Impl(const std::vector<std::array<int,3>>& c, const std::vector<float>& v, const std::vector<int32_t>& f)
+        : coordinates(c), dense_vertices(v), dense_faces(f) {
+        if (coordinates.empty() || dense_vertices.empty() || dense_vertices.size() % 3 || dense_faces.empty() || dense_faces.size() % 3)
+            throw std::runtime_error("invalid cached preview surface");
+        for (float value : dense_vertices) if (!std::isfinite(value) || std::abs(value) > 16) throw std::runtime_error("invalid cached dense position");
+        for (int32_t face : dense_faces) if (face < 0 || size_t(face) >= dense_vertices.size() / 3) throw std::runtime_error("invalid cached dense index");
+        index.reserve(coordinates.size() * 2);
+        for (size_t i = 0; i < coordinates.size(); ++i) {
+            const auto& p = coordinates[i];
+            for (int axis : p) if (axis < 0 || axis >= 512) throw std::runtime_error("invalid cached voxel coordinate");
+            index[VoxSampler::key(p[0], p[1], p[2])] = int(i);
+        }
+        bvh = TriBvh::build(dense_vertices.data(), int(dense_vertices.size() / 3), dense_faces.data(), int(dense_faces.size() / 3));
+    }
+};
+PbrVertexSampler::PbrVertexSampler(const std::vector<std::array<int,3>>& coordinates, const std::vector<float>& vertices, const std::vector<int32_t>& faces)
+    : impl_(std::make_unique<Impl>(coordinates, vertices, faces)) {}
+PbrVertexSampler::~PbrVertexSampler() = default;
+const TriBvh& PbrVertexSampler::snap() const { return impl_->bvh; }
+size_t PbrVertexSampler::sample(const std::vector<float>& vertices, const std::vector<float>& field, std::vector<float>& output) const {
+    if (field.size() != impl_->coordinates.size() * 6 || vertices.size() % 3) throw std::runtime_error("invalid cached preview field dimensions");
+    for (float value : field) if (!std::isfinite(value) || value < 0 || value > 1) throw std::runtime_error("invalid cached preview field");
+    VoxelPbr volume{&impl_->coordinates, &field, 512, &impl_->bvh};
+    VoxSampler sampler(volume, &impl_->index);
+    output.resize(vertices.size() * 2); size_t missing = 0;
+    for (size_t i = 0; i < vertices.size() / 3; ++i) {
+        const float* position = vertices.data() + i * 3;
+        for (size_t axis = 0; axis < 3; ++axis) if (!std::isfinite(position[axis]) || std::abs(position[axis]) > 16) throw std::runtime_error("invalid preview position");
+        float* pbr = output.data() + i * 6;
+        if (!sampler.sample(position, pbr)) {
+            ++missing; pbr[0] = pbr[1] = pbr[2] = .5f; pbr[3] = 0; pbr[4] = .8f; pbr[5] = 1;
+        }
+    }
+    return missing;
+}
 
 void decimate_cluster(const std::vector<float>& verts, int V, const std::vector<int32_t>& faces, int F,
                       const std::vector<float>& pbr6, int grid,

@@ -20,6 +20,7 @@ import type {
   VersionRecord,
 } from "./types";
 import { isTauri } from "./tauri";
+import { inspectGenerationData, sha256, validGenerationDataRef } from "./generation-data";
 import {
   clearNativeGallery,
   deleteNativeRecords,
@@ -33,9 +34,10 @@ import {
 } from "./native-gallery";
 
 const DB_NAME = "trellis-studio";
-/** Schema v2 adds asset/version fields and indexes, while retaining `id`. */
-export const DB_VERSION = 2;
+/** Schema v3 adds shared bundles while retaining existing version keys/indexes. */
+export const DB_VERSION = 3;
 const STORE = "generations";
+const BUNDLES = "generation-bundles";
 
 let dbp: Promise<IDBDatabase> | null = null;
 let useMemory = false;
@@ -207,6 +209,7 @@ function db(): Promise<IDBDatabase> {
         ? req.transaction!.objectStore(STORE)
         : d.createObjectStore(STORE, { keyPath: "id" });
       addIndexes(store);
+      if (!d.objectStoreNames.contains(BUNDLES)) d.createObjectStore(BUNDLES, { keyPath: "sha256" });
       // This also makes a partially upgraded database safe: records are
       // normalized whenever an app version opens an older schema.
       migrateRecords(store);
@@ -324,7 +327,7 @@ export function newId(): string {
 }
 
 /** Store a record while retaining the legacy `id`, fields, and blobs. */
-export interface SaveOutcome { persisted: boolean; error?: unknown }
+export interface SaveOutcome { persisted: boolean; error?: unknown; generationDataError?: string; generationDataRef?: GenRecord["generationDataRef"] }
 
 const assetWrites = new Map<string, Promise<unknown>>();
 function withAssetWrite<T>(assetId: string, write: () => Promise<T>): Promise<T> {
@@ -343,6 +346,11 @@ export function putGeneratedVersion(record: VersionRecord): Promise<SaveOutcome>
     const favorite = current?.favorite ?? (siblings.length ? siblings.every(item => item.favorite) : record.favorite);
     const result = await put({ ...record, favorite });
     record.favorite = favorite;
+    if (result.persisted) {
+      record.generationDataRef = result.generationDataRef;
+      record.generationDataError = result.generationDataError;
+      record.generationData = null;
+    }
     return result;
   });
 }
@@ -360,22 +368,56 @@ export async function put(rec: GenRecord, requirePersistent = false): Promise<Sa
     if (await initializeNativeStore()) {
       await writeNativeRecord(normalized);
       // The caller/viewer retains its model; the Library reloads saved bytes on demand.
-      mem.set(normalized.id, { ...normalized, glb: null });
+      mem.set(normalized.id, { ...normalized, glb: null, generationData: null });
       memoryOnlyVersions.delete(normalized.versionId);
-      return { persisted: true };
+      return { persisted: true, generationDataError: normalized.generationDataError, generationDataRef: normalized.generationDataRef };
     }
     if (useMemory) throw nativePersistenceFailure ?? persistentDbFailure ?? new Error("Persistent storage unavailable");
     const database = await db();
-    await new Promise<void>((resolve, reject) => {
-      const transaction = database.transaction(STORE, "readwrite");
+    if (normalized.generationData) {
+      try {
+        const actual = (await inspectGenerationData(normalized.generationData)).reference;
+        const reference = normalized.generationDataRef ?? actual;
+        if (!validGenerationDataRef(reference) || reference.sha256 !== actual.sha256 || reference.bytes !== actual.bytes
+          || reference.sourceSurfaceSha256 !== actual.sourceSurfaceSha256 || reference.sourceGlbSha256 !== actual.sourceGlbSha256
+          || !normalized.glb || await sha256(normalized.glb) !== reference.modelSha256) throw new Error("Generation data is bound to a different model");
+        normalized.generationDataRef = reference;
+      } catch (error) {
+        normalized.generationDataRef = undefined; normalized.generationData = null;
+        normalized.generationDataError = error instanceof Error ? error.message : "Generation data could not be saved";
+      }
+    }
+    const commitRecord = () => new Promise<void>((resolve, reject) => {
+      const transaction = database.transaction(normalized.generationDataRef ? [STORE, BUNDLES] : STORE, "readwrite");
       transaction.oncomplete = () => resolve();
       transaction.onerror = () => reject(transaction.error ?? new Error("Gallery write failed"));
       transaction.onabort = () => reject(transaction.error ?? new Error("Gallery write aborted"));
-      transaction.objectStore(STORE).put(normalized);
+      const commit = () => transaction.objectStore(STORE).put({ ...normalized, generationData: null });
+      if (normalized.generationDataRef) {
+        const bundles = transaction.objectStore(BUNDLES);
+        if (normalized.generationData) {
+          bundles.put({ sha256: normalized.generationDataRef.sha256, blob: normalized.generationData }); commit();
+        } else {
+          const request = bundles.get(normalized.generationDataRef.sha256);
+          request.onsuccess = () => {
+            if (!request.result) { normalized.generationDataRef = undefined; normalized.generationDataError = "Saved generation data is missing"; }
+            commit();
+          };
+        }
+      } else commit();
     });
-    mem.set(normalized.id, normalized);
+    try { await commitRecord(); }
+    catch (error) {
+      if (!normalized.generationDataRef) throw error;
+      // Optional bundle/quota failures must still give the usable GLB a chance
+      // to persist, in a separate transaction without a dangling reference.
+      normalized.generationDataRef = undefined; normalized.generationData = null;
+      normalized.generationDataError = error instanceof Error ? error.message : "Generation data could not be saved";
+      await commitRecord();
+    }
+    mem.set(normalized.id, { ...normalized, generationData: null });
     memoryOnlyVersions.delete(normalized.versionId);
-    return { persisted: true };
+    return { persisted: true, generationDataError: normalized.generationDataError, generationDataRef: normalized.generationDataRef };
   } catch (error) {
     if (isTauri()) nativePersistenceFailure = error;
     fallback(error);
@@ -450,6 +492,9 @@ export async function getVersion(versionId: string): Promise<VersionRecord | und
 }
 
 export interface DerivedVersionInput {
+  /** Supplied explicitly only for an operation preserving the frozen surface. */
+  generationDataRef?: GenRecord["generationDataRef"];
+  generationData?: Blob | null;
   /** The edited or otherwise derived GLB. */
   glb: Blob;
   thumb?: Blob | null;
@@ -495,10 +540,14 @@ export async function createDerivedVersion(
     params: input.params ?? parent.params,
     input: input.input ?? parent.input,
     glb: input.glb,
+    generationDataRef: input.generationDataRef,
+    generationData: input.generationData,
     thumb: input.thumb ?? null,
     metrics: input.metrics ?? null,
   };
-  await put(record, true);
+  const saved = await put(record, true);
+  record.generationDataRef = saved.generationDataRef;
+  record.generationDataError = saved.generationDataError;
   return record;
 }
 
@@ -592,6 +641,7 @@ async function deleteIds(ids: string[]): Promise<void> {
       transaction.onerror = () => reject(transaction.error);
       transaction.onabort = () => reject(transaction.error ?? new Error("IndexedDB transaction aborted"));
     });
+    await collectIndexedBundles(d).catch(error => console.warn("Unused generation data could not be removed", error));
   } catch (e) {
     fallback(e);
     if (persistentDbEstablished) throw new GalleryPersistenceError("delete", e);
@@ -682,7 +732,8 @@ export async function clear(): Promise<void> {
     const d = await db();
     await new Promise<void>((resolve, reject) => {
       let settled = false;
-      const transaction = d.transaction(STORE, "readwrite");
+      const hasBundles = d.objectStoreNames?.contains(BUNDLES);
+      const transaction = d.transaction(hasBundles ? [STORE, BUNDLES] : STORE, "readwrite");
       const fail = (error: unknown): void => {
         if (settled) return;
         settled = true;
@@ -698,6 +749,7 @@ export async function clear(): Promise<void> {
       try {
         const request = transaction.objectStore(STORE).clear();
         request.onerror = () => fail(request.error);
+        if (hasBundles) transaction.objectStore(BUNDLES).clear();
       } catch (error) {
         fail(error);
       }
@@ -731,4 +783,32 @@ export async function loadVersionModel(record: VersionRecord): Promise<VersionRe
   const loaded = normalizeRecord(await loadNativeRecord(record.id));
   if (!loaded.glb) throw new Error("Saved model could not be loaded");
   return { ...loaded, glb: loaded.glb };
+}
+
+export async function loadVersionGenerationData(record: VersionRecord): Promise<Blob> {
+  if (record.generationData) return record.generationData;
+  if (!record.generationDataRef) throw new Error("Generation data was not saved for this model");
+  if (!isTauri()) {
+    const value = await wrap((await db()).transaction(BUNDLES, "readonly").objectStore(BUNDLES).get(record.generationDataRef.sha256));
+    if (!(value?.blob instanceof Blob) || value.blob.size !== record.generationDataRef.bytes || await sha256(value.blob) !== record.generationDataRef.sha256)
+      throw new Error("Saved generation data is missing or corrupt");
+    return value.blob;
+  }
+  const native = await import("./native-gallery");
+  return native.loadNativeGenerationData(record.id);
+}
+
+async function collectIndexedBundles(database: IDBDatabase): Promise<void> {
+  if (!database.objectStoreNames?.contains(BUNDLES)) return;
+  await new Promise<void>((resolve, reject) => {
+    const transaction = database.transaction([STORE, BUNDLES], "readwrite");
+    transaction.oncomplete = () => resolve(); transaction.onerror = () => reject(transaction.error);
+    transaction.onabort = () => reject(transaction.error ?? new Error("Bundle cleanup aborted"));
+    const records = transaction.objectStore(STORE).getAll();
+    records.onsuccess = () => {
+      const used = new Set((records.result as GenRecord[]).map(record => record.generationDataRef?.sha256).filter(Boolean));
+      const cursor = transaction.objectStore(BUNDLES).openCursor();
+      cursor.onsuccess = () => { const item = cursor.result; if (!item) return; if (!used.has(String(item.key))) item.delete(); item.continue(); };
+    };
+  });
 }

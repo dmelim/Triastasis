@@ -19,6 +19,8 @@
 //                      "texture_encoding" / "textureEncoding" (auto|webp|png).
 //                      Existing aliases "band", "atlas", "tex_res", and "webp"
 //                      remain accepted. Returns model/gltf-binary.
+//                      Opt-in save_generation_data=on returns a checksummed
+//                      package with model.glb and optional generation.trg.
 //
 // Launch-time defaults come from CLI flags (see trellis::parse_args);
 // each request copies those defaults and applies its own overrides. The model
@@ -28,6 +30,8 @@
 #include "trellis_args.h"
 #include "trellis_run.h"
 #include "trellis_progress.h"
+#include "generation_data.h"
+#include "texture_replay.h"
 #include "httplib.h"
 
 #include <algorithm>
@@ -40,7 +44,9 @@
 #include <fstream>
 #include <initializer_list>
 #include <iterator>
+#include <memory>
 #include <mutex>
+#include <random>
 #include <string>
 #include <unordered_map>
 #include <utility>
@@ -429,11 +435,37 @@ bool host_allowed(const httplib::Request& req, const std::string& bind_host, int
 // process cannot write; stage scratch files in the real temp directory instead.
 std::string temp_stem() {
     static std::atomic<unsigned> counter{0};
+    static const std::string process_nonce = [] {
+        std::random_device random;
+        return std::to_string(random()) + "-" + std::to_string(random());
+    }();
     std::error_code ec;
     std::filesystem::path dir = std::filesystem::temp_directory_path(ec);
     if (ec) dir = ".";
     auto n = counter.fetch_add(1);
-    return (dir / ("trellis-req-" + std::to_string(n))).string();
+    return (dir / ("trellis-req-" + process_nonce + "-" + std::to_string(n))).string();
+}
+
+// The response owns its staged package until transfer finishes or disconnects.
+// Use bounded reads rather than holding the GLB and sidecar in another string.
+bool serve_staged_binary(httplib::Response& res, const std::string& path,
+                         const char* content_type = "application/vnd.triastasis.generation-package") {
+    auto file = std::make_shared<std::ifstream>(path, std::ios::binary);
+    if (!*file) return false;
+    std::error_code error;
+    auto length = std::filesystem::file_size(path, error);
+    if (error) return false;
+    res.set_content_provider(size_t(length), content_type,
+        [file](size_t offset, size_t length, httplib::DataSink& sink) {
+            char buffer[64 * 1024];
+            size_t count = std::min(length, sizeof(buffer));
+            file->clear(); file->seekg(std::streamoff(offset));
+            file->read(buffer, std::streamsize(count));
+            if (size_t(file->gcount()) != count) return false;
+            return sink.write(buffer, count);
+        },
+        [file, path](bool) { file->close(); std::remove(path.c_str()); });
+    return true;
 }
 
 }  // namespace
@@ -453,6 +485,7 @@ int main(int argc, char** argv) {
     ProgressRegistry progress_registry;
     std::atomic<unsigned> request_counter{0};
     httplib::Server svr;
+    svr.set_payload_max_length(size_t(1024) * 1024 * 1024 + 2 * 1024 * 1024);
 
     // Trellis Studio (and any browser client) calls this server from a different
     // origin — a Tauri webview is tauri://localhost / http://tauri.localhost, and a
@@ -490,7 +523,8 @@ int main(int argc, char** argv) {
     // Lets the desktop app tell this server apart from an unrelated process that
     // happens to hold the port before adopting it. Not an authentication check.
     svr.Get("/identity", [](const httplib::Request&, httplib::Response& res) {
-        res.set_content("{\"service\":\"trellis-server\",\"identityVersion\":1}", "application/json");
+        res.set_content("{\"service\":\"trellis-server\",\"identityVersion\":1,"
+                        "\"generationDataVersions\":[1],\"generationDataProfiles\":[\"textured-512-v1\"],\"textureOptionsVersion\":1}", "application/json");
     });
 
     svr.Get(R"(/progress/([A-Za-z0-9._\-]+))", [&](const httplib::Request& req, httplib::Response& res) {
@@ -512,6 +546,7 @@ int main(int argc, char** argv) {
         // Per-request params start from the launch defaults, then apply overrides.
         trellis::TrellisParams p = base;
         std::string validation_error;
+        bool save_generation_data = false;
         auto bad_request = [&](const std::string& message) {
             set_json_error(res, 400, message);
         };
@@ -581,6 +616,10 @@ int main(int argc, char** argv) {
             bad_request(validation_error);
             return;
         }
+        if (!parse_toggle_field(req, {"save_generation_data"}, save_generation_data, validation_error)) {
+            bad_request(validation_error);
+            return;
+        }
         if (!parse_int_field(req, {"atlas", "atlas_size", "atlasSize"}, 128, 4096,
                              p.tex, validation_error)) {
             bad_request(validation_error);
@@ -638,6 +677,9 @@ int main(int argc, char** argv) {
         }
 
         std::string glb;
+        const std::string package_path = stem + ".trgpk";
+        const std::string capture_path = stem + ".trg";
+        bool package_ready = false;
         bool run_ok = false;
         std::string error_message = "3D reconstruction failed";
         {
@@ -653,9 +695,32 @@ int main(int argc, char** argv) {
                     image.content.size(), p.seed, p.cascade ? std::to_string(p.hr_res).c_str() : "512",
                     p.birefnet < 0 ? "auto" : (p.birefnet ? "birefnet" : "threshold"), p.xatlas ? "xatlas" : "box");
             try {
-                int rc = trellis_run(p);
-                if (rc == 0) glb = read_file_bytes(p.output);
-                run_ok = rc == 0 && !glb.empty();
+                if (save_generation_data) {
+                    trellis::GenerationDataCapture capture(capture_path);
+                    int rc = trellis_run(p, &capture);
+                    std::error_code error;
+                    run_ok = rc == 0 && std::filesystem::file_size(p.output, error) > 0 && !error;
+                    if (run_ok) {
+                        try {
+                            trellis::write_generation_package(package_path, p.output, capture);
+                            package_ready = serve_staged_binary(res, package_path);
+                        } catch (const std::exception& e) {
+                            fprintf(stderr, "[trellis-server] generation package failed: %s\n", e.what());
+                        }
+                        // Even if disk space prevents packaging, retain the good
+                        // generation as an ordinary GLB with a typed capture error.
+                        if (!package_ready) {
+                            glb = read_file_bytes(p.output);
+                            res.set_header("X-Triastasis-Generation-Data-Error", "generation_package_failed");
+                            res.set_header("Access-Control-Expose-Headers", "X-Triastasis-Generation-Data-Error");
+                            run_ok = !glb.empty();
+                        }
+                    }
+                } else {
+                    int rc = trellis_run(p);
+                    if (rc == 0) glb = read_file_bytes(p.output);
+                    run_ok = rc == 0 && !glb.empty();
+                }
             } catch (const std::exception& e) {
                 fprintf(stderr, "[trellis-server] generate failed: %s\n", e.what());
                 error_message = e.what();
@@ -663,10 +728,14 @@ int main(int argc, char** argv) {
             progress_registry.finish(request_id, run_ok, error_message);
             std::remove(p.image.c_str());
             std::remove(p.output.c_str());
+            std::remove(capture_path.c_str());
+            if (!package_ready) std::remove(package_path.c_str());
             // trellis_run also writes sibling debug artifacts; clean them up too.
             std::remove((stem + ".ply").c_str());
             std::remove((stem + "_base.png").c_str());
         }
+
+        if (package_ready) return;
 
         if (glb.empty()) {
             res.status = 500;
@@ -688,6 +757,72 @@ int main(int argc, char** argv) {
         }
         res.set_content(glb.data(), glb.size(), "model/gltf-binary");
     });
+
+    auto texture_operation = [&](const httplib::Request& req, httplib::Response& res, bool bake) {
+        auto error = [&](int status, const std::string& code, const std::string& message) {
+            res.status = status;
+            res.set_content("{\"error\":" + std::string("\"") + json_escape(message) + "\",\"code\":\"" + code + "\"}", "application/json");
+        };
+        constexpr size_t max_file = size_t(512) * 1024 * 1024;
+        if (!bake && req.has_file("texture_option")) { error(400, "invalid_request", "texture_option is only accepted by the bake operation"); return; }
+        for (const auto& part : req.files) {
+            if (part.first == "generation_data" || part.first == "texture_option") continue;
+            static const std::vector<std::string> fields{"seed", "request_id", "requestId", "match_original_rng", "atlas_size", "atlasSize", "atlas", "texture_encoding", "textureEncoding", "webp"};
+            if (std::find(fields.begin(), fields.end(), part.first) == fields.end() || part.second.content.size() > 256 || req.files.count(part.first) != 1) {
+                error(400, "invalid_request", "unsupported or repeated texture-operation field"); return;
+            }
+        }
+        for (const char* name : {"generation_data", "texture_option"}) {
+            if (!bake && std::string(name) == "texture_option") continue;
+            if (req.files.count(name) != 1 || req.files.find(name)->second.content.empty() || req.files.find(name)->second.content.size() > max_file) {
+                error(400, "invalid_request", std::string("one bounded '") + name + "' file is required"); return;
+            }
+        }
+        trellis::TrellisParams params = base;
+        bool original_noise = false;
+        std::string validation_error;
+        if (!parse_uint32_field(req, {"seed"}, params.seed, validation_error) ||
+            !parse_toggle_field(req, {"match_original_rng"}, original_noise, validation_error) ||
+            !parse_int_field(req, {"atlas_size", "atlasSize", "atlas"}, 128, 4096, params.tex, validation_error) ||
+            !parse_texture_encoding(req, {"texture_encoding", "textureEncoding", "webp"}, params.webp, validation_error)) {
+            error(400, "invalid_request", validation_error); return;
+        }
+        std::string request_id, name;
+        read_text_field(req, {"request_id", "requestId"}, request_id, name, validation_error);
+        if (!validation_error.empty() || (!request_id.empty() && sanitize_request_id(request_id) != request_id)) {
+            error(400, "invalid_request", "request_id must contain only letters, digits, '-', '_', or '.'"); return;
+        }
+        if (request_id.empty()) request_id = "texture-" + std::to_string(request_counter.fetch_add(1));
+        const std::string stem = temp_stem(), bundle_path = stem + ".trg", selected_path = stem + ".selected.tropt";
+        const std::string output_path = stem + (bake ? ".glb" : ".tropt");
+        std::lock_guard<std::mutex> lock(gen_mu);
+        progress_registry.begin(request_id); ProgressSinkGuard sink_guard(progress_registry);
+        bool complete = false, validated = false;
+        std::string failure;
+        try {
+            if (!write_file_bytes(bundle_path, req.files.find("generation_data")->second.content)) throw std::runtime_error("cannot stage saved generation data");
+            auto data = trellis::read_generation_data(bundle_path);
+            if (bake) {
+                if (!write_file_bytes(selected_path, req.files.find("texture_option")->second.content)) throw std::runtime_error("cannot stage selected texture");
+                auto option = trellis::read_texture_option(selected_path, data);
+                validated = true;
+                trellis::bake_texture_option(data, option, output_path, params.tex >= 128 ? params.tex : 1024, params.webp);
+            } else {
+                trellis::validate_texture_models(data, params.models);
+                if (original_noise && params.seed != data.seed) throw std::runtime_error("original noise requires the original generation seed");
+                validated = true;
+                auto option = trellis::replay_texture(data, params, params.seed, original_noise);
+                trellis::write_texture_option(output_path, data, option);
+            }
+            complete = serve_staged_binary(res, output_path, bake ? "model/gltf-binary" : "application/vnd.triastasis.texture-option");
+            if (!complete) throw std::runtime_error("cannot stream texture result");
+        } catch (const std::exception& exception) { failure = exception.what(); }
+        progress_registry.finish(request_id, complete, failure);
+        std::remove(bundle_path.c_str()); std::remove(selected_path.c_str());
+        if (!complete) { std::remove(output_path.c_str()); error(validated ? 500 : 422, validated ? "texture_operation_failed" : "generation_data_invalid", failure); }
+    };
+    svr.Post("/retexture", [&](const httplib::Request& req, httplib::Response& res) { texture_operation(req, res, false); });
+    svr.Post("/retexture/bake", [&](const httplib::Request& req, httplib::Response& res) { texture_operation(req, res, true); });
 
     fprintf(stderr, "[trellis-server] models=%s gpu=%d listening on http://%s:%d\n",
             base.models.c_str(), base.gpu, base.host.c_str(), base.port);

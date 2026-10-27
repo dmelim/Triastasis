@@ -94,6 +94,8 @@ endif()
 # --- core library ----------------------------------------------------------
 add_library(trellis_core STATIC
   src/trellis_model.cpp
+  src/generation_data.cpp
+  src/texture_replay.cpp
   src/dit.cpp
   src/flow_runner.cpp
   src/ss_decoder.cpp
@@ -365,3 +367,11 @@ set_target_properties(trellis-server PROPERTIES BUILD_RPATH "${GGML_RPATH}")
 add_executable(trellis-test-ss-full src/test_ss_full.cpp)
 target_link_libraries(trellis-test-ss-full PRIVATE trellis_core)
 set_target_properties(trellis-test-ss-full PROPERTIES BUILD_RPATH "${GGML_RPATH}")
+
+# Optional CPU-only format/HTTP contract tests; no Python requirement in normal
+# runtime builds. They can also be configured independently of ggml.
+option(TRIASTASIS_GENERATION_DATA_TESTS "Build synthetic generation-data contract tests" OFF)
+if(TRIASTASIS_GENERATION_DATA_TESTS)
+  enable_testing()
+  add_subdirectory(tests/generation-data)
+endif()

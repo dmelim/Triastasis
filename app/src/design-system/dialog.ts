@@ -68,7 +68,7 @@ export function bindDialog(element: HTMLDialogElement, dismiss: () => void, canD
 
 let nextDialogId = 0;
 
-export function createDialog(title: string, dismiss: () => void, cardClass = "") {
+export function createDialog(title: string, dismiss: () => void, cardClass = "", canDismiss: () => boolean = () => true) {
   const element = document.createElement("dialog");
   element.className = "modal";
   const card = document.createElement("div");
@@ -86,5 +86,5 @@ export function createDialog(title: string, dismiss: () => void, cardClass = "")
   body.className = "modal-body";
   card.append(header, body);
   element.append(card);
-  return { element, body, heading, ...bindDialog(element, dismiss) };
+  return { element, body, heading, ...bindDialog(element, dismiss, canDismiss) };
 }

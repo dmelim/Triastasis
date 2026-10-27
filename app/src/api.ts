@@ -9,6 +9,8 @@
 
 import { apiBase, loadConfig } from "./config";
 import { normalizeGenParams, type GenParams } from "./types";
+import { unpackGenerationPackage, type GenerationPayload } from "./generation-data";
+import { nativeWork } from "./native-work";
 
 async function base(): Promise<string> {
   return apiBase(await loadConfig());
@@ -92,9 +94,27 @@ function toForm(image: Blob, p: GenParams): FormData {
   return fd;
 }
 
-export interface GenerateResult {
-  glb: Blob;
+export interface NativeCapabilities {
+  generationDataVersions?: number[];
+  generationDataProfiles?: string[];
+  textureOptionsVersion?: number;
 }
+export async function nativeCapabilities(): Promise<NativeCapabilities> {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), 2000);
+  try {
+    const response = await fetch(`${await base()}/identity`, { signal: ctrl.signal });
+    if (!response.ok) return {};
+    const value = await response.json();
+    if (value?.service !== "trellis-server" || value?.identityVersion !== 1) return {};
+    return {
+      generationDataVersions: Array.isArray(value.generationDataVersions) ? value.generationDataVersions.filter((n: unknown) => n === 1) : [],
+      generationDataProfiles: Array.isArray(value.generationDataProfiles) ? value.generationDataProfiles.filter((n: unknown) => typeof n === "string") : [],
+      textureOptionsVersion: value.textureOptionsVersion === 1 ? 1 : undefined,
+    };
+  } catch { return {}; } finally { clearTimeout(timer); }
+}
+export type GenerateResult = GenerationPayload;
 
 export async function generate(
   image: Blob,
@@ -102,7 +122,17 @@ export async function generate(
   signal?: AbortSignal,
   requestId?: string,
 ): Promise<GenerateResult> {
+  return nativeWork(() => generateDirect(image, params, signal, requestId), () => !signal?.aborted, signal);
+}
+
+async function generateDirect(image: Blob, params: GenParams, signal?: AbortSignal, requestId?: string): Promise<GenerateResult> {
   const form = toForm(image, params);
+  const normalized = normalizeGenParams(params);
+  if (normalized.texture && normalized.resolution === 512) {
+    const capabilities = await nativeCapabilities();
+    if (capabilities.generationDataVersions?.includes(1) && capabilities.generationDataProfiles?.includes("textured-512-v1"))
+      form.append("save_generation_data", "on");
+  }
   if (requestId) form.append("request_id", requestId);
   const res = await fetch(`${await base()}/generate`, {
     method: "POST",
@@ -121,5 +151,6 @@ export async function generate(
   }
   const glb = await res.blob();
   if (glb.size === 0) throw new Error("server returned an empty model");
-  return { glb };
+  if (res.headers.get("Content-Type")?.split(";")[0].trim() === "application/vnd.triastasis.generation-package") return unpackGenerationPackage(glb);
+  return { glb, generationDataError: res.headers.get("X-Triastasis-Generation-Data-Error") ?? undefined };
 }

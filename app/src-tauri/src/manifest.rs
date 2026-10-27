@@ -312,6 +312,8 @@ pub struct GenerationManifest {
     pub label: String,
     pub source_image: Option<String>,
     pub model: Option<String>,
+    pub generation_data: Option<String>,
+    pub generation_data_ref: Option<serde_json::Value>,
     pub cutout: Option<String>,
     pub thumbnail: Option<String>,
     pub log: Option<String>,
@@ -356,6 +358,8 @@ impl Default for GenerationManifest {
             label: String::new(),
             source_image: None,
             model: None,
+            generation_data: None,
+            generation_data_ref: None,
             cutout: None,
             thumbnail: None,
             log: None,
@@ -395,6 +399,7 @@ impl GenerationManifest {
         match role {
             "sourceImage" => self.source_image.as_deref(),
             "glb" => self.model.as_deref(),
+            "generationData" => self.generation_data.as_deref(),
             "cutout" => self.cutout.as_deref(),
             "thumbnail" => self.thumbnail.as_deref(),
             "log" => self.log.as_deref(),
@@ -404,7 +409,7 @@ impl GenerationManifest {
 
     /// Every (role, relative path) pair referenced by this manifest.
     fn references(&self) -> Vec<(String, String)> {
-        let roles = ["sourceImage", "glb", "cutout", "thumbnail", "log"];
+        let roles = ["sourceImage", "glb", "cutout", "thumbnail", "log", "generationData"];
         roles
             .iter()
             .filter_map(|role| {
@@ -418,6 +423,7 @@ impl GenerationManifest {
         match role {
             "sourceImage" => self.source_image = Some(path.clone()),
             "glb" => self.model = Some(path.clone()),
+            "generationData" => self.generation_data = Some(path.clone()),
             "cutout" => self.cutout = Some(path.clone()),
             "thumbnail" => self.thumbnail = Some(path.clone()),
             "log" => self.log = Some(path.clone()),
@@ -512,6 +518,8 @@ pub struct ImportedGeneration {
     pub manifest: GenerationManifest,
     pub image_bytes: Vec<u8>,
     pub glb_bytes: Vec<u8>,
+    pub generation_data_path: Option<String>,
+    pub generation_data_error: Option<String>,
 }
 
 // ---- path safety -----------------------------------------------------------
@@ -587,6 +595,13 @@ fn sniff(role: &str, bytes: &[u8]) -> Result<(), String> {
                 Ok(())
             } else {
                 Err("file is not a GLB (missing glTF magic)".to_string())
+            }
+        }
+        "generationData" => {
+            if bytes.len() >= 16 && bytes.starts_with(b"TRGST001") {
+                Ok(())
+            } else {
+                Err("file is not supported saved generation data".into())
             }
         }
         _ => Ok(()),
@@ -897,11 +912,24 @@ pub fn import_generation_manifest_impl(path: &str) -> Result<ImportedGeneration,
         )?,
     )
     .map_err(|e| format!("could not read model: {}", e.detail()))?;
+    let (generation_data_path, generation_data_error) = if preview.manifest.generation_data.is_some() {
+        let optional_path = (|| -> Result<String, String> {
+            read_manifest_asset_impl(path, "generationData")?;
+            let resolved = resolve_in_dir(&dir, preview.manifest.generation_data.as_deref().unwrap())?;
+            Ok(std::fs::canonicalize(resolved).map_err(|e| e.to_string())?.to_string_lossy().into_owned())
+        })();
+        match optional_path {
+            Ok(resolved) => (Some(resolved), None),
+            Err(error) => (None, Some(error)),
+        }
+    } else { (None, None) };
     Ok(ImportedGeneration {
         manifest_path: preview.path,
         manifest: preview.manifest,
         image_bytes,
         glb_bytes,
+        generation_data_path,
+        generation_data_error,
     })
 }
 

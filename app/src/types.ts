@@ -236,6 +236,8 @@ export interface ManifestQualityWarning {
  * `GenerationManifest` serde serialization exactly.
  */
 export interface GenerationManifest {
+  generationData?: string | null;
+  generationDataRef?: import("./generation-data").GenerationDataRef | null;
   schemaVersion: number;
   status: ManifestStatus;
   label: string;
@@ -371,6 +373,10 @@ export interface AppConfig {
 
 /** One persisted generation (IndexedDB record). */
 export interface GenRecord {
+  /** Immutable shared generation bundle; loaded only for texture operations. */
+  generationDataRef?: import("./generation-data").GenerationDataRef;
+  generationData?: Blob | null;
+  generationDataError?: string;
   id: string;
   ts: number;
   name: string;

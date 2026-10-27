@@ -59,6 +59,10 @@ const tauriFs: GalleryFs = {
     const fs = await loadFsPlugin();
     await fs.remove(path, { ...appLocalOptions(fs), recursive });
   },
+  async rename(from, to) {
+    const fs = await loadFsPlugin();
+    await fs.rename(from, to, { oldPathBaseDir: fs.BaseDirectory.AppLocalData, newPathBaseDir: fs.BaseDirectory.AppLocalData });
+  },
   async listDirectories(path) {
     const fs = await loadFsPlugin();
     const entries = await fs.readDir(path, appLocalOptions(fs));
@@ -99,7 +103,9 @@ export function nativeGalleryRecoveryCount(): number {
 
 export async function writeNativeRecord(record: VersionRecord): Promise<void> {
   await ensureRoot();
-  await store.writeRecord(encodedIdOf(record.id), record);
+  const result = await store.writeRecord(encodedIdOf(record.id), record);
+  record.generationDataRef = result.reference;
+  record.generationDataError = result.error;
 }
 
 export async function updateNativeMetadata(id: string, patch: GalleryMetadataPatch): Promise<void> {
@@ -124,6 +130,7 @@ export async function deleteNativeRecords(ids: string[]): Promise<void> {
     await fs.writeTextFile(`${ROOT}/.registered-${encodedIdOf(registrationId)}`, "deleted\n", options);
     if (await fs.exists(dir, options)) await fs.remove(dir, { ...options, recursive: true });
   }
+  await store.collectGenerationData();
 }
 
 export async function clearNativeGallery(): Promise<void> {
@@ -159,4 +166,8 @@ export async function loadNativeRecord(id: string): Promise<GenRecord> {
   const record = await store.loadRecord(encodedIdOf(id));
   if (!record?.glb) throw new Error("Saved model could not be loaded. Its files remain on disk.");
   return record;
+}
+
+export async function loadNativeGenerationData(id: string): Promise<Blob> {
+  return store.loadGenerationData(encodedIdOf(id));
 }

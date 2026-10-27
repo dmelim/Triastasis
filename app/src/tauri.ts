@@ -330,6 +330,8 @@ export async function completeAutomationImport(
 // ---- Triastasis generation manifests ----
 
 export interface ImportedGeneration {
+  generationDataPath?: string | null;
+  generationDataError?: string | null;
   manifestPath: string;
   manifest: GenerationManifest;
   imageBytes: number[];

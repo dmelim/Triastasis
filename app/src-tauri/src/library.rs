@@ -345,7 +345,27 @@ pub(crate) fn export(
         .ok();
     }
     // Full Library metadata travels with the package, including operation history.
-    let response = export_package(job, destination, Some(manifest), Some(m.clone()))?;
+    let generation_data = if let Some(reference) = m.get("generationDataRef").filter(|v| !v.is_null()) {
+        let digest = reference["sha256"].as_str().ok_or((422, "invalid generation data reference".into()))?;
+        if digest.len() != 64 || !digest.bytes().all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase()) {
+            return Err((422, "invalid generation data digest".into()));
+        }
+        let bundle = contained(root, &root.join("generation-data").join(digest).join("generation.trg"))
+            .map_err(|e| (422, e))?;
+        let saved = recorded_file(&bundle, "generationData").map_err(|e| (422, e))?;
+        let model = recorded_file(&record.model, "glb").map_err(|e| (422, e))?;
+        if saved.sha256 != digest || Some(saved.bytes) != reference["bytes"].as_u64()
+            || Some(model.sha256.as_str()) != reference["modelSha256"].as_str() {
+            return Err((422, "generation data failed its saved model binding".into()));
+        }
+        manifest.generation_data = Some("generation.trg".into());
+        manifest.generation_data_ref = Some(reference.clone());
+        manifest.files.push(crate::manifest::ManifestFileRef {
+            role: "generationData".into(), path: "generation.trg".into(), sha256: saved.sha256,
+        });
+        Some(bundle)
+    } else { None };
+    let response = export_package(job, destination, Some(manifest), Some(m.clone()), generation_data)?;
     Ok(
         json!({"versionId":id,"assetId":m["assetId"],"destinationPath":response.destination_path,
         "manifestPath":response.manifest_path,"files":response.files}),
@@ -509,6 +529,32 @@ mod tests {
             "createdAt":10,"inputType":"image/png","hasThumb":false,
             "params":{"resolution":512,"seed":42,"targetFaces":"auto","atlasSize":"auto"},
             "sweepGroupId":"arch-group","sweepIndex":0,"sweepCount":4})
+    }
+    #[test]
+    fn package_round_trip_preserves_optional_generation_data_and_detects_corruption() {
+        let f = Fixture::new();
+        let bytes = b"TRGST001synthetic sidecar bytes";
+        let digest = format!("{:x}", Sha256::digest(bytes));
+        let bundle = f.0.join("generation-data").join(&digest).join("generation.trg");
+        std::fs::create_dir_all(bundle.parent().unwrap()).unwrap();
+        std::fs::write(&bundle, bytes).unwrap();
+        let mut m = metadata("sidecar");
+        m["generationDataRef"] = json!({"sha256":digest,"bytes":bytes.len(),"profile":"textured-512-v1",
+            "sourceSurfaceSha256":"a".repeat(64),"sourceGlbSha256":format!("{:x}",Sha256::digest(glb())),
+            "modelSha256":format!("{:x}",Sha256::digest(glb()))});
+        record(&f.0, "sidecar", Some(1), m.clone());
+        let destination = f.0.join("bundle-export");
+        export(&f.0, "sidecar", &destination, "package").unwrap();
+        let manifest = destination.join("asset-static.triastasis.json");
+        let imported = crate::manifest::import_generation_manifest_impl(&manifest.to_string_lossy()).unwrap();
+        assert_eq!(std::fs::read(imported.generation_data_path.as_ref().unwrap()).unwrap(), bytes);
+        assert_eq!(imported.manifest.generation_data_ref, Some(m["generationDataRef"].clone()));
+        assert!(imported.generation_data_error.is_none());
+        std::fs::write(destination.join("generation.trg"), b"broken sidecar").unwrap();
+        let damaged = crate::manifest::import_generation_manifest_impl(&manifest.to_string_lossy()).unwrap();
+        assert_eq!(damaged.glb_bytes, glb());
+        assert!(damaged.generation_data_path.is_none());
+        assert!(damaged.generation_data_error.is_some());
     }
     #[test]
     fn all_origins_share_assets_and_keep_sweep_grouping() {

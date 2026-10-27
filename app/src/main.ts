@@ -11,7 +11,7 @@ if (!import.meta.env.DEV && "__TAURI_INTERNALS__" in window) {
   document.addEventListener("contextmenu", (event) => event.preventDefault());
 }
 import type { BufferGeometry, Mesh, Object3D } from "three";
-import { generate, getGenerationProgress, health, type NativeProgress } from "./api";
+import { generate, getGenerationProgress, health, nativeCapabilities, type NativeProgress } from "./api";
 import { loadConfig } from "./config";
 import { createButton } from "./design-system/button";
 import { bindDialog, createDialog } from "./design-system/dialog";
@@ -88,6 +88,7 @@ import {
   all,
   clear as clearStore,
   createDerivedVersion,
+  getVersion,
   del as removeRecord,
   galleryLoadFailed,
   galleryRecoveryCount,
@@ -2262,6 +2263,7 @@ function monitorExternalJob(apiUrl: string, initial: AutomationJob): void {
 function startRun(job: GenerationJob): void {
   stopExternalMonitoring();
   generating = true;
+  void updateTextureOptionsAvailability();
   structuredProgressSeen = false;
   jobProgress = { stageLabel: "Preparing the job", etaText: "", percent: null };
   progressTitle.textContent = job.label;
@@ -2289,6 +2291,7 @@ function startRun(job: GenerationJob): void {
 
 function finishRun(): void {
   generating = false;
+  void updateTextureOptionsAvailability();
   if (elapsedTimer) window.clearInterval(elapsedTimer);
   elapsedTimer = null;
   if (!generationQueue.length) progress.classList.add("hidden");
@@ -2364,8 +2367,10 @@ async function generateRecord(
 
   const stopPolling = startProgressPolling(requestId, signal);
   let glb: Blob;
+  let generationPayload: Awaited<ReturnType<typeof generate>>;
   try {
-    ({ glb } = await generate(sourceImage, normalizedParams, signal, requestId));
+    generationPayload = await generate(sourceImage, normalizedParams, signal, requestId);
+    glb = generationPayload.glb;
   } catch (error) {
     stopPolling();
     // Cancellation is a distinct terminal state, never a failure. A manifest
@@ -2396,6 +2401,9 @@ async function generateRecord(
     params: normalizedParams,
     input: sourceImage,
     glb,
+    generationData: generationPayload.generationData,
+    generationDataRef: generationPayload.generationDataRef,
+    generationDataError: generationPayload.generationDataError,
     thumb: null,
     sweepGroupId: sweep?.id,
     sweepIndex: sweep?.index,
@@ -2467,6 +2475,10 @@ async function generateRecord(
     // autosave success, and autosave failure never contradict each other.
     const parts: string[] = [];
     let severity: "" | "ok" | "err" = "ok";
+    if (rec.generationDataError) {
+      parts.push("Generation data could not be saved. The model is available, but texture options are unavailable for this version.");
+      severity = "err";
+    }
     if (rec.qualityWarning) {
       parts.push(`${rec.qualityWarning.message}.`, REFERENCE_GUIDANCE);
       severity = "err";
@@ -2754,7 +2766,42 @@ sweepBtn.addEventListener("click", () => {
 function setViewerTools(on: boolean): void {
   if (!on) renderSelection(null);
   syncViewerReference();
+  void updateTextureOptionsAvailability();
 }
+
+let textureChooserOpening = false;
+async function updateTextureOptionsAvailability(): Promise<void> {
+  const button = $<HTMLButtonElement>("texture-options-btn"), help = $("texture-options-help");
+  button.disabled = true;
+  const id = activeId;
+  if (!id || textureChooserOpening || generating) { help.textContent = generating ? "Texture options will be available after generation finishes." : "Choose a saved generation to change its texture."; return; }
+  const record = await getVersion(id);
+  if (activeId !== id || textureChooserOpening || generating) return;
+  if (!record?.generationDataRef || versionNeedsMemoryExport(id)) {
+    help.textContent = record?.generationDataError ? "Saved generation data is unavailable for this version. The model can still be viewed and exported."
+      : "Generation data was not saved for this model. Generate a new textured model at 512 resolution."; return;
+  }
+  const capabilities = await nativeCapabilities();
+  if (activeId !== id || textureChooserOpening || generating) return;
+  button.disabled = capabilities.textureOptionsVersion !== 1;
+  help.textContent = button.disabled ? "Start a runtime supporting texture options to use this saved shape." : "Compare three material variations while keeping this shape.";
+}
+$("texture-options-btn").addEventListener("click", () => {
+  if (textureChooserOpening) return;
+  textureChooserOpening = true;
+  void updateTextureOptionsAvailability();
+  void modelOperations.run(async () => {
+    if (!activeId || !(await resolveUnsavedEdits())) return;
+    const source = await getVersion(activeId); if (!source) return;
+    const { openTextureChooser } = await import("./texture-chooser");
+    const child = await openTextureChooser(source);
+    if (child) {
+      await refreshGallery(); await loadRecordDataNow(child);
+      toast(child.generationDataError ? "Texture version saved. Saved generation data is unavailable for this version." : "Texture saved as a new Library version.", child.generationDataError ? "err" : "ok");
+    }
+  }).catch(error => toast(error instanceof Error ? error.message : "Texture options could not open", "err"))
+    .finally(() => { textureChooserOpening = false; void updateTextureOptionsAvailability(); });
+});
 viewerReferenceToggle.addEventListener("click", () => {
   const expanded = viewerReferencePopover.classList.contains("hidden");
   viewerReferencePopover.classList.toggle("hidden", !expanded);
@@ -3858,12 +3905,14 @@ async function recoverServer(): Promise<boolean> {
 }
 
 async function pollHealthInternal(): Promise<void> {
+  const wasOnline = serverOnline;
   const cfg = await loadConfig(true);
   serverConfigured = cfg.configured;
   backendBadge.textContent = cfg.backend !== "unknown" ? cfg.backend : "-";
   const ok = await health();
   const connection = serverConnectionState(ok, cfg.configured, serverStartupPending, serverRecoveryInProgress);
   serverOnline = ok;
+  if (wasOnline !== ok) void updateTextureOptionsAvailability();
   serverDot.className = "dot " + (ok ? "ok" : connection === "starting" ? "" : "err");
   serverLabel.textContent = connection === "setup" ? "setup needed" : connection;
   setupBanner.classList.remove("loading");
@@ -4325,6 +4374,14 @@ async function importManifestFlowNow(
   const assetId = newId();
   const versionId = newId();
   const params = normalizeGenParams(manifestRecordedParams(m));
+  let generationData: Blob | null = null;
+  let generationDataError = imported.generationDataError ?? undefined;
+  if (imported.generationDataPath) {
+    try {
+      const fs = await import("@tauri-apps/plugin-fs");
+      generationData = new Blob([new Uint8Array(await fs.readFile(imported.generationDataPath))]);
+    } catch (error) { generationDataError = error instanceof Error ? error.message : "Generation data could not be imported"; }
+  }
   const rec: VersionRecord = {
     id: versionId,
     ts: Date.now(),
@@ -4332,6 +4389,9 @@ async function importManifestFlowNow(
     params,
     input: new Blob([new Uint8Array(imported.imageBytes)], { type: "image/png" }),
     glb: new Blob([new Uint8Array(imported.glbBytes)], { type: "model/gltf-binary" }),
+    generationData,
+    generationDataRef: generationData ? m.generationDataRef ?? undefined : undefined,
+    generationDataError,
     thumb: null,
     assetId,
     versionId,

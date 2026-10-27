@@ -15,6 +15,8 @@
 #include "stb_image_write.h"
 #include "trellis_run.h"
 #include "trellis_progress.h"
+#include "generation_data.h"
+#include "trellis_texture_constants.h"
 
 #include <cstdio>
 #include <random>
@@ -43,10 +45,12 @@ static void slat_stats(const char* tag, const vector<float>& v) {
 
 static const float SHAPE_MEAN[32]={0.781296f,0.018091f,-0.495192f,-0.558457f,1.060530f,0.093252f,1.518149f,-0.933218f,-0.732996f,2.604095f,-0.118341f,-2.143904f,0.495076f,-2.179512f,-2.130751f,-0.996944f,0.261421f,-2.217463f,1.260067f,-0.150213f,3.790713f,1.481266f,-1.046058f,-1.523667f,-0.059621f,2.220780f,1.621212f,0.877230f,0.567247f,-3.175944f,-3.186688f,1.578665f};
 static const float SHAPE_STD[32]={5.972266f,4.706852f,5.445010f,5.209927f,5.320220f,4.547237f,5.020802f,5.444004f,5.226681f,5.683095f,4.831436f,5.286469f,5.652043f,5.367606f,5.525084f,4.730578f,4.805265f,5.124013f,5.530808f,5.619001f,5.103930f,5.417670f,5.269677f,5.547194f,5.634698f,5.235274f,6.110351f,5.511298f,6.237273f,4.879207f,5.347008f,5.405691f};
-static const float TEX_MEAN[32]={3.501659f,2.212398f,2.226094f,0.251093f,-0.026248f,-0.687364f,0.439898f,-0.928075f,0.029398f,-0.339596f,-0.869527f,1.038479f,-0.972385f,0.126042f,-1.129303f,0.455149f,-1.209521f,2.069067f,0.544735f,2.569128f,-0.323407f,2.293000f,-1.925608f,-1.217717f,1.213905f,0.971588f,-0.023631f,0.106750f,2.021786f,0.250524f,-0.662387f,-0.768862f};
-static const float TEX_STD[32]={2.665652f,2.743913f,2.765121f,2.595319f,3.037293f,2.291316f,2.144656f,2.911822f,2.969419f,2.501689f,2.154811f,3.163343f,2.621215f,2.381943f,3.186697f,3.021588f,2.295916f,3.234985f,3.233086f,2.260140f,2.874801f,2.810596f,3.292720f,2.674999f,2.680878f,2.372054f,2.451546f,2.353556f,2.995195f,2.379849f,2.786195f,2.775190f};
 
 int trellis_run(const trellis::TrellisParams& cfg) {
+    return trellis_run(cfg, nullptr);
+}
+
+int trellis_run(const trellis::TrellisParams& cfg, trellis::GenerationDataCapture* capture) {
     // Unbuffered, not line-buffered: MSVCRT treats _IOLBF as full buffering, which
     // swallows stage progress when piped (e.g. under Lemonade) if the process crashes.
     setvbuf(stdout, nullptr, _IONBF, 0);
@@ -108,6 +112,7 @@ int trellis_run(const trellis::TrellisParams& cfg) {
         }
     }
     vector<float> chw, chw1024;
+    if (capture) capture->begin(cfg, run_seed, birefnet);
     std::vector<unsigned char> cutout; int cut_sz = 0;   // the bg-removal result (for --dump-bg / --bg-only)
     trellis::report_progress("preprocess", 0, 0, 0, 0, -1.0);
     if (birefnet) {
@@ -328,9 +333,13 @@ int trellis_run(const trellis::TrellisParams& cfg) {
         const int    tN    = (int)tcoords.size();
         const std::vector<std::vector<uint8_t>>& tsubs = mixed ? so_tex.subs : so.subs;
 
+        if (capture) capture->guide(tcoords, tslat, tsubs, *pbr_coords, pbr_res,
+                                    tcond, tlc, cutout, cut_sz);
+
         vector<float> texlat;
         {
             trellis::Model m = trellis::Model::load(tflow, gpu);
+            if (capture) capture->texture_backend(false, m.on_gpu);
             trellis::DiTParams p; p.in_ch = 64; p.out_ch = 32; p.d_cond = 1024; p.cast_f32 = F32;
             trellis::DitRunner* run = trellis::make_sparse_runner(m, p, tcoords, tlc);
             // state is the 32-ch noise; each forward concat [noise(32) ; shape_slat_norm(32)] -> 64ch
@@ -344,13 +353,16 @@ int trellis_run(const trellis::TrellisParams& cfg) {
             };
             trellis::SamplerParams sp; sp.steps=flow_steps; sp.guidance_strength=1.0f; sp.guidance_rescale=0.0f; sp.gi0=0.6f; sp.gi1=0.9f; sp.rescale_t=3.0f;
             auto step_cb = make_step_cb("texture_flow", texture_offset);
-            texlat = trellis::sample_flow(fwd, noise((size_t)32*tN), tcond, tneg, sp, nullptr, step_cb);  // [32,tN]
+            auto texture_noise = noise((size_t)32*tN);
+            if (capture) capture->noise(texture_noise);
+            texlat = trellis::sample_flow(fwd, std::move(texture_noise), tcond, tneg, sp, nullptr, step_cb);  // [32,tN]
             delete run; m.free();
             for (int n = 0; n < tN; ++n) for (int c = 0; c < 32; ++c) texlat[(size_t)c + 32*n] = texlat[(size_t)c + 32*n]*TEX_STD[c] + TEX_MEAN[c];
         }
         {
             trellis::report_progress("texture_decode", 0, 0, 0, 0, -1.0);
             trellis::Model m = trellis::Model::load(M + "/tex_dec.gguf", gpu);
+            if (capture) capture->texture_backend(true, m.on_gpu);
             vector<float> pbr = trellis::tex_decode(m, texlat, tcoords, tsubs); m.free();   // [6,Mv] pre-scale
             const int Mv = (int)pbr_coords->size();
             colors.resize((size_t)Mv * 3); pbr6.resize((size_t)Mv * 6);
@@ -402,6 +414,7 @@ int trellis_run(const trellis::TrellisParams& cfg) {
         trellis::weld_vertices(mesh.verts, mesh.faces, colors.empty() ? nullptr : &colors,
                                1.0f / ((float)so.res * 8.0f));
         trellis::fill_small_holes(mesh.faces);
+        if (capture) capture->dense_surface(mesh.verts, mesh.faces);
         // Reference production pipeline: rebuild the noisy dual-grid mesh as
         // the narrow-band offset shell (watertight manifold), then quadric
         // simplify to the face target. The BVH over the original hole-filled
@@ -454,6 +467,7 @@ int trellis_run(const trellis::TrellisParams& cfg) {
             if (ndrop2) { printf("  decimated postproc: dropped %d more comps -> F=%d\n", ndrop2, (int)df.size()/3); fflush(stdout); }
         }
         const int dV = (int)dv.size()/3, dF = (int)df.size()/3;
+        if (capture) capture->output_surface(dv, df, rm.F() == 0);
         // Texels are shaded straight from the per-voxel PBR volume (trilinear sampling, the
         // reference bake behavior) rather than from decimation-averaged vertex colors, so
         // full material detail survives simplification.
@@ -474,10 +488,15 @@ int trellis_run(const trellis::TrellisParams& cfg) {
             printf("      textured GLB (atlas %d, +%s)\n", bm.T, tex.c_str());
         } else printf("      uv_bake failed; falling back to vertex colors\n");
     }
-    if (!textured)
+    if (!textured) {
+        // A vertex-color fallback does not export the frozen surface captured
+        // above, so it must not acquire a misleading reusable shape binding.
+        if (capture) capture->fail("textured_export_unavailable");
         trellis::write_glb(outglb.c_str(), mesh.verts.data(), mesh.V(), mesh.faces.data(), mesh.F(),
                            colors.empty() ? nullptr : colors.data(), run_seed,
                            cfg.copyright.empty() ? nullptr : cfg.copyright.c_str());
+    }
+    if (capture && textured) capture->finish(outglb);
     std::string ply = outglb.substr(0, outglb.find_last_of('.')) + ".ply";
     trellis::write_ply(ply.c_str(), mesh.verts.data(), mesh.V(), mesh.faces.data(), mesh.F(), colors.empty() ? nullptr : colors.data());
     printf("done in %.1fs -> %s (+ %s)\n", now() - t0, outglb.c_str(), ply.c_str());

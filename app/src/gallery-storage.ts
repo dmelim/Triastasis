@@ -13,6 +13,8 @@
 
 import type { GenRecord, VersionRecord } from "./types";
 import { parseProject, type LibraryProject } from "./projects";
+import { persistGenerationBundle, loadGenerationBundle } from "./generation-data-storage";
+import { validGenerationDataRef, type GenerationDataRef } from "./generation-data";
 
 /** The subset of filesystem operations gallery storage needs. */
 export interface GalleryFs {
@@ -23,11 +25,12 @@ export interface GalleryFs {
   readTextFile(path: string): Promise<string>;
   exists(path: string): Promise<boolean>;
   remove(path: string, recursive: boolean): Promise<void>;
+  rename(from: string, to: string): Promise<void>;
   /** Names of directories directly inside `path` (empty when absent). */
   listDirectories(path: string): Promise<string[]>;
 }
 
-export interface StoredMetadata extends Omit<VersionRecord, "input" | "glb" | "thumb"> {
+export interface StoredMetadata extends Omit<VersionRecord, "input" | "glb" | "thumb" | "generationData"> {
   inputType: string;
   glbType: string;
   thumbType: string | null;
@@ -82,7 +85,7 @@ async function buildMetadata(
   record: VersionRecord,
   revision: number,
 ): Promise<{ metadata: StoredMetadata; input: Uint8Array; glb: Uint8Array; thumb: Uint8Array | null }> {
-  const { input, glb, thumb, ...fields } = record;
+  const { input, glb, thumb, generationData: _data, ...fields } = record;
   if (!glb) throw new Error("Cannot save a Library entry without loading its model");
   return {
     metadata: {
@@ -143,6 +146,7 @@ async function loadFromRevision(
     metadata;
   return {
     ...record,
+    generationData: null,
     input: new Blob([new Uint8Array(input)], { type: inputType || "application/octet-stream" }),
     glb: glb ? new Blob([new Uint8Array(glb)], { type: glbType || "model/gltf-binary" }) : null,
     thumb: thumb ? new Blob([new Uint8Array(thumb)], { type: thumbType || "image/png" }) : null,
@@ -159,6 +163,7 @@ async function loadLegacy(fs: GalleryFs, dir: string, metadataOnly = false): Pro
   const { inputType, glbType, thumbType, hasThumb: _hasThumb, ...record } = metadata;
   return {
     ...record,
+    generationData: null,
     input: new Blob([new Uint8Array(input)], { type: inputType || "application/octet-stream" }),
     glb: glb ? new Blob([new Uint8Array(glb)], { type: glbType || "model/gltf-binary" }) : null,
     thumb: thumb ? new Blob([new Uint8Array(thumb)], { type: thumbType || "image/png" }) : null,
@@ -300,6 +305,26 @@ export function createTransactionalGallery(fs: GalleryFs, root: string) {
   }
 
   return {
+    async loadGenerationData(encodedId: string): Promise<Blob> {
+      const record = await loadGalleryRecord(fs, root, encodedId, undefined, true);
+      if (!record?.generationDataRef) throw new Error("Generation data was not saved for this model");
+      return loadGenerationBundle(fs, root, record.generationDataRef);
+    },
+    async collectGenerationData(): Promise<void> {
+      return withLock("$bundle-lifecycle", async () => {
+      const used = new Set<string>();
+      for (const id of (await fs.listDirectories(root)).filter(name => /^[0-9a-f]+$/i.test(name))) {
+        const record = await loadGalleryRecord(fs, root, id, undefined, true);
+        // An unreadable record may still own a bundle; leave all blobs intact.
+        if (!record || (record.generationDataRef && !validGenerationDataRef(record.generationDataRef))) return;
+        if (record.generationDataRef) used.add(record.generationDataRef.sha256);
+      }
+      const pool = `${root}/generation-data`;
+      if (!(await fs.exists(pool))) return;
+      for (const digest of (await fs.listDirectories(pool)).filter(name => /^[0-9a-f]{64}$/.test(name)))
+        if (!used.has(digest)) await removeQuietly(fs, `${pool}/${digest}`);
+      });
+    },
     async updateMetadata(encodedId: string, patch: GalleryMetadataPatch): Promise<void> {
       await withLock(encodedId, async () => {
         if (!loadedDirs.has(encodedId)) {
@@ -334,8 +359,17 @@ export function createTransactionalGallery(fs: GalleryFs, root: string) {
         }
       });
     },
-    async writeRecord(encodedId: string, record: VersionRecord): Promise<void> {
-      await withLock(encodedId, async () => { loadedDirs.set(encodedId, await writeOnce(fs, root, encodedId, record)); });
+    async writeRecord(encodedId: string, record: VersionRecord): Promise<{ reference?: GenerationDataRef; error?: string }> {
+      return withLock(encodedId, () => withLock("$bundle-lifecycle", async () => {
+        let reference: GenerationDataRef | undefined, error = record.generationDataError;
+        try {
+          reference = await withLock(`bundle:${record.generationDataRef?.sha256 ?? encodedId}`, () => persistGenerationBundle(fs, root, record));
+        } catch (failure) {
+          error = failure instanceof Error ? failure.message : "Generation data could not be saved";
+        }
+        loadedDirs.set(encodedId, await writeOnce(fs, root, encodedId, { ...record, generationDataRef: reference, generationDataError: error }));
+        return { reference, error };
+      }));
     },
     async loadRecord(encodedId: string, metadataOnly = false): Promise<GenRecord | null> {
       return loadGalleryRecord(fs, root, encodedId, (dir) => loadedDirs.set(encodedId, dir), metadataOnly);

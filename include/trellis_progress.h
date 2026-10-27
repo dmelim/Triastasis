@@ -30,6 +30,8 @@ inline const ProgressStage kProgressStages[] = {
     {"mesh",             "Building the mesh"},
     {"texture_flow",     "Generating materials"},
     {"texture_decode",   "Decoding materials"},
+    {"texture_preview",  "Preparing the texture preview"},
+    {"texture_bake",     "Baking the selected texture"},
     {"package",          "Packing and validating the model"},
 };
 

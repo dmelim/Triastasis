@@ -39,6 +39,8 @@
         { "path": "**/*.GIF" },
         { "path": "**/*.glb" },
         { "path": "**/*.GLB" },
+        { "path": "**/*.trg" },
+        { "path": "**/*.TRG" },
         { "path": "$APPLOCALDATA/triastasis/gallery-v1" },
         { "path": "$APPLOCALDATA/triastasis/gallery-v1/**" }
       ]

@@ -3,6 +3,8 @@ import { test } from "node:test";
 
 import { createTransactionalGallery, type GalleryFs } from "./gallery-storage";
 import type { VersionRecord } from "./types";
+import { generationFixture } from "./generation-data-fixture.test-helper";
+import { inspectGenerationData } from "./generation-data";
 
 const ROOT = "gallery-test";
 
@@ -74,6 +76,14 @@ class MemoryFs implements GalleryFs {
         }
       }
     }
+  }
+
+  async rename(from: string, to: string): Promise<void> {
+    this.maybeFail();
+    if (this.files.has(to)) throw new Error("destination exists");
+    const bytes = this.files.get(from);
+    if (bytes === undefined) throw new Error("source missing");
+    this.files.set(to, bytes); this.files.delete(from);
   }
 
   async listDirectories(path: string): Promise<string[]> {
@@ -375,4 +385,64 @@ test("deferred listing skips revisions whose model file is missing", async () =>
   const entry = await store.loadRecord("lazy", true);
   assert.equal(entry?.label, "Original");
   assert.equal(entry?.glb, null);
+});
+
+test("generation bundles survive restart, share storage across versions, and load lazily", async () => {
+  const fs = new MemoryFs(), gallery = createTransactionalGallery(fs, ROOT);
+  const { data, glb } = await generationFixture(), { reference } = await inspectGenerationData(data);
+  const parent = makeRecord({ id: "aa", glb, generationData: data, generationDataRef: reference });
+  assert.equal((await gallery.writeRecord("aa", parent)).reference?.sha256, reference.sha256);
+  await gallery.writeRecord("bb", { ...parent, id: "bb", generationData: null, parentVersionId: "aa" });
+  assert.equal([...fs.files.keys()].filter(path => path.endsWith("generation.trg")).length, 1);
+  assert.ok(!JSON.stringify([...fs.files.values()].filter(value => typeof value === "string")).includes('"generationData":'));
+  const restart = createTransactionalGallery(fs, ROOT);
+  const read = fs.readFile.bind(fs); let dataReads = 0;
+  fs.readFile = async path => { if (path.endsWith("generation.trg")) dataReads++; return read(path); };
+  const loaded = await restart.loadRecord("bb", true);
+  assert.equal(loaded?.generationData, null); assert.equal(dataReads, 0);
+  assert.equal((await restart.loadGenerationData("bb")).size, data.size);
+  await fs.remove(`${ROOT}/aa`, true); await restart.collectGenerationData();
+  assert.equal([...fs.files.keys()].filter(path => path.endsWith("generation.trg")).length, 1);
+  await fs.remove(`${ROOT}/bb`, true); await restart.collectGenerationData();
+  assert.equal([...fs.files.keys()].filter(path => path.endsWith("generation.trg")).length, 0);
+});
+
+test("sidecar write failure never prevents saving the GLB or publishes a partial reference", async () => {
+  const fs = new MemoryFs(), gallery = createTransactionalGallery(fs, ROOT);
+  const { data, glb } = await generationFixture(), { reference } = await inspectGenerationData(data);
+  const rename = fs.rename.bind(fs);
+  fs.rename = async (from, to) => { if (to.endsWith("generation.trg")) throw new Error("synthetic disk full"); return rename(from, to); };
+  const saved = await gallery.writeRecord("aa", makeRecord({ id: "aa", glb, generationData: data, generationDataRef: reference }));
+  assert.equal(saved.reference, undefined); assert.match(saved.error!, /disk full/);
+  const loaded = await gallery.loadRecord("aa");
+  assert.equal(await loaded?.glb?.text(), await glb.text());
+  assert.equal(loaded?.generationDataRef, undefined);
+  assert.ok(![...fs.files.keys()].some(path => path.endsWith(".tmp")));
+});
+
+test("corrupt optional generation data does not hide a readable model", async () => {
+  const fs = new MemoryFs(), gallery = createTransactionalGallery(fs, ROOT);
+  const { data, glb } = await generationFixture(), { reference } = await inspectGenerationData(data);
+  await gallery.writeRecord("aa", makeRecord({ id: "aa", glb, generationData: data, generationDataRef: reference }));
+  const path = [...fs.files.keys()].find(path => path.endsWith("generation.trg"))!;
+  fs.files.set(path, new Uint8Array([1,2,3]));
+  assert.equal(await (await gallery.loadRecord("aa"))?.glb?.text(), await glb.text());
+  await assert.rejects(gallery.loadGenerationData("aa"), /checksum/);
+});
+
+test("garbage collection waits for a bundle and its referencing revision to commit", async () => {
+  const fs = new MemoryFs(), gallery = createTransactionalGallery(fs, ROOT);
+  const { data, glb } = await generationFixture(), { reference } = await inspectGenerationData(data);
+  let resume!: () => void, staged!: () => void;
+  const ready = new Promise<void>(resolve => { staged = resolve; });
+  const gate = new Promise<void>(resolve => { resume = resolve; });
+  const write = fs.writeTextFile.bind(fs);
+  fs.writeTextFile = async (path, text) => { if (path.endsWith("/metadata.json")) { staged(); await gate; } return write(path, text); };
+  const save = gallery.writeRecord("aa", makeRecord({ id: "aa", glb, generationData: data, generationDataRef: reference }));
+  await ready;
+  let collected = false;
+  const collect = gallery.collectGenerationData().then(() => { collected = true; });
+  await new Promise(resolve => setTimeout(resolve, 0)); assert.equal(collected, false);
+  resume(); await save; await collect;
+  assert.equal((await gallery.loadGenerationData("aa")).size, data.size);
 });

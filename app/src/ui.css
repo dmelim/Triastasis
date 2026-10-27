@@ -2028,3 +2028,19 @@ input:focus-visible,
 }
 .project-icon-choice:hover { border-color: var(--border-strong); background: var(--surface-control-hover); }
 .project-icon-choice[aria-checked="true"] { border-color: var(--content-accent); background: var(--surface-accent); color: var(--content-accent); }
+
+/* Material options share one lit stage so orbit, exposure and scale stay fixed. */
+.texture-options-card { width: min(940px, calc(100vw - 36px)); max-width: none; }
+.texture-options-card .modal-body { display: flex; flex-direction: column; gap: 12px; }
+.texture-options-card .field-help, .texture-options-status { margin: 0; }
+.texture-options-view { height: min(48dvh, 440px); min-height: 220px; position: relative; overflow: hidden; }
+.texture-options-view canvas { display: block; width: 100%; height: 100%; }
+.texture-options-choices { display: flex; flex-wrap: wrap; gap: 8px; }
+.texture-options-choices .button { flex: 1 1 160px; font-variant-numeric: tabular-nums; }
+.texture-options-choices [aria-pressed="true"] { color: var(--content-accent); border-color: var(--content-accent); }
+.texture-options-status { font-size: var(--font-size-body); }
+.texture-options-progress { width: 100%; height: 6px; accent-color: var(--content-accent); }
+.texture-options-progress[hidden] { display: none; }
+.texture-options-card .modal-actions { flex-wrap: wrap; }
+
+.texture-options-card [hidden] { display: none !important; }

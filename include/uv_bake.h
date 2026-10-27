@@ -3,6 +3,7 @@
 #include <array>
 #include <vector>
 #include <cstdint>
+#include <memory>
 
 namespace trellis {
 
@@ -32,6 +33,26 @@ struct VoxelPbr {
     int res = 0;
     const TriBvh* snap = nullptr;
     bool ok() const { return coords && feats && res > 0 && !coords->empty(); }
+};
+
+// Approximate chooser preview using exactly the bake's existing sampler.
+// Returns the number of vertices with no sample; their neutral PBR is explicit.
+size_t sample_pbr_vertices(const std::vector<float>& vertices, const VoxelPbr& field,
+                           std::vector<float>& preview);
+
+// Owns the immutable coordinates, dense surface, BVH and voxel lookup. Option
+// fields are supplied per call and are never retained by the cache.
+class PbrVertexSampler {
+public:
+    PbrVertexSampler(const std::vector<std::array<int,3>>& coordinates,
+                     const std::vector<float>& dense_vertices, const std::vector<int32_t>& dense_faces);
+    ~PbrVertexSampler();
+    PbrVertexSampler(const PbrVertexSampler&) = delete;
+    size_t sample(const std::vector<float>& vertices, const std::vector<float>& field, std::vector<float>& output) const;
+    const TriBvh& snap() const;
+private:
+    struct Impl;
+    std::unique_ptr<Impl> impl_;
 };
 
 // Vertex-clustering decimation: snap verts to a `grid`-cell lattice over [-0.5,0.5]^3, average
