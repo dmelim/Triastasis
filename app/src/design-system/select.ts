@@ -306,6 +306,7 @@ function open(ctrl: SelectController): void {
 function close(ctrl: SelectController, restoreFocus: boolean): void {
   if (!ctrl.isOpen) return;
   ctrl.isOpen = false;
+  ctrl.trigger.setAttribute("aria-expanded", "false");
   ctrl.popover.classList.add("hidden");
   ctrl.trigger.classList.remove("is-open");
   ctrl.trigger.removeAttribute("aria-activedescendant");

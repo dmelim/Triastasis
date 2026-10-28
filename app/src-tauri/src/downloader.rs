@@ -68,7 +68,7 @@ pub struct DownloadControl {
 }
 
 impl DownloadControl {
-    fn begin(&self, bundle_id: &str) -> Result<Arc<ActiveDownload>, String> {
+    pub fn begin(&self, bundle_id: &str) -> Result<Arc<ActiveDownload>, String> {
         let mut guard = self.active.lock().unwrap();
         if let Some(active) = guard.as_ref() {
             return Err(format!(
@@ -101,6 +101,17 @@ impl DownloadControl {
         }
     }
 
+    pub fn save_config(&self, next: &crate::config::Config) -> Result<(), String> {
+        let active = self.active.lock().unwrap();
+        if active.is_some() {
+            let previous = crate::config::load().ok_or("cannot change configuration during a download")?;
+            if next.models_root != previous.models_root || next.models_dir != previous.models_dir {
+                return Err("Finish or stop the model download before changing its location".into());
+            }
+        }
+        crate::config::save(next)
+    }
+
     /// Current status snapshot for the UI.
     pub fn status(&self) -> Option<DownloadStatus> {
         let guard = self.active.lock().unwrap();
@@ -112,6 +123,10 @@ impl DownloadControl {
         let guard = self.active.lock().unwrap();
         match guard.as_ref() {
             Some(active) => {
+                let status = active.status.lock().unwrap();
+                if !matches!(status.state.as_str(), "preparing" | "downloading" | "verifying") {
+                    return Err("the download has already finished".into());
+                }
                 active.pause.store(true, Ordering::Release);
                 Ok(())
             }
@@ -124,6 +139,10 @@ impl DownloadControl {
         let guard = self.active.lock().unwrap();
         match guard.as_ref() {
             Some(active) => {
+                let status = active.status.lock().unwrap();
+                if !matches!(status.state.as_str(), "preparing" | "downloading" | "verifying") {
+                    return Err("the download has already finished".into());
+                }
                 active.cancel.store(true, Ordering::Release);
                 Ok(())
             }
@@ -488,8 +507,8 @@ pub fn run_download(
     app: &tauri::AppHandle,
     control: &DownloadControl,
     bundle_id: &str,
+    active: Arc<ActiveDownload>,
 ) -> Result<(), String> {
-    let active = control.begin(bundle_id)?;
     let result = run_download_inner(app, &active, bundle_id);
     let ready = result.is_ok() && active.status.lock().unwrap().state == "ready";
     if let Err(error) = &result {
@@ -834,6 +853,7 @@ fn run_download_inner(
                     total_total,
                 ));
             }
+            let start_len = effective_resume_offset(start_len, append);
             // If the server ignored Range and sent everything, truncate instead
             // of appending a complete copy onto the partial data.
             let mut sink = std::fs::OpenOptions::new()
@@ -1073,8 +1093,26 @@ fn run_download_inner(
         ));
     }
     remove_partials(&dl_dir);
-    set_state(status, "ready", None);
+    // Serialize the irrevocable ready boundary with pause/cancel acceptance.
+    let terminal = complete_verification(active);
+    if terminal != "ready" {
+        emit_progress(app, &progress_payload(bundle_id, terminal, None, file_count,
+            file_count, total_total, total_total, total_total, total_total, 0));
+    }
     Ok(())
+}
+
+fn complete_verification(active: &ActiveDownload) -> &'static str {
+    let mut current = active.status.lock().unwrap();
+    let terminal = if active.cancel.load(Ordering::Acquire) { "cancelled" }
+        else if active.pause.load(Ordering::Acquire) { "paused" } else { "ready" };
+    current.state = terminal.into();
+    current.error = None;
+    terminal
+}
+
+fn effective_resume_offset(partial: u64, append: bool) -> u64 {
+    if append { partial } else { 0 }
 }
 
 #[cfg(test)]
@@ -1103,5 +1141,44 @@ mod tests {
             r#"[{{"path":"q8/birefnet.gguf","size":1,"lfs":{{"oid":"{SHA256}","size":1}}}}]"#
         );
         assert!(sha256_from_tree_metadata(&wrong_size, "q8/birefnet.gguf", 882_749_024).is_err());
+    }
+}
+
+#[cfg(test)]
+mod lifecycle_tests {
+    use super::*;
+    #[test]
+    fn ignored_range_restarts_byte_accounting() {
+        let full_size = 1024;
+        let restarted = effective_resume_offset(500, false);
+        assert_eq!(restarted + full_size, full_size);
+        assert_eq!(effective_resume_offset(500, true) + 524, full_size);
+    }
+    #[test]
+    fn reservation_rejects_a_second_download_synchronously() {
+        let control = DownloadControl::default();
+        let _first = control.begin("first").unwrap();
+        assert!(control.begin("second").is_err());
+        assert_eq!(control.status().unwrap().bundle_id.as_deref(), Some("first"));
+        control.finish("first");
+        assert!(control.begin("second").is_ok());
+    }
+    #[test]
+    fn accepted_pause_or_cancel_during_verification_cannot_become_ready() {
+        for cancelled in [false, true] {
+            let control = DownloadControl::default();
+            let active = control.begin("test").unwrap();
+            set_state(&active.status, "verifying", None);
+            if cancelled { control.request_cancel().unwrap(); } else { control.request_pause().unwrap(); }
+            assert_eq!(complete_verification(&active), if cancelled { "cancelled" } else { "paused" });
+        }
+    }
+    #[test]
+    fn ready_boundary_rejects_late_cancellation() {
+        let control = DownloadControl::default();
+        let active = control.begin("test").unwrap();
+        assert_eq!(complete_verification(&active), "ready");
+        assert!(control.request_cancel().is_err());
+        assert!(control.request_pause().is_err());
     }
 }

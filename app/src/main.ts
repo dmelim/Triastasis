@@ -597,10 +597,17 @@ function noteManifestWriteFailure(
 // ---- workspace modes and viewer inspector ----
 let workspaceMode: WorkspaceMode = "generate";
 
+let modelReferenceUrl: string | null = null;
+function setModelReference(blob: Blob | null): void {
+  if (modelReferenceUrl) URL.revokeObjectURL(modelReferenceUrl);
+  modelReferenceUrl = blob ? URL.createObjectURL(blob) : null;
+  viewerReferenceImage.removeAttribute("src");
+  syncViewerReference();
+}
 function syncViewerReference(): void {
-  const available = workspaceMode === "view" && Boolean(currentGlb && inputObjectUrl);
+  const available = workspaceMode === "view" && Boolean(currentGlb && modelReferenceUrl);
   viewerReferenceToggle.classList.toggle("hidden", !available);
-  if (available && inputObjectUrl) viewerReferenceImage.src = inputObjectUrl;
+  if (available && modelReferenceUrl) viewerReferenceImage.src = modelReferenceUrl;
   if (!available) {
     viewerReferencePopover.classList.add("hidden");
     viewerReferenceToggle.setAttribute("aria-expanded", "false");
@@ -1655,8 +1662,21 @@ function toast(msg: string, kind: "" | "ok" | "err" = ""): void {
   const el = document.createElement("div");
   el.className = "toast" + (kind ? " " + kind : "");
   el.textContent = msg;
-  $("toasts").appendChild(el);
-  setTimeout(() => el.remove(), kind === "err" ? 8000 : 4000);
+  const modal = document.querySelector<HTMLDialogElement>("dialog[open]");
+  if (modal) {
+    let region = modal.querySelector<HTMLElement>(".dialog-notifications");
+    if (!region) {
+      region = document.createElement("div");
+      region.className = "dialog-notifications";
+      region.setAttribute("role", "alert");
+      (modal.querySelector<HTMLElement>(".modal-card") ?? modal).append(region);
+    }
+    region.replaceChildren(el);
+    region.scrollIntoView({ block: "nearest" });
+  } else {
+    $("toasts").appendChild(el);
+    setTimeout(() => el.remove(), kind === "err" ? 8000 : 4000);
+  }
 }
 
 // ---- input image ----
@@ -1671,13 +1691,14 @@ function clearInputPreview(): void {
   if (inputObjectUrl) URL.revokeObjectURL(inputObjectUrl);
   inputObjectUrl = null;
   inputPreview.removeAttribute("src");
-  viewerReferenceImage.removeAttribute("src");
   inputPreview.classList.add("hidden");
   dropHint.classList.remove("hidden");
   syncViewerReference();
 }
 
 function clearCurrentModelState(): void {
+  appliedInputSelection = ++inputSelectionSequence;
+  setModelReference(null);
   disposeEditorSession();
   activeId = null;
   currentGlb = null;
@@ -1703,11 +1724,19 @@ async function imageDecodes(blob: Blob): Promise<boolean> {
   }
 }
 
-async function setInput(blob: Blob, name: string): Promise<void> {
-  if (!(await imageDecodes(blob))) {
+// Actions retain initiation order, but empty/failed clipboard reads are not
+// image selections. Only successful adoption (or an explicit clear) invalidates
+// older image work, so an unrelated text paste cannot discard a pending decode.
+let inputSelectionSequence = 0;
+let appliedInputSelection = 0;
+async function setInput(blob: Blob, name: string, selection = ++inputSelectionSequence): Promise<void> {
+  const decoded = await imageDecodes(blob);
+  if (selection < appliedInputSelection) return;
+  if (!decoded) {
     toast(`${name || "This file"} could not be read as an image. Choose a valid PNG, JPEG, WebP, BMP or GIF file.`, "err");
     return;
   }
+  appliedInputSelection = selection;
   inputImage = blob;
   inputName = name || "input.png";
   setInputPreviewBlob(blob);
@@ -1855,30 +1884,35 @@ void listenForNativeFileDrops(async (event) => {
       void viewGlbFile(droppedPath);
       return;
     }
+    const selection = ++inputSelectionSequence;
     const image = await readDroppedImage(droppedPath);
-    await setInput(image.blob, image.name);
+    if (selection >= appliedInputSelection) await setInput(image.blob, image.name, selection);
   } catch (error) {
     toast((error as Error).message || "Could not open the dropped file", "err");
   }
 }).catch((error) => {
   console.warn("Could not subscribe to native file drops", error);
 });
-window.addEventListener("paste", async (e: ClipboardEvent) => {
+async function pasteInput(e: ClipboardEvent): Promise<void> {
+  const selection = ++inputSelectionSequence;
   for (const item of e.clipboardData?.items ?? []) {
     const image = item.type.startsWith("image/") && item.getAsFile();
-    if (image) return setInput(image, image.name || "pasted.png");
+    if (image) return setInput(image, image.name || "pasted.png", selection);
   }
   // WebKitGTK can omit image data from ClipboardEvent. Since paste was
   // user-triggered, try reading the clipboard item list for an image.
   const items = await navigator.clipboard?.read?.().catch(() => []) ?? [];
+  if (selection < appliedInputSelection) return;
   for (const item of items) {
     const type = item.types.find((type) => type.startsWith("image/"));
     if (type) {
       const image = await item.getType(type).catch(() => null);
-      if (image) return setInput(image, "pasted.png");
+      if (selection < appliedInputSelection) return;
+      if (image) return setInput(image, "pasted.png", selection);
     }
   }
-});
+}
+window.addEventListener("paste", pasteInput);
 
 function isEditableShortcutTarget(target: EventTarget | null): boolean {
   return target instanceof HTMLElement && (
@@ -2408,7 +2442,7 @@ async function generateRecord(
     sweepGroupId: sweep?.id,
     sweepIndex: sweep?.index,
     sweepCount: sweep?.count,
-    assetId: sweep?.id ?? recordId,
+    assetId: resume?.assetId ?? sweep?.id ?? recordId,
     versionId: recordId,
     parentVersionId: undefined,
     operation: "generated",
@@ -2420,7 +2454,7 @@ async function generateRecord(
     qualityWarning: inspection.warning ?? undefined,
   };
 
-  const modelName = `${base}_${normalizedParams.resolution}_seed${normalizedParams.seed}_${rec.id}.glb`;
+  const modelName = `${base}_${normalizedParams.resolution}_seed${normalizedParams.seed}_${encodeURIComponent(rec.id)}.glb`;
   // Persist the GLB first so a completed manifest can never point at a file
   // that does not exist (the Rust writer computes its SHA-256 on write).
   let savedPath: string | null = null;
@@ -2428,7 +2462,10 @@ async function generateRecord(
   if (isTauri()) {
     try {
       const bytes = new Uint8Array(await glb.arrayBuffer());
-      savedPath = await saveToOutputDir(modelName, bytes);
+      const packageDir = resume
+        ? resume.path.slice(0, Math.max(resume.path.lastIndexOf("/"), resume.path.lastIndexOf("\\")))
+        : activeContext?.dir;
+      savedPath = await saveToOutputDir(modelName, bytes, packageDir);
       if (!savedPath) autosaveError = "the model could not be written to the output folder";
     } catch (e) {
       autosaveError = (e as Error).message || "autosave failed";
@@ -2501,6 +2538,7 @@ async function generateRecord(
       const stats = await instance.load(glb, disposeEditorSession);
     rec.metrics = statsToMetrics(stats);
     currentGlb = glb;
+    setModelReference(sourceImage);
     activeId = rec.id;
     activeParams = normalizedParams;
     activeLabel = rec.label;
@@ -2647,19 +2685,27 @@ function doGenerate(): void {
 
 generateBtn.addEventListener("click", doGenerate);
 cancelBtn.addEventListener("click", () => abort?.abort());
-clearQueueBtn.addEventListener("click", () => {
+clearQueueBtn.addEventListener("click", async () => {
   if (!generationQueue.length) return;
   const removed = generationQueue.splice(0);
   const affectedSweeps = new Set<string>();
   for (const job of removed) {
     if (job.candidate?.status === "queued") job.candidate.status = "cancelled";
     // Persist the cancelled state so recovery never requeues it.
-    if (job.candidate?.manifest) void cancelCandidateManifest(job.candidate.manifest);
+    try {
+      if (job.resumeManifest) {
+        await finishResumedManifest(job.resumeManifest.path, {
+          status: "cancelled", error: "Removed from queue",
+          newJobId: job.resumeManifest.versionId, newRequestId: newRequestId(),
+        });
+      } else if (job.candidate?.manifest) await cancelCandidateManifest(job.candidate.manifest);
+    } catch (error) { noteManifestWriteFailure(error, "generation-cancelled"); }
     if (job.sweep) affectedSweeps.add(job.sweep.id);
   }
   renderCandidates();
   affectedSweeps.forEach(announceSweepWhenComplete);
   updateQueueStatus();
+  await checkInterruptedManifests();
   toast(`${removed.length} queued job${removed.length === 1 ? "" : "s"} removed`);
 });
 
@@ -2702,6 +2748,8 @@ async function doSweep(): Promise<void> {
     return;
   }
   const sweepGroupId = newId();
+  const sweepImage = inputImage;
+  const sweepName = inputName;
 
   // Persist every candidate manifest (plus one shared source image) BEFORE
   // the first generation runs. If persistence fails, refuse to queue a
@@ -2711,12 +2759,12 @@ async function doSweep(): Promise<void> {
     try {
       const { seed: _seed, ...manifestParams } = sweepParams;
       preparedContexts = await prepareSweepManifests({
-        base: safeStem(inputName),
+        base: safeStem(sweepName),
         groupId: sweepGroupId,
-        labelBase: inputName.replace(/\.[^.]+$/, "") || "Model",
+        labelBase: sweepName.replace(/\.[^.]+$/, "") || "Model",
         params: manifestParams,
         seeds: sweepSeeds,
-        sourceBlob: inputImage,
+        sourceBlob: sweepImage,
       });
       if (preparedContexts.some((context) => context === null)) {
         throw new Error("one or more candidate records could not be written");
@@ -2738,8 +2786,6 @@ async function doSweep(): Promise<void> {
   sweepCandidates.set(sweepGroupId, candidates);
   candidateWrap.classList.remove("hidden");
   renderCandidates();
-  const sweepImage = inputImage;
-  const sweepName = inputName;
   const canOpenFirst = !activeId && !currentGlb && !currentJob && generationQueue.length === 0;
   candidates.forEach((slot, index) => {
     queueJob({
@@ -2918,6 +2964,8 @@ async function loadRecordDataNow(rec: VersionRecord): Promise<void> {
   renderMeshParts(instance);
   setWorkspaceMode("view");
   clearStandaloneView();
+  appliedInputSelection = ++inputSelectionSequence;
+  setModelReference(rec.input);
   inputImage = rec.input;
   inputName = rec.name;
   clearMaskPreview();
@@ -4158,6 +4206,7 @@ async function openManifestPreview(path: string): Promise<void> {
       <button id="manifest-cancel" class="button button--secondary" type="button">Close</button>
       ${actions.join("")}
     </footer>`;
+  manifestBody.closest("dialog")?.querySelector(".dialog-notifications")?.remove();
   manifestDialog.open();
   const initialFocus =
     manifestBody.querySelector<HTMLElement>("#manifest-import, #manifest-requeue") ??
@@ -4325,6 +4374,8 @@ function activateLoadedRecord(
   activeId = rec.id;
   activeParams = normalizeGenParams(rec.params);
   activeLabel = rec.label;
+  appliedInputSelection = ++inputSelectionSequence;
+  setModelReference(rec.input);
   inputImage = rec.input;
   inputName = rec.name;
   setInputPreviewBlob(rec.input);
@@ -4565,6 +4616,7 @@ async function requeueFromManifest(path: string, m?: GenerationManifest): Promis
     params: normalizeGenParams(manifestRecordedParams(manifest)),
     label: `${manifest.label || "Resumed"} · seed ${manifest.seed}`,
     autoOpen: false,
+    sweep: manifest.sweep ? { id: manifest.sweep.groupId, index: manifest.sweep.index, count: manifest.sweep.count } : undefined,
     resumeManifest: {
       path,
       assetId: manifest.assetId,
@@ -4616,6 +4668,8 @@ async function viewGlbFileNow(glbPath: string): Promise<void> {
     activeParams = null;
     activeLabel = "";
     currentGlb = blob;
+    setModelReference(null);
+    renderMeshParts(instance);
     activeId = null;
     renderViewerStats(stats, null);
     setViewerTools(true);
@@ -4827,6 +4881,7 @@ async function openSweepRecoveryView(groupId: string, anchorPath: string): Promi
         }
       </div>
     </div>`;
+  manifestBody.closest("dialog")?.querySelector(".dialog-notifications")?.remove();
   manifestDialog.open();
   (
     manifestBody.querySelector<HTMLElement>("#sweep-requeue") ??

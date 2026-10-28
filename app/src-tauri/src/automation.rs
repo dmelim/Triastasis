@@ -147,6 +147,9 @@ impl Default for JobParams {
 /// Validation bounds mirroring trellis-server's `/generate` enforcement so a
 /// rejected request never enters the queue in the first place.
 fn validate_job_params(params: &JobParams) -> Result<(), String> {
+    if params.seed > u32::MAX as u64 {
+        return Err("seed must be an integer between 0 and 4294967295".into());
+    }
     if !matches!(params.resolution, 512 | 1024 | 1536) {
         return Err("resolution must be 512, 1024, or 1536".to_string());
     }
@@ -248,8 +251,8 @@ fn parse_progress_view(value: &serde_json::Value) -> Option<JobProgressView> {
     })
 }
 
-/// Version of the on-disk job-store schema. Bump when DurableJob changes
-/// shape; older files are quarantined instead of misread.
+/// Version of the on-disk job-store schema. New optional fields with defaults
+/// remain compatible; breaking changes require a new version.
 const JOB_STORE_VERSION: u32 = 1;
 
 /// One durable job record: everything needed to reconcile a job after the app
@@ -271,6 +274,7 @@ struct DurableJob {
     /// True when this job was Running in a previous process life and must be
     /// re-run; the worker waits out any native-side orphan first.
     interrupted: bool,
+    native_instance: Option<crate::server::OwnedInstance>,
     output_path: Option<String>,
     error: Option<String>,
     quality_warning: Option<QualityWarning>,
@@ -291,6 +295,7 @@ impl Default for DurableJob {
             started_at: None,
             finished_at: None,
             interrupted: false,
+            native_instance: None,
             output_path: None,
             error: None,
             quality_warning: None,
@@ -313,6 +318,7 @@ impl Job {
             started_at: self.started_at,
             finished_at: self.finished_at,
             interrupted: self.interrupted,
+            native_instance: self.native_instance.clone(),
             output_path: self.output_path.clone(),
             error: self.error.clone(),
             quality_warning: self.quality_warning.clone(),
@@ -343,6 +349,7 @@ impl Job {
             quality_warning: durable.quality_warning,
             progress: durable.progress,
             interrupted: durable.interrupted,
+            native_instance: durable.native_instance,
         }
     }
 }
@@ -437,10 +444,10 @@ fn reconcile_loaded_jobs(jobs: Vec<DurableJob>) -> Vec<DurableJob> {
             job.interrupted = false;
             job.finished_at = Some(now_ms());
         } else {
-            // Only a previously-Running job can have an orphaned native
-            // request under its id; a merely-queued one never started.
+            // Recovery itself persists Queued/interrupted before dispatch.
+            // A second restart must retain that evidence of an older request.
             let was_running = job.status == JobStatus::Running;
-            job.interrupted = was_running;
+            job.interrupted |= was_running;
             job.status = JobStatus::Queued;
         }
     }
@@ -537,6 +544,7 @@ impl JobQueue {
             eprintln!("[automation] persistence degraded — {message}");
         }
         *degraded = Some(message);
+        self.changed.notify_all();
     }
 
     /// A successful full-queue persistence clears degradation.
@@ -653,6 +661,7 @@ struct Job {
     source_disk_path: Option<String>,
     /// Set when this job survived a restart mid-run and must be re-run.
     interrupted: bool,
+    native_instance: Option<crate::server::OwnedInstance>,
     source_name: String,
     source_type: String,
     source_path: Option<String>,
@@ -1670,6 +1679,7 @@ fn submit_job(mut request: Request, queue: &Arc<JobQueue>, base_url: &str) {
         source_image: multipart.image,
         source_disk_path,
         interrupted: false,
+        native_instance: None,
         source_name: multipart.source_name,
         source_type: multipart.source_type,
         source_path: None,
@@ -2441,6 +2451,44 @@ fn get_model(request: Request, queue: &JobQueue, id: &str) {
     }
 }
 
+/// Apply cancellation under the queue lock; a rejected durable write restores
+/// exact dispatch ownership, pending order and source bytes before unlocking.
+fn persist_job_cancellation(
+    data: &mut QueueData,
+    id: &str,
+    persist: impl FnOnce(&QueueData) -> Result<(), String>,
+) -> Result<(), String> {
+    let job = data.jobs.get_mut(id).ok_or("job not found")?;
+    if job.status != JobStatus::Queued && !(job.status == JobStatus::Running && job.interrupted) {
+        return Err("job is no longer cancellable".into());
+    }
+    let previous = (job.status, job.finished_at, std::mem::take(&mut job.source_image));
+    job.status = JobStatus::Cancelled;
+    job.finished_at = Some(now_ms());
+    let pending = data.pending.clone();
+    remove_pending_job(data, id);
+    if let Err(error) = persist(data) {
+        let job = data.jobs.get_mut(id).expect("cancellation holds the queue lock");
+        job.status = previous.0;
+        job.finished_at = previous.1;
+        job.source_image = previous.2;
+        data.pending = pending;
+        return Err(error);
+    }
+    Ok(())
+}
+
+/// The worker acquires dispatch ownership while holding the same queue lock
+/// used by cancellation. After this transition native work cannot be cancelled.
+fn begin_recovered_dispatch(job: &mut Job, stop: &AtomicBool, instance: Option<crate::server::OwnedInstance>) -> bool {
+    if job.status != JobStatus::Running || !job.interrupted || stop.load(Ordering::Relaxed) {
+        return false;
+    }
+    job.interrupted = false;
+    job.native_instance = instance;
+    true
+}
+
 fn cancel_job(request: Request, queue: &JobQueue, id: &str, base_url: &str) {
     let mut data = queue.data.lock().unwrap();
     let Some(status) = data.jobs.get(id).map(|job| job.status) else {
@@ -2448,26 +2496,12 @@ fn cancel_job(request: Request, queue: &JobQueue, id: &str, base_url: &str) {
         return;
     };
 
-    if status == JobStatus::Queued {
-        remove_pending_job(&mut data, id);
-        if let Some(job) = data.jobs.get_mut(id) {
-            job.status = JobStatus::Cancelled;
-            job.finished_at = Some(now_ms());
-            job.source_image.clear();
-        }
-        // A cancellation that cannot be made durable is rolled back: leaving
-        // it applied only in memory would resurrect the job after a restart
-        // and spend GPU time the user explicitly withdrew.
-        if let Err(error) = persist_locked(&data) {
+    if status == JobStatus::Queued || (status == JobStatus::Running && data.jobs.get(id).is_some_and(|job| job.interrupted)) {
+        if let Err(error) = persist_job_cancellation(&mut data, id, persist_locked) {
             queue.record_persistence_failure("cancel", &error);
-            if let Some(job) = data.jobs.get_mut(id) {
-                job.status = JobStatus::Queued;
-                job.finished_at = None;
-            }
-            data.pending.push_back(id.to_string());
             let _ = request.respond(error_response(
                 500,
-                "the cancellation could not be persisted; the job remains queued",
+                "the cancellation could not be persisted; the job remains in its previous state",
             ));
             return;
         }
@@ -2906,7 +2940,19 @@ fn spawn_progress_watcher(queue: Arc<JobQueue>, client: Client, job_id: String) 
     });
 }
 
-fn worker_loop(queue: Arc<JobQueue>, stop: Arc<AtomicBool>) {
+fn wait_for_dispatch<'a>(queue: &'a JobQueue, stop: &AtomicBool) -> Option<std::sync::MutexGuard<'a, QueueData>> {
+    let mut data = queue.data.lock().unwrap();
+    while data.pending.is_empty() && !stop.load(Ordering::Relaxed) && queue.degradation().is_none() {
+        data = queue.changed.wait_timeout(data, Duration::from_secs(2)).unwrap().0;
+    }
+    if stop.load(Ordering::Relaxed) || queue.degradation().is_some() { None } else { Some(data) }
+}
+
+fn worker_loop(queue: Arc<JobQueue>, stop: Arc<AtomicBool>, app: Option<tauri::AppHandle>) {
+    let owned_instance = || {
+        use tauri::Manager;
+        app.as_ref().and_then(|app| crate::server::owned_instance(app.state::<crate::server::ServerState>().inner()))
+    };
     let client = match Client::builder()
         .timeout(Duration::from_secs(60 * 60))
         .build()
@@ -2932,15 +2978,14 @@ fn worker_loop(queue: Arc<JobQueue>, stop: Arc<AtomicBool>) {
             }
         }
         let work = {
-            let mut data = queue.data.lock().unwrap();
-            while data.pending.is_empty() && !stop.load(Ordering::Relaxed) {
-                data = queue.changed.wait(data).unwrap();
-            }
+            let Some(mut data) = wait_for_dispatch(&queue, &stop) else { continue; };
             let Some(id) = data.pending.pop_front() else {
                 continue;
             };
             // Scoped block: the mutable job borrow must end before
             // persist_locked takes its own (immutable) look at the queue.
+            let dispatch_config = config::load();
+            let instance = owned_instance().filter(|owned| dispatch_config.as_ref().is_some_and(|cfg| owned.host == cfg.host && owned.port == cfg.port));
             let payload = {
                 let Some(job) = data.jobs.get_mut(&id) else {
                     continue;
@@ -2948,6 +2993,8 @@ fn worker_loop(queue: Arc<JobQueue>, stop: Arc<AtomicBool>) {
                 if job.status != JobStatus::Queued {
                     continue;
                 }
+                if !job.interrupted { job.native_instance = instance; }
+                else { job.progress.stage_label = Some("Checking previous native request; recovery can be cancelled".into()); }
                 job.status = JobStatus::Running;
                 job.started_at = Some(now_ms());
                 (
@@ -2957,6 +3004,7 @@ fn worker_loop(queue: Arc<JobQueue>, stop: Arc<AtomicBool>) {
                     job.source_type.clone(),
                     job.params.clone(),
                     job.interrupted,
+                    dispatch_config,
                 )
             };
             // The Queued -> Running transition MUST be durable before any GPU
@@ -2976,7 +3024,7 @@ fn worker_loop(queue: Arc<JobQueue>, stop: Arc<AtomicBool>) {
             Some(payload)
         };
 
-        let Some((id, source_image, source_name, source_type, params, interrupted)) = work else {
+        let Some((id, source_image, source_name, source_type, params, interrupted, dispatch_config)) = work else {
             continue;
         };
         // A job that survived a restart mid-run may still have an orphaned
@@ -2984,16 +3032,29 @@ fn worker_loop(queue: Arc<JobQueue>, stop: Arc<AtomicBool>) {
         // keeps processing after the old client vanished). Wait for it to
         // finish before re-submitting so the GPU never runs duplicates.
         if interrupted {
-            match wait_for_orphan(&client, &id) {
+            let previous = queue.data.lock().unwrap().jobs.get(&id).and_then(|job| job.native_instance.clone());
+            let current = owned_instance().filter(|owned| dispatch_config.as_ref().is_some_and(|cfg| owned.host == cfg.host && owned.port == cfg.port));
+            let clearance = if owned_instance_replaced(previous.as_ref(), current.as_ref()) {
+                Ok(())
+            } else { wait_for_orphan(&client, &id, &queue, &stop, dispatch_config.as_ref()) };
+            match clearance {
                 Ok(()) => {
                     let mut data = queue.data.lock().unwrap();
-                    if let Some(job) = data.jobs.get_mut(&id) {
-                        job.interrupted = false;
+                    let Some(job) = data.jobs.get_mut(&id) else { continue; };
+                    if !begin_recovered_dispatch(job, &stop, current.clone()) { continue; }
+                    {
                         if let Err(error) = persist_locked(&data) {
                             queue.record_persistence_failure(
                                 &format!("orphan clearance of job {id}"),
                                 &error,
                             );
+                            if let Some(job) = data.jobs.get_mut(&id) {
+                                job.status = JobStatus::Queued;
+                                job.interrupted = true;
+                                job.native_instance = previous.clone();
+                            }
+                            data.pending.push_front(id.clone());
+                            continue;
                         }
                     }
                 }
@@ -3003,11 +3064,11 @@ fn worker_loop(queue: Arc<JobQueue>, stop: Arc<AtomicBool>) {
                     // concurrent GPU work under the same request id.
                     let mut data = queue.data.lock().unwrap();
                     if let Some(job) = data.jobs.get_mut(&id) {
+                        if job.status == JobStatus::Cancelled || stop.load(Ordering::Relaxed) { continue; }
                         job.status = JobStatus::Failed;
                         job.finished_at = Some(now_ms());
                         job.error = Some(format!(
-                            "recovery withheld: the previous native request could not be \
-                             proven inactive, so the job was not rerun ({reason})"
+                            "recovery withheld: the job was not rerun ({reason})"
                         ));
                         if let Err(error) = persist_locked(&data) {
                             queue.record_persistence_failure(
@@ -3054,7 +3115,7 @@ fn worker_loop(queue: Arc<JobQueue>, stop: Arc<AtomicBool>) {
             source_image
         };
         let result = (|| -> Result<(String, String, Option<QualityWarning>), String> {
-            let cfg = config::load().ok_or("Trellis server configuration is unavailable")?;
+            let cfg = dispatch_config.as_ref().ok_or("Trellis server configuration is unavailable")?;
             let url = format!("http://{}:{}/generate", cfg.host, cfg.port);
             let (content_type, body) =
                 build_generate_body(&id, &source_image, &source_name, &source_type, &params);
@@ -3152,8 +3213,10 @@ fn worker_loop(queue: Arc<JobQueue>, stop: Arc<AtomicBool>) {
 enum OrphanPoll {
     /// The native request is still executing.
     Running,
-    /// A responsive server proved the request absent or terminal.
+    /// A responsive server proved the prior request failed.
     Cleared,
+    /// This protocol cannot safely recover the request automatically.
+    Withheld(String),
     /// No conclusion is possible (transport failure, bad body, server error).
     Unknown(String),
 }
@@ -3163,8 +3226,9 @@ enum OrphanPoll {
 /// as absence, because they also occur while the server is still booting.
 fn classify_progress_response(status: u16, body: Option<&str>) -> OrphanPoll {
     match status {
-        // The server answered and knows no such request: confirmed absence.
-        404 => OrphanPoll::Cleared,
+        // Native registers after acquiring the generation mutex: 404 can
+        // mean a live handler is queued, not that no handler exists.
+        404 => OrphanPoll::Withheld("native progress is not registered; the previous request may still be queued. Automatic replay was withheld. Stop the previous server before submitting a new job".into()),
         200 => {
             let Some(text) = body else {
                 return OrphanPoll::Unknown("empty progress body".to_string());
@@ -3177,7 +3241,8 @@ fn classify_progress_response(status: u16, body: Option<&str>) -> OrphanPoll {
             };
             match parsed.get("status").and_then(|value| value.as_str()) {
                 Some("running") => OrphanPoll::Running,
-                Some("succeeded") | Some("failed") => OrphanPoll::Cleared,
+                Some("failed") => OrphanPoll::Cleared,
+                Some("succeeded") => OrphanPoll::Withheld("the previous request already succeeded, but this native protocol cannot retrieve its lost response. Automatic replay was withheld".into()),
                 other => OrphanPoll::Unknown(format!(
                     "unrecognized progress status {}",
                     other.unwrap_or("<missing>")
@@ -3216,6 +3281,7 @@ fn wait_for_orphan_polling(
         }
         match poll() {
             OrphanPoll::Cleared => return OrphanWait::Confirmed,
+            OrphanPoll::Withheld(reason) => return OrphanWait::Unresolved(reason),
             OrphanPoll::Running => {
                 backoff = poll_interval;
                 sleep(poll_interval);
@@ -3236,8 +3302,8 @@ fn wait_for_orphan_polling(
 /// queue re-runs the job, so the same request id never executes twice
 /// concurrently. Returns an error when confirmation was impossible; callers
 /// must not submit in that case.
-fn wait_for_orphan(client: &Client, id: &str) -> Result<(), String> {
-    let Some(cfg) = config::load() else {
+fn wait_for_orphan(client: &Client, id: &str, queue: &JobQueue, stop: &AtomicBool, cfg: Option<&Config>) -> Result<(), String> {
+    let Some(cfg) = cfg else {
         return Err("the Trellis server configuration is unavailable".to_string());
     };
     let url = format!("http://{}:{}/progress/{}", cfg.host, cfg.port, id);
@@ -3245,7 +3311,10 @@ fn wait_for_orphan(client: &Client, id: &str) -> Result<(), String> {
     let deadline = std::time::Instant::now() + Duration::from_secs(65 * 60);
     let outcome = wait_for_orphan_polling(
         || {
-            let response = client.get(&url).send();
+            if stop.load(Ordering::Relaxed) || queue.data.lock().unwrap().jobs.get(id).map_or(true, |job| job.status == JobStatus::Cancelled) {
+                return OrphanPoll::Withheld("recovery cancelled or service stopping".into());
+            }
+            let response = client.get(&url).timeout(Duration::from_secs(1)).send();
             match response {
                 Ok(response) => {
                     let status = response.status().as_u16();
@@ -3256,7 +3325,13 @@ fn wait_for_orphan(client: &Client, id: &str) -> Result<(), String> {
             }
         },
         deadline,
-        std::thread::sleep,
+        |delay| {
+            let until = std::time::Instant::now() + delay;
+            while std::time::Instant::now() < until {
+                if stop.load(Ordering::Relaxed) || queue.data.lock().unwrap().jobs.get(id).map_or(true, |job| job.status == JobStatus::Cancelled) { break; }
+                std::thread::sleep(Duration::from_millis(50));
+            }
+        },
         Duration::from_millis(2_000),
         Duration::from_millis(15_000),
     );
@@ -3298,6 +3373,7 @@ pub fn start(
     let http_queue = queue.clone();
     let http_stop = stop_flag.clone();
     let http_info = info.clone();
+    let worker_app = app.clone();
     let http_thread = std::thread::spawn(move || {
         let mut registration_check = std::time::Instant::now() - Duration::from_secs(3);
         while !http_stop.load(Ordering::Relaxed) {
@@ -3320,7 +3396,7 @@ pub fn start(
 
     let worker_queue = queue.clone();
     let worker_stop = stop_flag.clone();
-    let worker_thread = std::thread::spawn(move || worker_loop(worker_queue, worker_stop));
+    let worker_thread = std::thread::spawn(move || worker_loop(worker_queue, worker_stop, worker_app));
 
     *state.info.lock().unwrap() = info.clone();
     *state.control.lock().unwrap() = Some(Control {
@@ -3425,6 +3501,7 @@ mod tests {
             source_image: Vec::new(),
             source_disk_path: None,
             interrupted: false,
+            native_instance: None,
             source_name: "source.png".to_string(),
             source_type: "image/png".to_string(),
             source_path: None,
@@ -4252,6 +4329,133 @@ mod tests {
         classify_progress_response(status, Some(body))
     }
 
+
+    #[test]
+    fn native_u32_seed_limit_is_enforced_for_admission_and_recovery() {
+        let mut params = JobParams::default(); params.seed = u32::MAX as u64;
+        assert!(validate_job_params(&params).is_ok());
+        params.seed += 1; assert!(validate_job_params(&params).is_err());
+        let mut job = DurableJob::default(); job.params = params;
+        let recovered = reconcile_loaded_jobs(vec![job]);
+        assert_eq!(recovered[0].status, JobStatus::Failed);
+        assert!(recovered[0].error.as_deref().unwrap().contains("seed"));
+    }
+
+
+    #[test]
+    fn review_recovery_marker_survives_multiple_persisted_restarts() {
+        let image = std::env::temp_dir().join(format!("triastasis-review-restarts-{}.png", std::process::id()));
+        std::fs::write(&image, b"synthetic source").unwrap();
+        let mut interrupted = durable("interrupted", JobStatus::Running, 1);
+        interrupted.source_image_path = image.to_string_lossy().into_owned();
+        let mut queued = durable("never-dispatched", JobStatus::Queued, 2);
+        queued.source_image_path = interrupted.source_image_path.clone();
+        let mut records = vec![interrupted, queued];
+        for _ in 0..3 {
+            records = reconcile_loaded_jobs(records);
+            assert_eq!(records[0].status, JobStatus::Queued);
+            assert!(records[0].interrupted, "a persisted recovery queue is still interrupted");
+            assert!(!records[1].interrupted, "ordinary queued work has no previous native request");
+            assert!(!owned_instance_replaced(records[0].native_instance.as_ref(), None));
+            assert!(matches!(classify_progress_response(404, None), OrphanPoll::Withheld(_)));
+            records = parse_store(&serialize_store(&records)).unwrap();
+        }
+        std::fs::remove_file(image).unwrap();
+    }
+
+    #[test]
+    fn review_failed_recovery_cancel_restores_running_then_retry_prevents_dispatch() {
+        let mut data = QueueData::default();
+        let mut recovering = job("recovering", JobStatus::Running);
+        recovering.interrupted = true;
+        recovering.source_image = vec![1, 2, 3];
+        data.jobs.insert(recovering.id.clone(), recovering);
+        data.pending.push_back("later".into());
+        assert!(persist_job_cancellation(&mut data, "recovering", |snapshot| {
+            assert_eq!(snapshot.jobs["recovering"].status, JobStatus::Cancelled);
+            Err("synthetic unavailable storage".into())
+        }).is_err());
+        assert_eq!(data.jobs["recovering"].status, JobStatus::Running);
+        assert!(data.jobs["recovering"].interrupted);
+        assert_eq!(data.jobs["recovering"].source_image, vec![1, 2, 3]);
+        assert_eq!(data.pending, VecDeque::from(["later".to_string()]));
+        persist_job_cancellation(&mut data, "recovering", |_| Ok(())).unwrap();
+        assert_eq!(data.jobs["recovering"].status, JobStatus::Cancelled);
+        assert!(!begin_recovered_dispatch(data.jobs.get_mut("recovering").unwrap(), &AtomicBool::new(false), None));
+        assert_eq!(data.jobs["recovering"].status, JobStatus::Cancelled);
+    }
+
+    #[test]
+    fn review_failed_recovery_cancel_then_clearance_rejects_a_late_cancel() {
+        let mut data = QueueData::default();
+        let mut recovering = job("recovering", JobStatus::Running);
+        recovering.interrupted = true;
+        data.jobs.insert(recovering.id.clone(), recovering);
+        assert!(persist_job_cancellation(&mut data, "recovering", |_| Err("disk full".into())).is_err());
+        assert!(begin_recovered_dispatch(data.jobs.get_mut("recovering").unwrap(), &AtomicBool::new(false), None));
+        assert_eq!(data.jobs["recovering"].status, JobStatus::Running);
+        assert!(!data.jobs["recovering"].interrupted);
+        assert!(data.pending.is_empty());
+        assert!(persist_job_cancellation(&mut data, "recovering", |_| panic!("native dispatch is no longer cancellable")).is_err());
+        let mut queued = job("queued", JobStatus::Queued); queued.interrupted = true;
+        assert!(!begin_recovered_dispatch(&mut queued, &AtomicBool::new(false), None));
+    }
+
+    #[test]
+    fn review_failed_queued_cancel_restores_pending_order_and_source() {
+        let mut data = QueueData::default();
+        let mut queued = job("middle", JobStatus::Queued); queued.source_image = vec![7, 8];
+        data.jobs.insert(queued.id.clone(), queued);
+        data.pending = VecDeque::from(["first".into(), "middle".into(), "last".into()]);
+        let pending = data.pending.clone();
+        assert!(persist_job_cancellation(&mut data, "middle", |_| Err("disk full".into())).is_err());
+        assert_eq!(data.pending, pending);
+        assert_eq!(data.jobs["middle"].source_image, vec![7, 8]);
+        assert_eq!(data.jobs["middle"].status, JobStatus::Queued);
+    }
+    #[test]
+    fn interrupted_recovery_honors_cancel_and_shutdown_before_network_poll() {
+        let queue = JobQueue::default();
+        let mut saved = job("recovering", JobStatus::Running); saved.interrupted = true;
+        queue.data.lock().unwrap().jobs.insert(saved.id.clone(), saved);
+        let cfg: Config = serde_json::from_value(serde_json::json!({"host":"127.0.0.1","port":1})).unwrap();
+        let client = Client::builder().build().unwrap();
+        let started = std::time::Instant::now();
+        assert!(wait_for_orphan(&client, "recovering", &queue, &AtomicBool::new(true), Some(&cfg)).unwrap_err().contains("stopping"));
+        queue.data.lock().unwrap().jobs.get_mut("recovering").unwrap().status = JobStatus::Cancelled;
+        assert!(wait_for_orphan(&client, "recovering", &queue, &AtomicBool::new(false), Some(&cfg)).unwrap_err().contains("cancelled"));
+        assert!(started.elapsed() < Duration::from_secs(1));
+    }
+    #[test]
+    fn queued_native_404_withholds_immediately_without_a_replay_or_sleep() {
+        let result = wait_for_orphan_polling(|| classify_progress_response(404, None),
+            std::time::Instant::now() + Duration::from_secs(60), |_| panic!("must not blindly retry"),
+            Duration::from_millis(1), Duration::from_millis(2));
+        assert!(matches!(result, OrphanWait::Unresolved(reason) if reason.contains("still be queued")));
+    }
+    #[test]
+    fn only_replaced_owned_instance_on_same_endpoint_proves_safe_replay() {
+        let old = crate::server::OwnedInstance {token:"old".into(),host:"127.0.0.1".into(),port:8080};
+        let mut new = old.clone(); new.token = "new".into();
+        assert!(owned_instance_replaced(Some(&old),Some(&new)));
+        assert!(!owned_instance_replaced(Some(&old),Some(&old)));
+        assert!(!owned_instance_replaced(None,Some(&new)));
+        assert!(!owned_instance_replaced(Some(&old),None));
+        new.port = 8082;
+        assert!(!owned_instance_replaced(Some(&old),Some(&new)));
+    }
+    #[test]
+    fn idle_worker_wakes_on_degradation_without_pending_jobs() {
+        let queue = Arc::new(JobQueue::default()); let other = queue.clone();
+        let worker = std::thread::spawn(move || {
+            assert!(wait_for_dispatch(&other, &AtomicBool::new(false)).is_none());
+            assert!(other.data.lock().unwrap().pending.is_empty());
+            other.record_persistence_success();
+        });
+        queue.record_persistence_failure("synthetic idle write", "disk unavailable");
+        worker.join().unwrap();
+        assert!(queue.degradation().is_none());
+    }
     #[test]
     fn orphan_poll_classification_follows_native_semantics() {
         // Native /progress returns 200 with running|succeeded|failed and 404
@@ -4260,15 +4464,12 @@ mod tests {
             poll_status(200, r#"{"status":"running"}"#),
             OrphanPoll::Running
         );
-        assert_eq!(
-            poll_status(200, r#"{"status":"succeeded"}"#),
-            OrphanPoll::Cleared
-        );
+        assert!(matches!(poll_status(200, r#"{"status":"succeeded"}"#), OrphanPoll::Withheld(_)));
         assert_eq!(
             poll_status(200, r#"{"status":"failed","error":"boom"}"#),
             OrphanPoll::Cleared
         );
-        assert_eq!(classify_progress_response(404, None), OrphanPoll::Cleared);
+        assert!(matches!(classify_progress_response(404, None), OrphanPoll::Withheld(_)));
 
         // Anything that is not evidence from a responsive server is Unknown.
         assert!(matches!(
@@ -4653,4 +4854,10 @@ mod tests {
         let rebound = bind_api_listener(&addr.to_string(), Duration::from_millis(250));
         assert!(rebound.is_ok(), "the stopped API port must be reusable");
     }
+}
+
+/// A replacement app-owned server on the SAME endpoint proves that the old
+/// lifetime-bound process ended. Legacy/external receipts cannot prove this.
+fn owned_instance_replaced(previous: Option<&crate::server::OwnedInstance>, current: Option<&crate::server::OwnedInstance>) -> bool {
+    previous.zip(current).is_some_and(|(old, new)| old.token != new.token && old.host == new.host && old.port == new.port)
 }

@@ -12,6 +12,8 @@ use std::path::{Path, PathBuf};
 
 const CATALOG_JSON: &str = include_str!("../catalog/model-catalog.json");
 pub const CUSTOM_BUNDLE_ID: &str = "custom-local";
+#[path = "model_discovery.rs"]
+pub mod discovery;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ModelFile {
@@ -113,6 +115,7 @@ pub struct ManagedBundleState {
     /// Files present with the expected size (fast scan, no hashing).
     pub sized_files: usize,
     pub total_files: usize,
+    pub total_bytes: u64,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -123,6 +126,7 @@ pub struct CustomBundleState {
     pub available: bool,
     pub gguf_files: usize,
     pub error: Option<String>,
+    pub total_bytes: u64,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -133,6 +137,7 @@ pub struct ModelsScan {
     pub portable: bool,
     pub active_bundle: Option<String>,
     pub managed: Vec<ManagedBundleState>,
+    pub local: Vec<discovery::LocalBundleState>,
     pub custom: Option<CustomBundleState>,
     pub legacy: Option<LegacyMatch>,
     pub free_bytes: Option<u64>,
@@ -473,21 +478,27 @@ pub fn scan_models() -> Result<ModelsScan, String> {
                 registered,
                 sized_files: sized,
                 total_files: bundle.files.len(),
+                total_bytes: discovery::directory_bytes(&leaf),
             });
         }
     }
 
     // A flat legacy layout only matters when we are not looking at a managed
     // root whose leaf directories were scanned above.
-    let legacy = if models_dir == root {
+    let legacy = if !managed.iter().any(|m| m.registered && discovery::same_directory(Path::new(&m.dir), &models_dir)) {
         Some(scan_legacy_dir(&models_dir, cat))
     } else {
         None
     };
 
+    let cache = discovery::cache_dir();
+    let remembered = cfg.as_ref().filter(|c| !c.custom_models_dir.trim().is_empty())
+        .map(|c| Path::new(c.custom_models_dir.trim()));
+    let local = discovery::discover(cat, &models_dir, remembered, &managed, cache.as_deref());
     let custom = cfg
         .as_ref()
         .filter(|config| !config.custom_models_dir.trim().is_empty())
+        .filter(|config| !matches!(scan_legacy_dir(Path::new(config.custom_models_dir.trim()), cat).status, LegacyStatus::CompleteUnverified))
         .map(|config| {
             let configured = PathBuf::from(config.custom_models_dir.trim());
             match inspect_custom_model_dir(&configured) {
@@ -497,6 +508,7 @@ pub fn scan_models() -> Result<ModelsScan, String> {
                     available: true,
                     gguf_files,
                     error: None,
+                    total_bytes: discovery::directory_bytes(&dir),
                 },
                 Err(error) => CustomBundleState {
                     bundle_id: CUSTOM_BUNDLE_ID.to_string(),
@@ -504,18 +516,21 @@ pub fn scan_models() -> Result<ModelsScan, String> {
                     available: false,
                     gguf_files: 0,
                     error: Some(error),
+                    total_bytes: 0,
                 },
             }
         });
 
+    let active_bundle = local.iter().find(|entry| entry.active).map(|entry| entry.bundle_id.clone())
+        .or_else(|| managed.iter().find(|entry| entry.sized_files == entry.total_files && discovery::same_directory(Path::new(&entry.dir), &models_dir)).map(|entry| entry.bundle_id.clone()))
+        .or_else(|| cfg.as_ref().and_then(|c| (!c.active_bundle.trim().is_empty()).then(|| c.active_bundle.trim().to_string())));
     Ok(ModelsScan {
         models_root: root.to_string_lossy().into_owned(),
         models_dir: models_dir.to_string_lossy().into_owned(),
         portable: portable_root().is_some(),
-        active_bundle: cfg.as_ref().and_then(|c| {
-            (!c.active_bundle.trim().is_empty()).then_some(c.active_bundle.trim().to_string())
-        }),
+        active_bundle,
         managed,
+        local,
         custom,
         legacy,
         free_bytes: free_space_bytes(&root).ok(),

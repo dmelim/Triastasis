@@ -46,6 +46,7 @@ $Models = @("birefnet.gguf", "dinov3.gguf", "ss_flow.gguf", "ss_dec.gguf",
   "shape_flow_512.gguf", "shape_flow_1024.gguf", "shape_dec.gguf",
   "tex_flow_512.gguf", "tex_flow_1024.gguf", "tex_dec.gguf")
 
+$ModelsDirExplicit = $PSBoundParameters.ContainsKey("ModelsDir")
 if (-not $ModelsDir) { $ModelsDir = Join-Path $Dest "models" }
 $RuntimeDir = Join-Path $Dest "runtime"
 
@@ -72,11 +73,14 @@ function Detect-Backend {
               "$capText".Trim(),
               [System.Globalization.NumberStyles]::Float,
               [System.Globalization.CultureInfo]::InvariantCulture,
-              [ref]$cap) -and $cap -ge 6.0 -and $cap -lt 7.5) {
+              [ref]$cap)) {
+          if ($cap -ge 7.5) { return "cuda" }
+          if ($cap -ge 6.0) {
           Info "detected NVIDIA compute capability $capText — selecting the CUDA 12 legacy runtime"
           return "cuda12"
+          }
         }
-        return "cuda"
+        return "vulkan"
       }
     } catch {}
   }
@@ -214,13 +218,32 @@ $cfg = [ordered]@{
   port      = $Port
   outputDir = (Join-Path $Dest "output")
 }
+$configPath = Join-Path $ConfigDir "config.json"
+if (Test-Path -LiteralPath $configPath) {
+  # Fail rather than replace an unreadable config. Preserve unknown fields for newer apps.
+  $existing = Get-Content -LiteralPath $configPath -Raw | ConvertFrom-Json
+  $merged = [ordered]@{}
+  foreach ($property in $existing.PSObject.Properties) { $merged[$property.Name] = $property.Value }
+  foreach ($key in $cfg.Keys) { if (-not $merged.Contains($key)) { $merged[$key] = $cfg[$key] } }
+  $merged.serverBin = $ServerBin
+  $merged.backend = $Backend
+  if ($PSBoundParameters.ContainsKey("Gpu")) { $merged.gpu = $Gpu }
+  if ($PSBoundParameters.ContainsKey("Port")) { $merged.port = $Port }
+  if ($ModelsDirExplicit -or $IncludeModels) {
+    $merged.modelsDir = $ModelsDir
+    $merged.modelsRoot = $ModelsDir
+    $merged.activeBundle = ""
+    $merged.customModelsDir = $ModelsDir
+  }
+  $cfg = $merged
+}
 # Write UTF-8 *without* a BOM: Windows PowerShell 5.1's `Set-Content -Encoding UTF8`
 # prepends a BOM, which serde_json (the app's config reader) refuses to parse, so the
 # app would silently fall back to an empty/"unknown" config. WriteAllText with an
 # explicit no-BOM encoding works on both Windows PowerShell 5.1 and PowerShell 7.
 [System.IO.File]::WriteAllText(
   (Join-Path $ConfigDir "config.json"),
-  ($cfg | ConvertTo-Json),
+  ($cfg | ConvertTo-Json -Depth 100),
   (New-Object System.Text.UTF8Encoding($false)))
 Info "config: $(Join-Path $ConfigDir 'config.json')"
 

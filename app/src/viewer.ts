@@ -862,7 +862,8 @@ export class Viewer {
       this.perspectiveCamera.updateProjectionMatrix();
     } else {
       const aspect = Math.max(this.mount.clientWidth, 1) / Math.max(this.mount.clientHeight, 1);
-      this.orthoHeight = Math.max(size.y, size.x / aspect, size.z, 0.01) * 1.35;
+      this.orthographicCamera.zoom = 1;
+      this.orthoHeight = Math.max(size.length(), size.length() / aspect, 0.01) * 1.35;
       this.updateCameraProjection(aspect);
       this.orthographicCamera.position.copy(center).addScaledVector(direction, Math.max(radius * 2.2, 1));
       this.orthographicCamera.near = 0.001;

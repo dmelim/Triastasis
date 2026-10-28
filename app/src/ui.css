@@ -2044,3 +2044,6 @@ input:focus-visible,
 .texture-options-card .modal-actions { flex-wrap: wrap; }
 
 .texture-options-card [hidden] { display: none !important; }
+
+.dialog-notifications { padding: 0 var(--space-4) var(--space-4); }
+.dialog-notifications .toast { max-width: none; box-shadow: none; }

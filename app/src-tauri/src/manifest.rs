@@ -996,34 +996,84 @@ pub fn relink_manifest_file_impl(
                 .map(|name| name.to_string_lossy().into_owned())
                 .unwrap_or_else(|| role.to_string())
         });
-    let resolved = resolve_in_dir(&dir, &target_name)?;
-    // A pre-existing symlink at the destination could redirect the copy
-    // outside the directory; refuse rather than follow it.
+    // Resolve the existing parent BEFORE any write, including a missing leaf
+    // under a junction. Work on that canonical parent rather than the alias.
+    let requested = resolve_in_dir(&dir, &target_name)?;
+    let canonical_dir = dir.canonicalize().map_err(|e| e.to_string())?;
+    let parent = requested.parent().ok_or("attachment has no parent")?
+        .canonicalize().map_err(|e| format!("could not resolve attachment parent: {e}"))?;
+    if !parent.starts_with(&canonical_dir) {
+        return Err("attachment parent resolves outside the manifest directory".into());
+    }
+    let resolved = parent.join(requested.file_name().ok_or("attachment has no name")?);
     if resolved.symlink_metadata().is_ok() {
         read_contained_file(&dir, &resolved).map_err(|e| format!("{role}: {}", e.detail()))?;
     }
-    // Copying a file onto itself is a no-op at best and truncating at worst.
-    let same_file = std::fs::canonicalize(&source)
-        .ok()
-        .zip(std::fs::canonicalize(&resolved).ok())
-        .map(|(picked, destination)| picked == destination)
-        .unwrap_or(false);
-    if !same_file {
-        std::fs::copy(&source, &resolved)
-            .map_err(|e| format!("could not copy replacement file: {e}"))?;
-    }
+    let metadata = source.metadata().map_err(|e| e.to_string())?;
+    if metadata.len() > MAX_ARTIFACT_BYTES { return Err("replacement exceeds the artifact size limit".into()); }
+    let bytes = std::fs::read(&source).map_err(|e| format!("could not read replacement: {e}"))?;
+    sniff(role, &bytes)?;
     manifest.set_role_path(role, target_name);
 
-    // Pin the writer to the original basename, then reread from disk so the
-    // returned hashes reflect what is actually persisted.
-    let file_name = PathBuf::from(manifest_path)
-        .file_name()
-        .map(|name| name.to_string_lossy().into_owned())
-        .ok_or("manifest has no file name")?;
+    let file_name = PathBuf::from(manifest_path).file_name()
+        .map(|name| name.to_string_lossy().into_owned()).ok_or("manifest has no file name")?;
     safe_relative_path(&file_name)?;
-    write_generation_manifest_impl(&dir, manifest.clone(), Some(&file_name))?;
-    let reread = read_generation_manifest_impl(manifest_path)?;
-    Ok(reread.manifest)
+    let previous_manifest = std::fs::read(manifest_path).map_err(|e| e.to_string())?;
+    let nonce = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
+        .map_err(|e| e.to_string())?.as_nanos();
+    let staged = parent.join(format!(".relink-{}-{nonce}.tmp", std::process::id()));
+    let backup = parent.join(format!(".relink-{}-{nonce}.backup", std::process::id()));
+    {
+        use std::io::Write;
+        let mut file = std::fs::OpenOptions::new().write(true).create_new(true).open(&staged)
+            .map_err(|e| format!("could not stage replacement: {e}"))?;
+        if let Err(error) = file.write_all(&bytes).and_then(|_| file.sync_all()) {
+            drop(file);
+            let _ = std::fs::remove_file(&staged);
+            return Err(format!("could not stage replacement: {error}"));
+        }
+    }
+    let had_attachment = resolved.exists();
+    if had_attachment {
+        if let Err(error) = std::fs::rename(&resolved, &backup) {
+            let _ = std::fs::remove_file(&staged);
+            return Err(format!("could not preserve the previous attachment: {error}"));
+        }
+    }
+    let result = (|| {
+        std::fs::rename(&staged, &resolved).map_err(|e| format!("could not install replacement: {e}"))?;
+        write_generation_manifest_impl(&dir, manifest, Some(&file_name))?;
+        let reread = read_generation_manifest_impl(manifest_path)?;
+        if let Some(issue) = reread.issues.iter().find(|issue| issue.role == role) {
+            return Err(format!("replacement validation failed: {}", issue.detail));
+        }
+        Ok(reread.manifest)
+    })();
+    if let Err(error) = result {
+        // Never discard the backup on failed finalization. Surface rollback
+        // failures so the user knows exactly where their original remains.
+        let rollback = (|| -> Result<(), std::io::Error> {
+            if resolved.exists() { std::fs::remove_file(&resolved)?; }
+            if had_attachment { std::fs::rename(&backup, &resolved)?; }
+            if std::fs::read(manifest_path)? != previous_manifest {
+                use std::io::Write;
+                let restore = PathBuf::from(manifest_path).with_extension(format!("restore-{nonce}.tmp"));
+                let mut file = std::fs::OpenOptions::new().write(true).create_new(true).open(&restore)?;
+                file.write_all(&previous_manifest)?;
+                file.sync_all()?;
+                drop(file);
+                std::fs::rename(&restore, manifest_path)?;
+            }
+            Ok(())
+        })();
+        let _ = std::fs::remove_file(&staged);
+        return Err(match rollback {
+            Ok(()) => error,
+            Err(rollback) => format!("{error}; could not fully roll back ({rollback}); preserved attachment backup: {}", backup.display()),
+        });
+    }
+    if had_attachment { let _ = std::fs::remove_file(&backup); }
+    result
 }
 
 /// Finds a manifest linked to a standalone GLB: the conventional sibling name
@@ -1247,6 +1297,52 @@ mod tests {
         }
     }
 
+
+    #[test]
+    fn corrupt_relink_preserves_attachment_and_manifest() {
+        let temp = TempDir::new("bad-relink");
+        temp.write("source.png", FAKE_PNG);
+        let attachment = temp.write("model.glb", FAKE_GLB);
+        let path = write_generation_manifest_impl(&temp.0, sample_manifest("source.png", "model.glb"), None).unwrap();
+        let original_manifest = std::fs::read(&path).unwrap();
+        let replacement = temp.write("corrupt.glb", b"corrupt");
+        assert!(relink_manifest_file_impl(&path.to_string_lossy(), "glb", &replacement.to_string_lossy()).is_err());
+        assert_eq!(std::fs::read(attachment).unwrap(), FAKE_GLB);
+        assert_eq!(std::fs::read(path).unwrap(), original_manifest);
+    }
+    #[test]
+    fn relink_rolls_back_when_manifest_finalization_fails() {
+        let temp = TempDir::new("relink-rollback");
+        temp.write("source.png", FAKE_PNG);
+        let attachment = temp.write("model.glb", FAKE_GLB);
+        let path = write_generation_manifest_impl(&temp.0, sample_manifest("source.png", "model.glb"), None).unwrap();
+        let blocker = path.with_extension(format!("json.tmp-{}", std::process::id()));
+        std::fs::create_dir(&blocker).unwrap(); // writer cannot replace this temp directory
+        let original_manifest = std::fs::read(&path).unwrap();
+        let replacement = temp.write("replacement.glb", b"glTFdifferent replacement");
+        assert!(relink_manifest_file_impl(&path.to_string_lossy(), "glb", &replacement.to_string_lossy()).is_err());
+        assert_eq!(std::fs::read(attachment).unwrap(), FAKE_GLB);
+        assert_eq!(std::fs::read(path).unwrap(), original_manifest);
+    }
+    #[cfg(windows)]
+    #[test]
+    fn missing_relink_leaf_under_escaping_junction_never_writes_outside() {
+        use std::os::windows::process::CommandExt;
+        let temp = TempDir::new("relink-junction");
+        let outside = TempDir::new("relink-junction-outside");
+        temp.write("source.png", FAKE_PNG);
+        let path = write_generation_manifest_impl(&temp.0, sample_manifest("source.png", "linked/new.glb"), Some("test.triastasis.json")).unwrap();
+        let link = temp.0.join("linked");
+        let output = std::process::Command::new("cmd.exe").creation_flags(0x08000000)
+            .args(["/C", "mklink", "/J"]).arg(&link).arg(&outside.0).output().unwrap();
+        assert!(output.status.success(), "junction fixture creation failed: {}", String::from_utf8_lossy(&output.stderr));
+        let replacement = temp.write("replacement.glb", FAKE_GLB);
+        let result = relink_manifest_file_impl(&path.to_string_lossy(), "glb", &replacement.to_string_lossy());
+        // Remove only the junction itself before fixture cleanup.
+        std::fs::remove_dir(&link).unwrap();
+        assert!(result.unwrap_err().contains("outside"));
+        assert!(!outside.0.join("new.glb").exists());
+    }
     #[test]
     fn round_trip_preserves_binary_files_and_hashes() {
         let temp = TempDir::new("roundtrip");

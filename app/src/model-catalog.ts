@@ -19,6 +19,16 @@ export interface ManagedBundleState {
   registered: boolean;
   sizedFiles: number;
   totalFiles: number;
+  totalBytes?: number;
+}
+
+/** Recognized catalog files in an existing folder; never managed or removed. */
+export interface LocalBundleState {
+  bundleId: string;
+  dir: string;
+  verified: boolean;
+  active: boolean;
+  totalBytes: number;
 }
 
 export interface CustomBundleState {
@@ -27,6 +37,7 @@ export interface CustomBundleState {
   available: boolean;
   ggufFiles: number;
   error: string | null;
+  totalBytes?: number;
 }
 
 export type LegacyStatus =
@@ -49,6 +60,7 @@ export interface ModelsScan {
   portable: boolean;
   activeBundle: string | null;
   managed: ManagedBundleState[];
+  local?: LocalBundleState[];
   custom: CustomBundleState | null;
   legacy: LegacyMatch | null;
   freeBytes: number | null;
@@ -103,8 +115,8 @@ export function freeDiskSpace(path: string): Promise<number> {
 }
 
 /** Full size+SHA-256 verification; writes the installation commit marker. */
-export function verifyModelBundle(bundleId: string): Promise<string> {
-  return invoke<string>("verify_model_bundle", { bundleId });
+export function verifyModelBundle(bundleId: string, directory?: string): Promise<string> {
+  return invoke<string>("verify_model_bundle", { bundleId, ...(directory ? { directory } : {}) });
 }
 
 // ---- downloads ----------------------------------------------------------------
@@ -144,8 +156,8 @@ export function resetIncompleteModelBundle(bundleId: string): Promise<void> {
 // ---- activation + removal -------------------------------------------------------
 
 /** Point the server at a verified bundle and restart it. */
-export function activateModelBundle(bundleId: string): Promise<void> {
-  return invoke<void>("activate_model_bundle", { bundleId });
+export function activateModelBundle(bundleId: string, directory?: string): Promise<void> {
+  return invoke<void>("activate_model_bundle", { bundleId, ...(directory ? { directory } : {}) });
 }
 
 /** Use a local, user-owned model folder without curated verification. */

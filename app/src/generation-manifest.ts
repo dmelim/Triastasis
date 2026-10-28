@@ -232,7 +232,7 @@ export async function startGenerationManifest(input: {
     if (!isTauri()) return null;
     const ext = imageExtensionFor(input.sourceBlob.type || "image/png");
     const sourceName = input.sweep
-      ? `${input.base}_sweep${shortId(input.sweep.groupId)}_source.${ext}`
+      ? `${input.base}_sweep${input.sweep.groupId}_source.${ext}`
       : `${input.base}_${input.jobId}_source.${ext}`;
     const savedPath = await saveToOutputDir(
       sourceName,
@@ -241,7 +241,7 @@ export async function startGenerationManifest(input: {
     if (!savedPath) return null;
     const dir = dirname(savedPath);
     const modelName = `${input.base}_${input.params.resolution}_seed${input.params.seed}_${input.jobId}.glb`;
-    const fileName = `${safeStem(modelName)}.triastasis.json`;
+    const fileName = `${modelName.slice(0, -4)}.triastasis.json`;
     const submittedAt = nowIso();
     await writeGenerationManifest(
       dir,
@@ -278,10 +278,6 @@ export async function startGenerationManifest(input: {
   }
 }
 
-function shortId(id: string): string {
-  return id.slice(0, 8);
-}
-
 /**
  * Persists every candidate of a seed sweep BEFORE the first generation
  * starts: one shared durable source image plus one queued manifest per
@@ -298,7 +294,7 @@ export async function prepareSweepManifests(input: {
 }): Promise<Array<ManifestContext | null>> {
   if (!isTauri()) return input.seeds.map(() => null);
   const ext = imageExtensionFor(input.sourceBlob.type || "image/png");
-  const sharedSourceName = `${input.base}_sweep${shortId(input.groupId)}_source.${ext}`;
+  const sharedSourceName = `${input.base}_sweep${input.groupId}_source.${ext}`;
   let dir: string | null = null;
   try {
     const savedPath = await saveToOutputDir(
@@ -315,9 +311,9 @@ export async function prepareSweepManifests(input: {
   const submittedAt = nowIso();
   const contexts: ManifestContext[] = [];
   for (const [index, seed] of input.seeds.entries()) {
-    const jobId = `${shortId(input.groupId)}-${index}-${seed}`;
+    const jobId = `${input.groupId}-${index}-${seed}`;
     const modelName = `${input.base}_${input.params.resolution}_seed${seed}_${jobId}.glb`;
-    const fileName = `${safeStem(modelName)}.triastasis.json`;
+    const fileName = `${modelName.slice(0, -4)}.triastasis.json`;
     try {
       await writeGenerationManifest(
         dir,
@@ -449,6 +445,7 @@ export async function cancelCandidateManifest(context: ManifestContext): Promise
     context.sweep.state = "cancelled";
   } catch (error) {
     console.warn("Could not cancel sweep candidate manifest", error);
+    throw error;
   }
 }
 

@@ -15,9 +15,16 @@ use tauri::{AppHandle, Emitter};
 
 use crate::config::{self, Config};
 
+#[cfg(windows)]
+#[path = "server_windows.rs"]
+mod windows_lifetime;
+
 #[derive(Default)]
 pub struct ServerState {
     child: Mutex<Option<Child>>,
+    #[cfg(windows)]
+    job: Mutex<Option<std::os::windows::io::OwnedHandle>>,
+    instance: Mutex<Option<OwnedInstance>>,
     /// Path of the log file for the current/last launch, for the "open log" UI.
     log_path: Mutex<Option<PathBuf>>,
 }
@@ -406,7 +413,8 @@ pub fn start(
     {
         use std::os::windows::process::CommandExt;
         const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-        cmd.creation_flags(CREATE_NO_WINDOW);
+        const CREATE_SUSPENDED: u32 = 0x0000_0004;
+        cmd.creation_flags(CREATE_NO_WINDOW | CREATE_SUSPENDED);
     }
 
     // On Linux, ask the kernel to SIGKILL the server if we (the parent) die, so a
@@ -427,10 +435,25 @@ pub fn start(
         });
     }
 
+    #[cfg(windows)]
+    let job = windows_lifetime::create_job()?;
     let mut child = cmd
         .spawn()
         .map_err(|e| format!("failed to launch {}: {e}", cfg.server_bin))?;
 
+    #[cfg(windows)]
+    {
+        if let Err(error) = windows_lifetime::assign_and_resume(&job, &child) {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(error);
+        }
+        *state.job.lock().unwrap() = Some(job);
+    }
+    *state.instance.lock().unwrap() = Some(OwnedInstance {
+        token: format!("{}-{}-{}", std::process::id(), child.id(), SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_nanos()),
+        host: cfg.host.clone(), port: cfg.port,
+    });
     if let Some(out) = child.stdout.take() {
         pipe(app.clone(), out, sink.clone());
     }
@@ -448,6 +471,9 @@ pub fn start(
 }
 
 pub fn stop(state: &ServerState) {
+    *state.instance.lock().unwrap() = None;
+    #[cfg(windows)]
+    drop(state.job.lock().unwrap().take());
     if let Some(mut child) = state.child.lock().unwrap().take() {
         let _ = child.kill();
         let _ = child.wait();
@@ -629,4 +655,16 @@ mod tests {
         assert_eq!(probe_listener("127.0.0.1", port, budget), Listener::TimedOut);
         assert!(started.elapsed() < budget + Duration::from_millis(300));
     }
+}
+
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub struct OwnedInstance {
+    pub token: String,
+    pub host: String,
+    pub port: u16,
+}
+
+pub fn owned_instance(state: &ServerState) -> Option<OwnedInstance> {
+    if !is_running(state) { return None; }
+    state.instance.lock().unwrap().clone()
 }
