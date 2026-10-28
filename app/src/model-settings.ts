@@ -23,7 +23,9 @@ import {
   resetIncompleteBundle,
   subscribeModelMaintenance,
   verifyAndRegister,
+  verifyLocalBundle,
 } from "./model-manager";
+import { localCatalogBundle, modelStorageBytes } from "./model-discovery";
 import {
   bindCuratedModelTerms,
   curatedModelTermsHtml,
@@ -32,6 +34,7 @@ import { pickDirectory } from "./tauri";
 
 let storageMessage: { text: string; error: boolean } | null = null;
 let pendingCustomDirectory: string | null = null;
+const storageRenderRequests = new WeakMap<HTMLElement, number>();
 
 function storageMessageHtml(): string {
   if (!storageMessage) return "";
@@ -49,10 +52,13 @@ function escapeHtml(value: string): string {
 
 export async function renderModelStorage(container: HTMLElement | null): Promise<void> {
   if (!container) return;
+  const request = (storageRenderRequests.get(container) ?? 0) + 1;
+  storageRenderRequests.set(container, request);
   let scan: ModelsScan;
   try {
     scan = await scanModels();
   } catch (e) {
+    if (storageRenderRequests.get(container) !== request) return;
     container.innerHTML = `<p class="settings-error">Model information unavailable: ${escapeHtml((e as Error).message)}</p>`;
     return;
   }
@@ -63,10 +69,8 @@ export async function renderModelStorage(container: HTMLElement | null): Promise
   const modelActionsDisabled = maintenance.kind !== "idle";
 
   const free = await availableBytes(scan.modelsRoot);
-  const used = scan.managed.reduce((sum, m) => {
-    const summary = catalog.find((b) => b.id === m.bundleId);
-    return sum + (summary?.totalBytes ?? 0);
-  }, 0);
+  if (storageRenderRequests.get(container) !== request) return;
+  const used = modelStorageBytes(scan, catalog);
 
   if (!catalog.length) {
     container.innerHTML = `<p class="settings-error">Model catalog unavailable.</p>`;
@@ -76,7 +80,9 @@ export async function renderModelStorage(container: HTMLElement | null): Promise
   const rows = catalog
     .map((bundle) => {
       const managed = scan.managed.find((m) => m.bundleId === bundle.id);
-      const isActive = scan.activeBundle === bundle.id;
+      const local = localCatalogBundle(scan, bundle.id);
+      const useLocal = local && (local.active || !managed?.registered);
+      const isActive = local?.active || scan.activeBundle === bundle.id;
       const downloading =
         progress?.bundleId === bundle.id &&
         ["preparing", "downloading", "verifying"].includes(progress.state);
@@ -94,7 +100,11 @@ export async function renderModelStorage(container: HTMLElement | null): Promise
         actions = `
           <button class="button button--secondary button--sm" data-act="pause">Pause</button>
           <button class="button button--secondary button--sm" data-act="cancel">Cancel</button>`;
-      } else if (isActive) {
+      } else if (useLocal) {
+        statusLine = `${local.verified ? "Verified catalog files" : "Catalog bundle found; verification required"} · ${escapeHtml(local.dir)}`;
+        actions = `${!local.active && local.verified ? `<button class="button button--primary button--sm" data-act="use-local" data-id="${bundle.id}" data-path="${escapeHtml(local.dir)}">Use this bundle</button>` : ""}
+          <button class="button button--secondary button--sm" data-act="verify-local" data-id="${bundle.id}" data-path="${escapeHtml(local.dir)}">Verify files</button>`;
+      } else if (isActive && managed?.registered) {
         statusLine = "Installed and active";
         actions = `<button class="button button--secondary button--sm" data-act="verify" data-id="${bundle.id}">Verify files</button>`;
       } else if (managed?.registered) {
@@ -124,7 +134,7 @@ export async function renderModelStorage(container: HTMLElement | null): Promise
 
       if (modelActionsDisabled) {
         actions = actions.replaceAll("<button ", "<button disabled ");
-        if (maintenance.bundleId === bundle.id) statusLine = `Activating ${escapeHtml(bundle.displayName)}...`;
+        if (maintenance.bundleId === bundle.id) statusLine = `${maintenance.kind === "verifying" ? "Verifying" : "Activating"} ${escapeHtml(bundle.displayName)}...`;
       }
 
       return `
@@ -161,12 +171,12 @@ export async function renderModelStorage(container: HTMLElement | null): Promise
   const customImport = `
     <div class="custom-model-import">
       <button class="button button--secondary button--sm" data-act="pick-custom">
-        ${custom ? "Choose a different custom folder" : "Add custom model folder"}
+        ${custom ? "Choose a different model folder" : "Choose existing model folder"}
       </button>
       ${pendingCustomDirectory ? `
         <div class="custom-model-confirm" role="alert" aria-labelledby="settings-custom-warning-title">
-          <strong id="settings-custom-warning-title">Use unverified model files?</strong>
-          <p>Custom model files are not verified or supported by Triastasis. They may be incompatible, unsafe, or incorrectly licensed. You are responsible for the files and their source.</p>
+          <strong id="settings-custom-warning-title">Use model files from this folder?</strong>
+          <p>The files stay in their current location. Triastasis recognizes catalog bundles and can verify their checksums. Other model files are user-provided and may be incompatible or incorrectly licensed.</p>
           <code>${escapeHtml(pendingCustomDirectory)}</code>
           <div class="custom-model-confirm-actions">
             <button class="button button--primary button--sm" data-act="confirm-custom" data-path="${escapeHtml(pendingCustomDirectory)}"${modelActionsDisabled ? " disabled" : ""}>Use this folder</button>
@@ -178,7 +188,7 @@ export async function renderModelStorage(container: HTMLElement | null): Promise
   container.innerHTML = `
     <div class="model-storage">
       <div class="settings-meta-grid settings-field-wide">
-        <div class="settings-meta-item"><span>Storage location</span><strong>${escapeHtml(scan.modelsRoot)}</strong></div>
+        <div class="settings-meta-item"><span>Download location</span><strong>${escapeHtml(scan.modelsRoot)}</strong></div>
         <div class="settings-meta-item"><span>Available space</span><strong>${free != null ? escapeHtml(formatGigabytes(free)) : "-"}</strong></div>
         <div class="settings-meta-item"><span>Estimated model storage used</span><strong>${escapeHtml(formatGigabytes(used))}</strong></div>
         <div class="settings-meta-item"><span>Model revision</span><strong>${escapeHtml(scan.modelRevision.slice(0, 12))}</strong></div>
@@ -221,6 +231,11 @@ export async function renderModelStorage(container: HTMLElement | null): Promise
           return;
         }
         if (act === "use") await activateBundle(id);
+        if (act === "use-local") await activateBundle(id, btn.dataset.path);
+        if (act === "verify-local") {
+          await verifyLocalBundle(id, btn.dataset.path ?? "");
+          storageMessage = { text: "Catalog checksums verified. The model files remain in their existing folder.", error: false };
+        }
         if (act === "pick-custom") {
           const picked = await pickDirectory(custom?.dir || scan.modelsDir || scan.modelsRoot);
           if (picked) pendingCustomDirectory = picked;
@@ -229,7 +244,7 @@ export async function renderModelStorage(container: HTMLElement | null): Promise
         if (act === "confirm-custom" || act === "use-custom") {
           await activateCustomBundle(btn.dataset.path ?? "");
           pendingCustomDirectory = null;
-          storageMessage = { text: "Custom model folder activated.", error: false };
+          storageMessage = { text: "Existing model folder selected.", error: false };
         }
         if (act === "forget-custom") {
           await forgetCustomBundle();

@@ -5,6 +5,7 @@
 import {
   type BundleSummary,
   type ModelsScan,
+  type LocalBundleState,
   scanModels,
 } from "./model-catalog";
 import {
@@ -29,7 +30,9 @@ import {
   setModelsRoot,
   subscribeModelMaintenance,
   verifyAndRegister,
+  verifyLocalBundle,
 } from "./model-manager";
+import { localCatalogBundle } from "./model-discovery";
 import { busyContentFor } from "./modal-busy";
 import {
   bindCuratedModelTerms,
@@ -150,6 +153,8 @@ export function needsSetup(scan: ModelsScan): boolean {
 
 /** Resolve the bundle the server can actually use, including legacy flat layouts. */
 export function effectiveActiveBundleId(scan: ModelsScan): string | null {
+  const existing = scan.local?.find((bundle) => bundle.active);
+  if (existing) return existing.bundleId;
   const managedActive = scan.managed.find(
     (bundle) => bundle.registered && bundle.bundleId === scan.activeBundle,
   );
@@ -173,10 +178,14 @@ export function defaultInstalledBundleId(
   recommendedBundleId: string,
   preferRecommended = false,
 ): string | null {
+  if (scan.local?.some((bundle) => bundle.active)) return null;
   const installed = scan.managed
     .filter((bundle) => bundle.registered)
     .map((bundle) => bundle.bundleId);
   const activeBundleId = effectiveActiveBundleId(scan);
+  if (activeBundleId && !scan.managed.some((bundle) => bundle.registered && bundle.bundleId === activeBundleId)) {
+    return null;
+  }
   if (installed.length === 1) {
     return activeBundleId === installed[0] ? null : installed[0];
   }
@@ -202,9 +211,9 @@ export function shouldShowSetup(scan: ModelsScan, onboardingComplete: boolean): 
 
 /** Registered bundles that can be offered as an immediate first-launch choice. */
 export function installedBundleIds(scan: ModelsScan): string[] {
-  return scan.managed
+  return [...new Set([...scan.managed
     .filter((bundle) => bundle.registered && bundle.bundleId !== scan.activeBundle)
-    .map((bundle) => bundle.bundleId);
+    .map((bundle) => bundle.bundleId), ...(scan.local ?? []).filter((bundle) => bundle.verified && !bundle.active).map((bundle) => bundle.bundleId)])];
 }
 
 /** Complete managed files that only need their registration marker rebuilt. */
@@ -382,6 +391,7 @@ interface BundleView {
   needsRegistration: boolean;
   canResume: boolean;
   active: boolean;
+  local: LocalBundleState | undefined;
 }
 
 function buildViews(
@@ -401,6 +411,7 @@ function buildViews(
     needsRegistration: bundleNeedsRegistration(scan, summary.id),
     canResume: bundleCanResume(scan, summary.id, partials),
     active: activeBundleId === summary.id,
+    local: localCatalogBundle(scan, summary.id),
   }));
   return { views, recommendation };
 }
@@ -430,7 +441,8 @@ async function renderSetup(
   const progress = snapshot.progress;
   const termsAccepted = curatedModelTermsAccepted();
   const step = showWelcome ? onboardingStep : runtime.installed ? "models" : "runtime";
-  const automaticBundleId = step === "models" && runtime.installed
+  const downloadActive = Boolean(progress && ["preparing", "downloading", "verifying"].includes(progress.state));
+  const automaticBundleId = step === "models" && runtime.installed && (!progress || progress.state === "ready")
     ? defaultInstalledBundleId(scan, recommendation.bundleId, showWelcome)
     : null;
   if (automaticBundleId && modelMaintenanceSnapshot().kind === "idle") {
@@ -454,17 +466,17 @@ async function renderSetup(
   const cards = views
     .map((view) => {
       const ownProgress = progress?.bundleId === view.summary.id ? progress : null;
-      const activationInProgress = maintenance.kind === "activating";
+      const activationInProgress = maintenance.kind !== "idle";
       const activatingThisBundle = activationInProgress && maintenance.bundleId === view.summary.id;
       const activationFailed = activationFeedback?.bundleId === view.summary.id &&
         activationFeedback.state === "failed";
-      const controlsDisabled = activationInProgress ? " disabled" : "";
+      const controlsDisabled = activationInProgress || (downloadActive && !ownProgress) ? " disabled" : "";
       let action: string;
       if (activatingThisBundle) {
         action = `
           <button class="button button--primary button--sm" type="button" disabled aria-busy="true">
             <span class="spinner" aria-hidden="true"></span>
-            <span class="spinner-label">Activating ${escapeHtml(view.summary.displayName)}...</span>
+            <span class="spinner-label">${maintenance.kind === "verifying" ? "Verifying" : "Activating"} ${escapeHtml(view.summary.displayName)}...</span>
           </button>`;
       } else if (ownProgress?.state === "preparing") {
         action = `
@@ -476,7 +488,10 @@ async function renderSetup(
         action = `
           <button class="button button--secondary button--sm" data-act="pause" data-id="${view.summary.id}"${controlsDisabled}>Pause</button>
           <button class="button button--secondary button--sm" data-act="cancel" data-id="${view.summary.id}"${controlsDisabled}>Cancel</button>`;
-      } else if (view.installed) {
+      } else if (view.local && (view.local.active || !scan.managed.some((m) => m.bundleId === view.summary.id && m.registered))) {
+        action = `${!view.local.active && view.local.verified ? `<button class="button button--primary button--sm" data-act="use-local" data-id="${view.summary.id}" data-path="${escapeHtml(view.local.dir)}"${controlsDisabled}>Use ${escapeHtml(view.summary.displayName)}</button>` : ""}
+          <button class="button button--secondary button--sm" data-act="verify-local" data-id="${view.summary.id}" data-path="${escapeHtml(view.local.dir)}"${controlsDisabled}>Verify files</button>`;
+      } else if (view.installed && !view.needsRegistration) {
         action = view.active
           ? '<button class="button button--primary button--sm" type="button" disabled aria-current="true">In use</button>'
           : `<button class="button button--primary button--sm" data-act="use" data-id="${view.summary.id}"${controlsDisabled}>Use ${escapeHtml(view.summary.displayName)}</button>`;
@@ -497,9 +512,11 @@ async function renderSetup(
       const stateBadge = view.active
         ? '<span class="model-badge ok">Active</span>'
         : activatingThisBundle
-          ? '<span class="model-badge activating">Activating</span>'
+          ? `<span class="model-badge activating">${maintenance.kind === "verifying" ? "Verifying" : "Activating"}</span>`
           : activationFailed
             ? '<span class="model-badge failed">Activation failed</span>'
+            : view.local
+              ? `<span class="model-badge installed">${view.local.verified ? "Verified" : "Found locally"}</span>`
             : view.installed
               ? '<span class="model-badge installed">Installed</span>'
               : "";
@@ -519,14 +536,15 @@ async function renderSetup(
             ${recBadge}
           </div>
           <p>${view.summary.quantization.toUpperCase()}, about ${formatGigabytes(view.summary.totalBytes)}, ${view.summary.fileCount} files</p>
+          ${view.local ? `<p class="model-note">${escapeHtml(view.local.dir)} · ${view.local.verified ? "Catalog checksums verified" : "Existing catalog files; verify before switching to this folder"}</p>` : ""}
           ${warn}
           <div class="bundle-actions">${action}</div>
         </div>`;
     })
     .join("");
 
-  const progressPanel = maintenance.kind === "activating" && activationBundleName
-    ? renderActivationStatus(`Activating ${activationBundleName}...`, false)
+  const progressPanel = maintenance.kind !== "idle" && activationBundleName
+    ? renderActivationStatus(`${maintenance.kind === "verifying" ? "Verifying" : "Activating"} ${activationBundleName}...`, false)
     : activationFeedback
       ? renderActivationStatus(activationFeedback.message, activationFeedback.state === "failed")
       : progress
@@ -540,6 +558,7 @@ async function renderSetup(
   const legacyPanel = renderLegacyPanel(scan, maintenance.kind !== "idle");
   const installedIds = new Set(installedBundleIds(scan));
   if (scan.activeBundle) installedIds.add(scan.activeBundle);
+  for (const bundle of scan.local ?? []) installedIds.add(bundle.bundleId);
   if (scan.legacy?.status === "completeUnverified" && scan.legacy.bundleId) {
     installedIds.add(scan.legacy.bundleId);
   }
@@ -588,8 +607,8 @@ async function renderSetup(
       </button>
       ${pendingCustomPath ? `
         <div class="custom-model-confirm" role="alert" aria-labelledby="custom-model-warning-title">
-          <strong id="custom-model-warning-title">Use unverified model files?</strong>
-          <p>Custom model files are not verified or supported by Triastasis. They may be incompatible, unsafe, or incorrectly licensed. You are responsible for the files and their source.</p>
+          <strong id="custom-model-warning-title">Use model files from this folder?</strong>
+          <p>The files stay in their current location. Triastasis recognizes catalog bundles and can verify their checksums. Other model files are user-provided and may be incompatible or incorrectly licensed.</p>
           <code>${escapeHtml(pendingCustomPath)}</code>
           <div class="custom-model-confirm-actions">
             <button class="button button--primary button--sm" data-act="confirm-custom" data-path="${escapeHtml(pendingCustomPath)}"${maintenance.kind !== "idle" ? " disabled" : ""}>Use this folder</button>
@@ -610,7 +629,7 @@ async function renderSetup(
           <label>Storage location</label>
           <code id="model-root-path">${escapeHtml(scan.modelsRoot)}</code>
           <span class="model-free">${escapeHtml(freeText)}</span>
-          <button class="button button--secondary button--sm" data-act="change-location">Change location...</button>
+          <button class="button button--secondary button--sm" data-act="change-location"${downloadActive ? " disabled" : ""}>Change location...</button>
           ${scan.portable ? `<p class="model-note">Portable mode keeps models next to the application.</p>` : ""}
         </div>
         <div id="model-setup-message" class="banner hidden"><span></span></div>
@@ -901,7 +920,7 @@ function bindActions(root: HTMLElement, scan: ModelsScan, runtime: RuntimeStatus
           pendingCustomPath = null;
         } else if (act === "confirm-custom" || act === "use-custom") {
           const path = btn.dataset.path ?? "";
-          showMessage(root, "Switching to the custom model folder...", false);
+          showMessage(root, "Switching to the existing model folder...", false);
           await activateCustomBundle(path);
           pendingCustomPath = null;
         } else if (act === "download" || act === "resume") {
@@ -909,6 +928,11 @@ function bindActions(root: HTMLElement, scan: ModelsScan, runtime: RuntimeStatus
         } else if (act === "verify") {
           showMessage(root, "Verifying the existing model files...", false);
           await verifyAndRegister(id);
+        } else if (act === "verify-local") {
+          showMessage(root, "Verifying the existing model files in place...", false);
+          await verifyLocalBundle(id, btn.dataset.path ?? "");
+        } else if (act === "use-local") {
+          await activateBundle(id, btn.dataset.path);
         } else if (act === "pause") {
           await pauseBundle();
         } else if (act === "cancel") {

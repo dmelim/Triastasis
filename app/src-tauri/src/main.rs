@@ -116,9 +116,9 @@ fn get_config() -> Option<config::Config> {
 }
 
 #[tauri::command]
-fn save_config(config: config::Config) -> Result<(), String> {
+fn save_config(config: config::Config, state: tauri::State<downloader::DownloadControl>) -> Result<(), String> {
     let _runtime_guard = runtime::operation_guard()?;
-    config::save(&config)
+    state.save_config(&config)
 }
 
 #[tauri::command]
@@ -345,8 +345,18 @@ async fn install_runtime(
 /// writing the installation.json commit marker on success. Blocking; called
 /// from the UI after downloads or manual/offline placement.
 #[tauri::command]
-async fn verify_model_bundle(bundle_id: String) -> Result<String, String> {
+async fn verify_model_bundle(bundle_id: String, directory: Option<String>) -> Result<String, String> {
     let cat = models::catalog()?;
+    if let Some(directory) = directory {
+        let scan = models::scan_models()?;
+        let entry = models::discovery::selected_local(&scan, &bundle_id, &directory)?;
+        let dir = std::path::PathBuf::from(&entry.dir);
+        let cache = models::discovery::cache_dir().ok_or("no configuration directory available")?;
+        return tauri::async_runtime::spawn_blocking(move || {
+            models::discovery::verify_local(&dir, &bundle_id, cat, &cache)
+                .map(|p| p.to_string_lossy().into_owned())
+        }).await.map_err(|e| format!("verification task failed: {e}"))?;
+    }
     // Resolve the root before entering the blocking task.
     let cfg = config::load();
     let models_dir = cfg
@@ -376,10 +386,11 @@ fn start_model_download(app: tauri::AppHandle, bundle_id: String) -> Result<(), 
     models::catalog()?
         .bundle(&bundle_id)
         .ok_or_else(|| format!("unknown bundle: {bundle_id}"))?;
+    let active = app.state::<downloader::DownloadControl>().begin(&bundle_id)?;
     let handle = app.clone();
     tauri::async_runtime::spawn_blocking(move || {
         let control = handle.state::<downloader::DownloadControl>();
-        let result = downloader::run_download(&handle, control.inner(), &bundle_id);
+        let result = downloader::run_download(&handle, control.inner(), &bundle_id, active);
         if let Err(e) = &result {
             eprintln!("[studio] model download failed: {e}");
         }
@@ -480,14 +491,17 @@ fn activate_model_bundle(
     app: tauri::AppHandle,
     automation: tauri::State<AutomationState>,
     bundle_id: String,
+    directory: Option<String>,
 ) -> Result<(), String> {
     let scan = models::scan_models()?;
-    let entry = scan
-        .managed
-        .iter()
-        .find(|m| m.bundle_id == bundle_id && m.registered)
-        .ok_or("bundle is not installed and verified yet")?;
-    let leaf = entry.dir.clone();
+    let leaf = if let Some(directory) = directory {
+        let entry = models::discovery::selected_local(&scan, &bundle_id, &directory)?;
+        if !entry.verified { return Err("verify this catalog folder before activating it".into()); }
+        entry.dir.clone()
+    } else {
+        scan.managed.iter().find(|m| m.bundle_id == bundle_id && m.registered)
+            .ok_or("bundle is not installed and verified yet")?.dir.clone()
+    };
     let root = scan.models_root.clone();
 
     // Queue-idle gating: activation must not interrupt running generations.
