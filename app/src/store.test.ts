@@ -145,3 +145,20 @@ test("a measured zero triangle count is treated as present", () => {
   assert.equal(fillMissingMetrics({ triangles: 0, dimensions: { x: 1, y: 1, z: 1 } }, { triangles: 5 }), null);
   assert.deepEqual(fillMissingMetrics(null, { triangles: 0 }), { triangles: 0 });
 });
+
+test("late preview saves retain completed and concurrent label/project changes", async () => {
+  const fixture = { native: [], legacy: [], migrated: true, fail: false, writes: 0 };
+  const api = await store(fixture);
+  const original = { ...record("generated"), favorite: false } as Parameters<typeof api.putGeneratedVersion>[0];
+  await api.putGeneratedVersion(original);
+  const stale = { ...original, operationParams: { ...original.operationParams }, thumb: new Blob(["preview"]) };
+  await api.renameVersion("same", "Renamed");
+  await api.setVersionProject("same", { name: "Project A", icon: "folder" });
+  await Promise.all([api.putGeneratedVersion(stale), api.renameAssetLabel("same", "Asset name")]);
+  const saved = (await api.get("same"))!;
+  assert.equal(saved.label, "Renamed");
+  assert.deepEqual(saved.operationParams.project, { name: "Project A", icon: "folder" });
+  assert.equal(saved.operationParams.assetLabel, "Asset name");
+  assert.equal(await saved.thumb!.text(), "preview");
+  assert.equal((fixture.native[0] as typeof saved).label, "Renamed");
+});

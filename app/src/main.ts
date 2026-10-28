@@ -1677,6 +1677,7 @@ function clearInputPreview(): void {
 }
 
 function clearCurrentModelState(): void {
+  appliedInputSelection = ++inputSelectionSequence;
   disposeEditorSession();
   activeId = null;
   currentGlb = null;
@@ -1702,11 +1703,19 @@ async function imageDecodes(blob: Blob): Promise<boolean> {
   }
 }
 
-async function setInput(blob: Blob, name: string): Promise<void> {
-  if (!(await imageDecodes(blob))) {
+// Actions retain initiation order, but empty/failed clipboard reads are not
+// image selections. Only successful adoption (or an explicit clear) invalidates
+// older image work, so an unrelated text paste cannot discard a pending decode.
+let inputSelectionSequence = 0;
+let appliedInputSelection = 0;
+async function setInput(blob: Blob, name: string, selection = ++inputSelectionSequence): Promise<void> {
+  const decoded = await imageDecodes(blob);
+  if (selection < appliedInputSelection) return;
+  if (!decoded) {
     toast(`${name || "This file"} could not be read as an image. Choose a valid PNG, JPEG, WebP, BMP or GIF file.`, "err");
     return;
   }
+  appliedInputSelection = selection;
   inputImage = blob;
   inputName = name || "input.png";
   setInputPreviewBlob(blob);
@@ -1854,30 +1863,35 @@ void listenForNativeFileDrops(async (event) => {
       void viewGlbFile(droppedPath);
       return;
     }
+    const selection = ++inputSelectionSequence;
     const image = await readDroppedImage(droppedPath);
-    await setInput(image.blob, image.name);
+    if (selection >= appliedInputSelection) await setInput(image.blob, image.name, selection);
   } catch (error) {
     toast((error as Error).message || "Could not open the dropped file", "err");
   }
 }).catch((error) => {
   console.warn("Could not subscribe to native file drops", error);
 });
-window.addEventListener("paste", async (e: ClipboardEvent) => {
+async function pasteInput(e: ClipboardEvent): Promise<void> {
+  const selection = ++inputSelectionSequence;
   for (const item of e.clipboardData?.items ?? []) {
     const image = item.type.startsWith("image/") && item.getAsFile();
-    if (image) return setInput(image, image.name || "pasted.png");
+    if (image) return setInput(image, image.name || "pasted.png", selection);
   }
   // WebKitGTK can omit image data from ClipboardEvent. Since paste was
   // user-triggered, try reading the clipboard item list for an image.
   const items = await navigator.clipboard?.read?.().catch(() => []) ?? [];
+  if (selection < appliedInputSelection) return;
   for (const item of items) {
     const type = item.types.find((type) => type.startsWith("image/"));
     if (type) {
       const image = await item.getType(type).catch(() => null);
-      if (image) return setInput(image, "pasted.png");
+      if (selection < appliedInputSelection) return;
+      if (image) return setInput(image, "pasted.png", selection);
     }
   }
-});
+}
+window.addEventListener("paste", pasteInput);
 
 function isEditableShortcutTarget(target: EventTarget | null): boolean {
   return target instanceof HTMLElement && (
@@ -2400,7 +2414,7 @@ async function generateRecord(
     sweepGroupId: sweep?.id,
     sweepIndex: sweep?.index,
     sweepCount: sweep?.count,
-    assetId: sweep?.id ?? recordId,
+    assetId: resume?.assetId ?? sweep?.id ?? recordId,
     versionId: recordId,
     parentVersionId: undefined,
     operation: "generated",
@@ -2412,7 +2426,7 @@ async function generateRecord(
     qualityWarning: inspection.warning ?? undefined,
   };
 
-  const modelName = `${base}_${normalizedParams.resolution}_seed${normalizedParams.seed}_${rec.id}.glb`;
+  const modelName = `${base}_${normalizedParams.resolution}_seed${normalizedParams.seed}_${encodeURIComponent(rec.id)}.glb`;
   // Persist the GLB first so a completed manifest can never point at a file
   // that does not exist (the Rust writer computes its SHA-256 on write).
   let savedPath: string | null = null;
@@ -2420,7 +2434,10 @@ async function generateRecord(
   if (isTauri()) {
     try {
       const bytes = new Uint8Array(await glb.arrayBuffer());
-      savedPath = await saveToOutputDir(modelName, bytes);
+      const packageDir = resume
+        ? resume.path.slice(0, Math.max(resume.path.lastIndexOf("/"), resume.path.lastIndexOf("\\")))
+        : activeContext?.dir;
+      savedPath = await saveToOutputDir(modelName, bytes, packageDir);
       if (!savedPath) autosaveError = "the model could not be written to the output folder";
     } catch (e) {
       autosaveError = (e as Error).message || "autosave failed";
@@ -2635,19 +2652,27 @@ function doGenerate(): void {
 
 generateBtn.addEventListener("click", doGenerate);
 cancelBtn.addEventListener("click", () => abort?.abort());
-clearQueueBtn.addEventListener("click", () => {
+clearQueueBtn.addEventListener("click", async () => {
   if (!generationQueue.length) return;
   const removed = generationQueue.splice(0);
   const affectedSweeps = new Set<string>();
   for (const job of removed) {
     if (job.candidate?.status === "queued") job.candidate.status = "cancelled";
     // Persist the cancelled state so recovery never requeues it.
-    if (job.candidate?.manifest) void cancelCandidateManifest(job.candidate.manifest);
+    try {
+      if (job.resumeManifest) {
+        await finishResumedManifest(job.resumeManifest.path, {
+          status: "cancelled", error: "Removed from queue",
+          newJobId: job.resumeManifest.versionId, newRequestId: newRequestId(),
+        });
+      } else if (job.candidate?.manifest) await cancelCandidateManifest(job.candidate.manifest);
+    } catch (error) { noteManifestWriteFailure(error, "generation-cancelled"); }
     if (job.sweep) affectedSweeps.add(job.sweep.id);
   }
   renderCandidates();
   affectedSweeps.forEach(announceSweepWhenComplete);
   updateQueueStatus();
+  await checkInterruptedManifests();
   toast(`${removed.length} queued job${removed.length === 1 ? "" : "s"} removed`);
 });
 
@@ -2690,6 +2715,8 @@ async function doSweep(): Promise<void> {
     return;
   }
   const sweepGroupId = newId();
+  const sweepImage = inputImage;
+  const sweepName = inputName;
 
   // Persist every candidate manifest (plus one shared source image) BEFORE
   // the first generation runs. If persistence fails, refuse to queue a
@@ -2699,12 +2726,12 @@ async function doSweep(): Promise<void> {
     try {
       const { seed: _seed, ...manifestParams } = sweepParams;
       preparedContexts = await prepareSweepManifests({
-        base: safeStem(inputName),
+        base: safeStem(sweepName),
         groupId: sweepGroupId,
-        labelBase: inputName.replace(/\.[^.]+$/, "") || "Model",
+        labelBase: sweepName.replace(/\.[^.]+$/, "") || "Model",
         params: manifestParams,
         seeds: sweepSeeds,
-        sourceBlob: inputImage,
+        sourceBlob: sweepImage,
       });
       if (preparedContexts.some((context) => context === null)) {
         throw new Error("one or more candidate records could not be written");
@@ -2726,8 +2753,6 @@ async function doSweep(): Promise<void> {
   sweepCandidates.set(sweepGroupId, candidates);
   candidateWrap.classList.remove("hidden");
   renderCandidates();
-  const sweepImage = inputImage;
-  const sweepName = inputName;
   const canOpenFirst = !activeId && !currentGlb && !currentJob && generationQueue.length === 0;
   candidates.forEach((slot, index) => {
     queueJob({
@@ -2871,6 +2896,7 @@ async function loadRecordDataNow(rec: VersionRecord): Promise<void> {
   renderMeshParts(instance);
   setWorkspaceMode("view");
   clearStandaloneView();
+  appliedInputSelection = ++inputSelectionSequence;
   inputImage = rec.input;
   inputName = rec.name;
   clearMaskPreview();
@@ -4276,6 +4302,7 @@ function activateLoadedRecord(
   activeId = rec.id;
   activeParams = normalizeGenParams(rec.params);
   activeLabel = rec.label;
+  appliedInputSelection = ++inputSelectionSequence;
   inputImage = rec.input;
   inputName = rec.name;
   setInputPreviewBlob(rec.input);
@@ -4505,6 +4532,7 @@ async function requeueFromManifest(path: string, m?: GenerationManifest): Promis
     params: normalizeGenParams(manifestRecordedParams(manifest)),
     label: `${manifest.label || "Resumed"} · seed ${manifest.seed}`,
     autoOpen: false,
+    sweep: manifest.sweep ? { id: manifest.sweep.groupId, index: manifest.sweep.index, count: manifest.sweep.count } : undefined,
     resumeManifest: {
       path,
       assetId: manifest.assetId,

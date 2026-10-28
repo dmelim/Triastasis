@@ -337,14 +337,15 @@ function withAssetWrite<T>(assetId: string, write: () => Promise<T>): Promise<T>
 
 /** New candidates inherit the asset favorite; later preview saves retain current metadata. */
 export function putGeneratedVersion(record: VersionRecord): Promise<SaveOutcome> {
-  return withAssetWrite(record.assetId, async () => {
+  return withAssetWrite(record.assetId, () => withVersionWrite(record.versionId, async () => {
     const current = await getVersion(record.versionId);
     const siblings = current ? [] : await listAssetVersions(record.assetId);
     const favorite = current?.favorite ?? (siblings.length ? siblings.every(item => item.favorite) : record.favorite);
-    const result = await put({ ...record, favorite });
-    record.favorite = favorite;
+    const metadata = current ? { label: current.label, operationParams: current.operationParams } : {};
+    const result = await put({ ...record, ...metadata, favorite });
+    Object.assign(record, metadata, { favorite });
     return result;
-  });
+  }));
 }
 
 /** Use current membership, serialized with candidate saves, rather than a rendered card snapshot. */
@@ -510,11 +511,14 @@ function applyProjectPatch(params: OperationParams, project: LibraryProject | nu
 }
 
 const metadataWrites = new Map<string, Promise<unknown>>();
-async function updateVersion(versionId: string, patch: GalleryMetadataPatch): Promise<VersionRecord> {
+function withVersionWrite<T>(versionId: string, write: () => Promise<T>): Promise<T> {
   const prior = metadataWrites.get(versionId) ?? Promise.resolve();
-  const next = prior.then(() => updateVersionNow(versionId, patch), () => updateVersionNow(versionId, patch));
+  const next = prior.then(write, write);
   metadataWrites.set(versionId, next);
   return next.finally(() => { if (metadataWrites.get(versionId) === next) metadataWrites.delete(versionId); });
+}
+async function updateVersion(versionId: string, patch: GalleryMetadataPatch): Promise<VersionRecord> {
+  return withVersionWrite(versionId, () => updateVersionNow(versionId, patch));
 }
 async function updateVersionNow(
   versionId: string,
