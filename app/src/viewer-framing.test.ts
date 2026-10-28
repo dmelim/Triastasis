@@ -43,3 +43,20 @@ test("deliberate orbit/zoom survives model adoption, but Reset view resumes auto
   viewer.loadRoot(shape(0.1, 0.1, 1));
   assert.ok(viewer.activeCamera.position.distanceTo(viewer.controls.target) < 2);
 });
+
+test("orthographic fitting resets zoom and contains every corner in wide and tall viewports", () => {
+  for (const aspect of [0.5, 2]) {
+    const viewer = framingViewer();
+    viewer.mount = { clientWidth: 600 * aspect, clientHeight: 600 };
+    viewer.cameraType = "orthographic";
+    viewer.activeCamera = viewer.orthographicCamera;
+    viewer.orthographicCamera.zoom = 10;
+    viewer.loadRoot(shape(1, 1, 1));
+    viewer.orthographicCamera.updateMatrixWorld();
+    assert.equal(viewer.orthographicCamera.zoom, 1);
+    for (const x of [-0.5, 0.5]) for (const y of [-0.5, 0.5]) for (const z of [-0.5, 0.5]) {
+      const ndc = new THREE.Vector3(x, y, z).project(viewer.orthographicCamera);
+      assert.ok(Math.abs(ndc.x) <= 1 && Math.abs(ndc.y) <= 1, `corner clipped: ${ndc.toArray()}`);
+    }
+  }
+});

@@ -596,10 +596,17 @@ function noteManifestWriteFailure(
 // ---- workspace modes and viewer inspector ----
 let workspaceMode: WorkspaceMode = "generate";
 
+let modelReferenceUrl: string | null = null;
+function setModelReference(blob: Blob | null): void {
+  if (modelReferenceUrl) URL.revokeObjectURL(modelReferenceUrl);
+  modelReferenceUrl = blob ? URL.createObjectURL(blob) : null;
+  viewerReferenceImage.removeAttribute("src");
+  syncViewerReference();
+}
 function syncViewerReference(): void {
-  const available = workspaceMode === "view" && Boolean(currentGlb && inputObjectUrl);
+  const available = workspaceMode === "view" && Boolean(currentGlb && modelReferenceUrl);
   viewerReferenceToggle.classList.toggle("hidden", !available);
-  if (available && inputObjectUrl) viewerReferenceImage.src = inputObjectUrl;
+  if (available && modelReferenceUrl) viewerReferenceImage.src = modelReferenceUrl;
   if (!available) {
     viewerReferencePopover.classList.add("hidden");
     viewerReferenceToggle.setAttribute("aria-expanded", "false");
@@ -1670,7 +1677,6 @@ function clearInputPreview(): void {
   if (inputObjectUrl) URL.revokeObjectURL(inputObjectUrl);
   inputObjectUrl = null;
   inputPreview.removeAttribute("src");
-  viewerReferenceImage.removeAttribute("src");
   inputPreview.classList.add("hidden");
   dropHint.classList.remove("hidden");
   syncViewerReference();
@@ -1678,6 +1684,7 @@ function clearInputPreview(): void {
 
 function clearCurrentModelState(): void {
   appliedInputSelection = ++inputSelectionSequence;
+  setModelReference(null);
   disposeEditorSession();
   activeId = null;
   currentGlb = null;
@@ -2506,6 +2513,7 @@ async function generateRecord(
       const stats = await instance.load(glb, disposeEditorSession);
     rec.metrics = statsToMetrics(stats);
     currentGlb = glb;
+    setModelReference(sourceImage);
     activeId = rec.id;
     activeParams = normalizedParams;
     activeLabel = rec.label;
@@ -2897,6 +2905,7 @@ async function loadRecordDataNow(rec: VersionRecord): Promise<void> {
   setWorkspaceMode("view");
   clearStandaloneView();
   appliedInputSelection = ++inputSelectionSequence;
+  setModelReference(rec.input);
   inputImage = rec.input;
   inputName = rec.name;
   clearMaskPreview();
@@ -4303,6 +4312,7 @@ function activateLoadedRecord(
   activeParams = normalizeGenParams(rec.params);
   activeLabel = rec.label;
   appliedInputSelection = ++inputSelectionSequence;
+  setModelReference(rec.input);
   inputImage = rec.input;
   inputName = rec.name;
   setInputPreviewBlob(rec.input);
@@ -4584,6 +4594,8 @@ async function viewGlbFileNow(glbPath: string): Promise<void> {
     activeParams = null;
     activeLabel = "";
     currentGlb = blob;
+    setModelReference(null);
+    renderMeshParts(instance);
     activeId = null;
     renderViewerStats(stats, null);
     setViewerTools(true);
