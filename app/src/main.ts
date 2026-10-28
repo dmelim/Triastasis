@@ -1661,8 +1661,21 @@ function toast(msg: string, kind: "" | "ok" | "err" = ""): void {
   const el = document.createElement("div");
   el.className = "toast" + (kind ? " " + kind : "");
   el.textContent = msg;
-  $("toasts").appendChild(el);
-  setTimeout(() => el.remove(), kind === "err" ? 8000 : 4000);
+  const modal = document.querySelector<HTMLDialogElement>("dialog[open]");
+  if (modal) {
+    let region = modal.querySelector<HTMLElement>(".dialog-notifications");
+    if (!region) {
+      region = document.createElement("div");
+      region.className = "dialog-notifications";
+      region.setAttribute("role", "alert");
+      (modal.querySelector<HTMLElement>(".modal-card") ?? modal).append(region);
+    }
+    region.replaceChildren(el);
+    region.scrollIntoView({ block: "nearest" });
+  } else {
+    $("toasts").appendChild(el);
+    setTimeout(() => el.remove(), kind === "err" ? 8000 : 4000);
+  }
 }
 
 // ---- input image ----
@@ -4144,6 +4157,7 @@ async function openManifestPreview(path: string): Promise<void> {
       <button id="manifest-cancel" class="button button--secondary" type="button">Close</button>
       ${actions.join("")}
     </footer>`;
+  manifestBody.closest("dialog")?.querySelector(".dialog-notifications")?.remove();
   manifestDialog.open();
   const initialFocus =
     manifestBody.querySelector<HTMLElement>("#manifest-import, #manifest-requeue") ??
@@ -4807,6 +4821,7 @@ async function openSweepRecoveryView(groupId: string, anchorPath: string): Promi
         }
       </div>
     </div>`;
+  manifestBody.closest("dialog")?.querySelector(".dialog-notifications")?.remove();
   manifestDialog.open();
   (
     manifestBody.querySelector<HTMLElement>("#sweep-requeue") ??

@@ -2028,3 +2028,6 @@ input:focus-visible,
 }
 .project-icon-choice:hover { border-color: var(--border-strong); background: var(--surface-control-hover); }
 .project-icon-choice[aria-checked="true"] { border-color: var(--content-accent); background: var(--surface-accent); color: var(--content-accent); }
+
+.dialog-notifications { padding: 0 var(--space-4) var(--space-4); }
+.dialog-notifications .toast { max-width: none; box-shadow: none; }
