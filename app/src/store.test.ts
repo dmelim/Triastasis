@@ -3,6 +3,7 @@ import test from "node:test";
 import { build } from "esbuild";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { fillMissingMetrics } from "./types";
 
 interface Fixture { native: unknown[]; legacy: unknown[]; migrated: boolean; fail: boolean; writes: number }
 let serial = 0;
@@ -23,7 +24,7 @@ async function store(fixture: Fixture): Promise<typeof import("./store")> {
 export async function loadNativeGallery(){return globalThis.fixture.native;}
 export async function nativeMigrationWasCompleted(){return globalThis.fixture.migrated;}
 export async function writeNativeRecord(record){globalThis.fixture.writes++; if(globalThis.fixture.fail) throw new Error('synthetic write failure'); globalThis.fixture.native = globalThis.fixture.native.filter(r=>r.id!==record.id).concat(record);}
-export async function updateNativeMetadata(){if(globalThis.fixture.fail) throw new Error('synthetic write failure');}
+export async function updateNativeMetadata(id,patch){if(globalThis.fixture.fail) throw new Error('synthetic write failure'); globalThis.fixture.native=globalThis.fixture.native.map(record=>record.id===id?{...record,...patch}:record);}
 export function nativeGalleryRecoveryCount(){return 0;}
 export async function markNativeMigrationCompleted(){}
 export async function clearNativeGallery(){}
@@ -93,4 +94,71 @@ test("failed save remains exportable until a successful retry releases cached by
   assert.equal((await api.put(unsaved)).persisted, true);
   assert.equal((await api.get("same"))!.glb, null);
   assert.equal(api.versionNeedsMemoryExport("same"), false);
+});
+
+test("sweep candidates inherit favorite toggles, including concurrent arrivals and stale preview saves", async () => {
+  const fixture = { native: [], legacy: [], migrated: true, fail: false, writes: 0 };
+  const api = await store(fixture);
+  const candidate = (id: string) => ({ ...record(id), id, versionId: id, favorite: false }) as Parameters<typeof api.putGeneratedVersion>[0];
+  const first = candidate("candidate-1");
+  await api.putGeneratedVersion(first);
+  await Promise.all([api.setAssetFavorite("asset", true), api.putGeneratedVersion(candidate("candidate-2"))]);
+  assert.ok((await api.listAssetVersions("asset")).every(item => item.favorite));
+  assert.ok((fixture.native as Array<{favorite: boolean}>).every(item => item.favorite), "favorites are persisted, not only cached");
+  // The caller retained the original false value while it rendered a thumbnail.
+  await api.putGeneratedVersion(first);
+  assert.equal((await api.get(first.id))?.favorite, true);
+  assert.equal(first.favorite, true);
+  await Promise.all([api.putGeneratedVersion(candidate("candidate-3")), api.setAssetFavorite("asset", false)]);
+  await api.putGeneratedVersion(candidate("candidate-4"));
+  await api.putGeneratedVersion(first);
+  assert.ok((await api.listAssetVersions("asset")).every(item => !item.favorite));
+  assert.ok((fixture.native as Array<{favorite: boolean}>).every(item => !item.favorite));
+});
+
+test("a new generated asset keeps its own favorite default", async () => {
+  const api = await store({ native: [], legacy: [], migrated: true, fail: false, writes: 0 });
+  await api.putGeneratedVersion({ ...record("fresh"), favorite: false } as Parameters<typeof api.putGeneratedVersion>[0]);
+  assert.equal((await api.get("same"))?.favorite, false);
+});
+
+test("opening a generated version saves its missing triangle count without changing the favorite", async () => {
+  const fixture = { native: [], legacy: [], migrated: true, fail: false, writes: 0 };
+  const api = await store(fixture);
+  const dimensions = { x: 1, y: 2, z: 3 };
+  const saved = { ...record("generated"), favorite: false, metrics: { fileSize: 5, dimensions } } as Parameters<typeof api.putGeneratedVersion>[0];
+  await api.putGeneratedVersion(saved);
+  await api.setAssetFavorite("asset", true);
+  // The open path works from a copy loaded before the favorite changed.
+  const opened = { ...saved, favorite: false };
+  const filled = fillMissingMetrics(opened.metrics, { triangles: 1234, fileSize: 5, dimensions });
+  assert.ok(filled);
+  opened.metrics = filled;
+  await api.putGeneratedVersion(opened);
+  const stored = await api.get("same");
+  assert.equal(stored?.metrics?.triangles, 1234);
+  assert.equal(stored?.favorite, true);
+  assert.equal(fillMissingMetrics(stored?.metrics, { triangles: 99, dimensions }), null, "complete metrics need no further save");
+});
+
+test("a measured zero triangle count is treated as present", () => {
+  assert.equal(fillMissingMetrics({ triangles: 0, dimensions: { x: 1, y: 1, z: 1 } }, { triangles: 5 }), null);
+  assert.deepEqual(fillMissingMetrics(null, { triangles: 0 }), { triangles: 0 });
+});
+
+test("late preview saves retain completed and concurrent label/project changes", async () => {
+  const fixture = { native: [], legacy: [], migrated: true, fail: false, writes: 0 };
+  const api = await store(fixture);
+  const original = { ...record("generated"), favorite: false } as Parameters<typeof api.putGeneratedVersion>[0];
+  await api.putGeneratedVersion(original);
+  const stale = { ...original, operationParams: { ...original.operationParams }, thumb: new Blob(["preview"]) };
+  await api.renameVersion("same", "Renamed");
+  await api.setVersionProject("same", { name: "Project A", icon: "folder" });
+  await Promise.all([api.putGeneratedVersion(stale), api.renameAssetLabel("same", "Asset name")]);
+  const saved = (await api.get("same"))!;
+  assert.equal(saved.label, "Renamed");
+  assert.deepEqual(saved.operationParams.project, { name: "Project A", icon: "folder" });
+  assert.equal(saved.operationParams.assetLabel, "Asset name");
+  assert.equal(await saved.thumb!.text(), "preview");
+  assert.equal((fixture.native[0] as typeof saved).label, "Renamed");
 });

@@ -4505,9 +4505,10 @@ dependencies = [
 
 [[package]]
 name = "triastasis"
-version = "0.0.2"
+version = "0.0.5"
 dependencies = [
  "dirs 5.0.1",
+ "dunce",
  "libc",
  "reqwest",
  "serde",
@@ -4521,6 +4522,7 @@ dependencies = [
  "tauri-plugin-opener",
  "tauri-plugin-single-instance",
  "tiny_http",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

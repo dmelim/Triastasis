@@ -1,4 +1,5 @@
 import type { GalleryMetadataPatch } from "./gallery-storage";
+import { parseProject, type LibraryProject } from "./projects";
 // Persistent gallery of past generations. The desktop app stores records in
 // Tauri's app-local data directory so development and packaged webview origins
 // see the same assets. Plain-browser builds retain the IndexedDB backend.
@@ -325,6 +326,35 @@ export function newId(): string {
 /** Store a record while retaining the legacy `id`, fields, and blobs. */
 export interface SaveOutcome { persisted: boolean; error?: unknown }
 
+const assetWrites = new Map<string, Promise<unknown>>();
+function withAssetWrite<T>(assetId: string, write: () => Promise<T>): Promise<T> {
+  const previous = assetWrites.get(assetId) ?? Promise.resolve();
+  const next = previous.then(write, write);
+  assetWrites.set(assetId, next);
+  void next.finally(() => { if (assetWrites.get(assetId) === next) assetWrites.delete(assetId); }).catch(() => undefined);
+  return next;
+}
+
+/** New candidates inherit the asset favorite; later preview saves retain current metadata. */
+export function putGeneratedVersion(record: VersionRecord): Promise<SaveOutcome> {
+  return withAssetWrite(record.assetId, () => withVersionWrite(record.versionId, async () => {
+    const current = await getVersion(record.versionId);
+    const siblings = current ? [] : await listAssetVersions(record.assetId);
+    const favorite = current?.favorite ?? (siblings.length ? siblings.every(item => item.favorite) : record.favorite);
+    const metadata = current ? { label: current.label, operationParams: current.operationParams } : {};
+    const result = await put({ ...record, ...metadata, favorite });
+    Object.assign(record, metadata, { favorite });
+    return result;
+  }));
+}
+
+/** Use current membership, serialized with candidate saves, rather than a rendered card snapshot. */
+export function setAssetFavorite(assetId: string, favorite: boolean): Promise<void> {
+  return withAssetWrite(assetId, async () => {
+    for (const record of await listAssetVersions(assetId)) await setVersionFavorite(record.versionId, favorite);
+  });
+}
+
 export async function put(rec: GenRecord, requirePersistent = false): Promise<SaveOutcome> {
   const normalized = normalizeRecord(rec);
   try {
@@ -473,12 +503,22 @@ export async function createDerivedVersion(
   return record;
 }
 
+function applyProjectPatch(params: OperationParams, project: LibraryProject | null | undefined): OperationParams {
+  if (project === undefined) return params;
+  const { project: _previous, ...rest } = params;
+  const next = parseProject(project);
+  return next ? { ...rest, project: next } : rest;
+}
+
 const metadataWrites = new Map<string, Promise<unknown>>();
-async function updateVersion(versionId: string, patch: GalleryMetadataPatch): Promise<VersionRecord> {
+function withVersionWrite<T>(versionId: string, write: () => Promise<T>): Promise<T> {
   const prior = metadataWrites.get(versionId) ?? Promise.resolve();
-  const next = prior.then(() => updateVersionNow(versionId, patch), () => updateVersionNow(versionId, patch));
+  const next = prior.then(write, write);
   metadataWrites.set(versionId, next);
   return next.finally(() => { if (metadataWrites.get(versionId) === next) metadataWrites.delete(versionId); });
+}
+async function updateVersion(versionId: string, patch: GalleryMetadataPatch): Promise<VersionRecord> {
+  return withVersionWrite(versionId, () => updateVersionNow(versionId, patch));
 }
 async function updateVersionNow(
   versionId: string,
@@ -490,7 +530,12 @@ async function updateVersionNow(
     ...record,
     ...(patch.label === undefined ? {} : { label: patch.label }),
     ...(patch.favorite === undefined ? {} : { favorite: patch.favorite }),
-    ...(patch.assetLabel === undefined ? {} : { operationParams: { ...record.operationParams, assetLabel: patch.assetLabel } }),
+    ...(patch.assetLabel === undefined && patch.project === undefined ? {} : {
+      operationParams: applyProjectPatch(
+        patch.assetLabel === undefined ? record.operationParams : { ...record.operationParams, assetLabel: patch.assetLabel },
+        patch.project,
+      ),
+    }),
   });
   if (await initializeNativeStore()) {
     try { await updateNativeMetadata(record.id, patch); mem.set(record.id, updated); }
@@ -509,6 +554,11 @@ export async function renameVersion(versionId: string, label: string): Promise<V
 export async function renameAssetLabel(versionId: string, label: string): Promise<VersionRecord> {
   if (!label.trim()) throw new Error("Asset label cannot be empty");
   return updateVersion(versionId, { assetLabel: label.trim() });
+}
+
+/** Assign a version to a project, or clear it with null. */
+export async function setVersionProject(versionId: string, project: LibraryProject | null): Promise<VersionRecord> {
+  return updateVersion(versionId, { project });
 }
 
 /** Mark or unmark a version as a user favorite. */

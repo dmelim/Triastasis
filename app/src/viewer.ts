@@ -1,6 +1,6 @@
 import * as THREE from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
-import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
+import { GLTFLoader, type GLTF } from "three/examples/jsm/loaders/GLTFLoader.js";
 
 export type DisplayMode =
   | "textured"
@@ -256,7 +256,13 @@ export class Viewer {
 
   async load(glb: Blob, beforeAdopt: () => void = () => { }): Promise<ViewerStats> {
     const buffer = await glb.arrayBuffer();
-    const result = await this.loader.parseAsync(buffer, "");
+    let result: GLTF;
+    try {
+      result = await this.loader.parseAsync(buffer, "");
+    } catch (error) {
+      console.warn("GLB parse failed", error);
+      throw new Error("This file could not be read as a GLB model.");
+    }
     try { beforeAdopt(); } catch (error) { this.disposeObjectResources(result.scene); throw error; }
     return this.loadRoot(result.scene, glb.size, result.animations.length);
   }
@@ -276,6 +282,7 @@ export class Viewer {
     this.setDisplayMode(this.displayMode);
     this.setCameraPreset("isometric");
     if (previousCamera) this.restoreCameraView(previousCamera);
+    this.userCameraView = previousCamera !== null;
     return this.getStats();
   }
 
@@ -460,6 +467,7 @@ export class Viewer {
 
   resetView(): void {
     this.setCameraPreset("isometric");
+    this.userCameraView = false;
   }
 
   setDisplayMode(mode: DisplayMode): void {
@@ -621,6 +629,7 @@ export class Viewer {
 
   setCameraPreset(preset: CameraPreset): void {
     if (!this.loadedRoot || this.bounds.isEmpty()) return;
+    this.userCameraView = true;
     const direction = new THREE.Vector3(1, 0.72, 1);
     if (preset === "front") direction.set(0, 0, 1);
     if (preset === "back") direction.set(0, 0, -1);
@@ -796,12 +805,18 @@ export class Viewer {
     controls.maxZoom = 20;
     controls.autoRotateSpeed = 1.4;
     controls.addEventListener("change", this.handleControlsChange);
+    controls.addEventListener("start", this.handleCameraInteraction);
     return controls;
   }
 
   private readonly handleControlsChange = (): void => {
     this.requestRender();
     this.updateTopologyVisibility();
+  };
+
+  private userCameraView = false;
+  private readonly handleCameraInteraction = (): void => {
+    this.userCameraView = true;
   };
 
   private resize(): void {
@@ -847,7 +862,8 @@ export class Viewer {
       this.perspectiveCamera.updateProjectionMatrix();
     } else {
       const aspect = Math.max(this.mount.clientWidth, 1) / Math.max(this.mount.clientHeight, 1);
-      this.orthoHeight = Math.max(size.y, size.x / aspect, size.z, 0.01) * 1.35;
+      this.orthographicCamera.zoom = 1;
+      this.orthoHeight = Math.max(size.length(), size.length() / aspect, 0.01) * 1.35;
       this.updateCameraProjection(aspect);
       this.orthographicCamera.position.copy(center).addScaledVector(direction, Math.max(radius * 2.2, 1));
       this.orthographicCamera.near = 0.001;
@@ -862,9 +878,9 @@ export class Viewer {
     this.updateTopologyVisibility();
   }
 
-  /** Preserve the user's orbit direction and zoom when switching assets. */
+  /** Preserve deliberate camera changes, not an automatic fit for a differently shaped asset. */
   private captureCameraView(): CameraViewState | null {
-    if (!this.loadedRoot || this.bounds.isEmpty()) return null;
+    if (!this.userCameraView || !this.loadedRoot || this.bounds.isEmpty()) return null;
     const center = this.bounds.getCenter(new THREE.Vector3());
     const size = this.bounds.getSize(new THREE.Vector3());
     const extent = Math.max(size.x, size.y, size.z, 0.01);

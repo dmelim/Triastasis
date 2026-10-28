@@ -5,6 +5,7 @@
 import {
   type BundleSummary,
   type ModelsScan,
+  type LocalBundleState,
   scanModels,
 } from "./model-catalog";
 import {
@@ -29,7 +30,9 @@ import {
   setModelsRoot,
   subscribeModelMaintenance,
   verifyAndRegister,
+  verifyLocalBundle,
 } from "./model-manager";
+import { localCatalogBundle } from "./model-discovery";
 import { busyContentFor } from "./modal-busy";
 import {
   bindCuratedModelTerms,
@@ -38,6 +41,8 @@ import {
 } from "./model-terms";
 import { isTauri, pickDirectory } from "./tauri";
 import { installRuntime, runtimeLabel, scanRuntime, type RuntimeStatus } from "./runtime-manager";
+import { withRuntimeProgress } from "./runtime-progress-view";
+import { downloadProgressHtml } from "./download-progress-view";
 
 function escapeHtml(value: string): string {
   return value
@@ -58,6 +63,8 @@ let pendingCustomPath: string | null = null;
 export type OnboardingStep = "welcome" | "credits" | "runtime" | "models";
 let onboardingStep: OnboardingStep = "welcome";
 let runtimeInstallInProgress = false;
+let runtimeInstallError: string | null = null;
+let setupRefreshVersion = 0;
 let lastReadyBundleId: string | null = null;
 let activationFeedback: { bundleId: string; state: "ready" | "failed"; message: string } | null = null;
 const automaticActivationAttempts = new Set<string>();
@@ -146,6 +153,8 @@ export function needsSetup(scan: ModelsScan): boolean {
 
 /** Resolve the bundle the server can actually use, including legacy flat layouts. */
 export function effectiveActiveBundleId(scan: ModelsScan): string | null {
+  const existing = scan.local?.find((bundle) => bundle.active);
+  if (existing) return existing.bundleId;
   const managedActive = scan.managed.find(
     (bundle) => bundle.registered && bundle.bundleId === scan.activeBundle,
   );
@@ -169,10 +178,14 @@ export function defaultInstalledBundleId(
   recommendedBundleId: string,
   preferRecommended = false,
 ): string | null {
+  if (scan.local?.some((bundle) => bundle.active)) return null;
   const installed = scan.managed
     .filter((bundle) => bundle.registered)
     .map((bundle) => bundle.bundleId);
   const activeBundleId = effectiveActiveBundleId(scan);
+  if (activeBundleId && !scan.managed.some((bundle) => bundle.registered && bundle.bundleId === activeBundleId)) {
+    return null;
+  }
   if (installed.length === 1) {
     return activeBundleId === installed[0] ? null : installed[0];
   }
@@ -198,9 +211,9 @@ export function shouldShowSetup(scan: ModelsScan, onboardingComplete: boolean): 
 
 /** Registered bundles that can be offered as an immediate first-launch choice. */
 export function installedBundleIds(scan: ModelsScan): string[] {
-  return scan.managed
+  return [...new Set([...scan.managed
     .filter((bundle) => bundle.registered && bundle.bundleId !== scan.activeBundle)
-    .map((bundle) => bundle.bundleId);
+    .map((bundle) => bundle.bundleId), ...(scan.local ?? []).filter((bundle) => bundle.verified && !bundle.active).map((bundle) => bundle.bundleId)])];
 }
 
 /** Complete managed files that only need their registration marker rebuilt. */
@@ -338,12 +351,13 @@ export async function refreshModelSetup(): Promise<void> {
   const el = section();
   if (!el || !isTauri()) return;
   if (runtimeInstallInProgress) return;
+  const refreshVersion = ++setupRefreshVersion;
   const onboardingComplete = onboardingWasCompleted();
   const [scan, runtime] = await Promise.all([
     currentScan(),
     scanRuntime().catch(() => null),
   ]);
-  if (runtimeInstallInProgress) return;
+  if (runtimeInstallInProgress || refreshVersion !== setupRefreshVersion) return;
   if (!scan || !runtime) {
     setSetupVisible(true);
     renderSetupError(el, !onboardingComplete);
@@ -357,7 +371,7 @@ export async function refreshModelSetup(): Promise<void> {
     return;
   }
   if (onboardingComplete) onboardingStep = runtime.installed ? "models" : "runtime";
-  await renderSetup(el, scan, runtime, partials, !onboardingComplete);
+  await renderSetup(el, scan, runtime, partials, !onboardingComplete, refreshVersion);
 }
 
 /** Reopen model setup when generation discovers that no model is configured. */
@@ -377,6 +391,7 @@ interface BundleView {
   needsRegistration: boolean;
   canResume: boolean;
   active: boolean;
+  local: LocalBundleState | undefined;
 }
 
 function buildViews(
@@ -396,6 +411,7 @@ function buildViews(
     needsRegistration: bundleNeedsRegistration(scan, summary.id),
     canResume: bundleCanResume(scan, summary.id, partials),
     active: activeBundleId === summary.id,
+    local: localCatalogBundle(scan, summary.id),
   }));
   return { views, recommendation };
 }
@@ -406,12 +422,16 @@ async function renderSetup(
   runtime: RuntimeStatus,
   partials: string[],
   showWelcome: boolean,
+  refreshVersion: number,
 ): Promise<void> {
   const snapshot = modelDownloadSnapshot();
   const catalog = snapshot.catalog.length
     ? snapshot.catalog
     : [{ id: "", displayName: "", quantization: "", fileCount: 0, totalBytes: 0 }];
   const hardware = await detectNativeHardware();
+  // A refresh may have reached this probe before the user started installation.
+  // Do not let it replace the busy screen or apply a superseded runtime scan.
+  if (runtimeInstallInProgress || refreshVersion !== setupRefreshVersion) return;
   const { views, recommendation } = buildViews(
     catalog.filter((b) => b.id),
     scan,
@@ -421,7 +441,8 @@ async function renderSetup(
   const progress = snapshot.progress;
   const termsAccepted = curatedModelTermsAccepted();
   const step = showWelcome ? onboardingStep : runtime.installed ? "models" : "runtime";
-  const automaticBundleId = step === "models" && runtime.installed
+  const downloadActive = Boolean(progress && ["preparing", "downloading", "verifying"].includes(progress.state));
+  const automaticBundleId = step === "models" && runtime.installed && (!progress || progress.state === "ready")
     ? defaultInstalledBundleId(scan, recommendation.bundleId, showWelcome)
     : null;
   if (automaticBundleId && modelMaintenanceSnapshot().kind === "idle") {
@@ -445,17 +466,17 @@ async function renderSetup(
   const cards = views
     .map((view) => {
       const ownProgress = progress?.bundleId === view.summary.id ? progress : null;
-      const activationInProgress = maintenance.kind === "activating";
+      const activationInProgress = maintenance.kind !== "idle";
       const activatingThisBundle = activationInProgress && maintenance.bundleId === view.summary.id;
       const activationFailed = activationFeedback?.bundleId === view.summary.id &&
         activationFeedback.state === "failed";
-      const controlsDisabled = activationInProgress ? " disabled" : "";
+      const controlsDisabled = activationInProgress || (downloadActive && !ownProgress) ? " disabled" : "";
       let action: string;
       if (activatingThisBundle) {
         action = `
           <button class="button button--primary button--sm" type="button" disabled aria-busy="true">
             <span class="spinner" aria-hidden="true"></span>
-            <span class="spinner-label">Activating ${escapeHtml(view.summary.displayName)}...</span>
+            <span class="spinner-label">${maintenance.kind === "verifying" ? "Verifying" : "Activating"} ${escapeHtml(view.summary.displayName)}...</span>
           </button>`;
       } else if (ownProgress?.state === "preparing") {
         action = `
@@ -467,7 +488,10 @@ async function renderSetup(
         action = `
           <button class="button button--secondary button--sm" data-act="pause" data-id="${view.summary.id}"${controlsDisabled}>Pause</button>
           <button class="button button--secondary button--sm" data-act="cancel" data-id="${view.summary.id}"${controlsDisabled}>Cancel</button>`;
-      } else if (view.installed) {
+      } else if (view.local && (view.local.active || !scan.managed.some((m) => m.bundleId === view.summary.id && m.registered))) {
+        action = `${!view.local.active && view.local.verified ? `<button class="button button--primary button--sm" data-act="use-local" data-id="${view.summary.id}" data-path="${escapeHtml(view.local.dir)}"${controlsDisabled}>Use ${escapeHtml(view.summary.displayName)}</button>` : ""}
+          <button class="button button--secondary button--sm" data-act="verify-local" data-id="${view.summary.id}" data-path="${escapeHtml(view.local.dir)}"${controlsDisabled}>Verify files</button>`;
+      } else if (view.installed && !view.needsRegistration) {
         action = view.active
           ? '<button class="button button--primary button--sm" type="button" disabled aria-current="true">In use</button>'
           : `<button class="button button--primary button--sm" data-act="use" data-id="${view.summary.id}"${controlsDisabled}>Use ${escapeHtml(view.summary.displayName)}</button>`;
@@ -488,9 +512,11 @@ async function renderSetup(
       const stateBadge = view.active
         ? '<span class="model-badge ok">Active</span>'
         : activatingThisBundle
-          ? '<span class="model-badge activating">Activating</span>'
+          ? `<span class="model-badge activating">${maintenance.kind === "verifying" ? "Verifying" : "Activating"}</span>`
           : activationFailed
             ? '<span class="model-badge failed">Activation failed</span>'
+            : view.local
+              ? `<span class="model-badge installed">${view.local.verified ? "Verified" : "Found locally"}</span>`
             : view.installed
               ? '<span class="model-badge installed">Installed</span>'
               : "";
@@ -510,19 +536,20 @@ async function renderSetup(
             ${recBadge}
           </div>
           <p>${view.summary.quantization.toUpperCase()}, about ${formatGigabytes(view.summary.totalBytes)}, ${view.summary.fileCount} files</p>
+          ${view.local ? `<p class="model-note">${escapeHtml(view.local.dir)} · ${view.local.verified ? "Catalog checksums verified" : "Existing catalog files; verify before switching to this folder"}</p>` : ""}
           ${warn}
           <div class="bundle-actions">${action}</div>
         </div>`;
     })
     .join("");
 
-  const progressPanel = maintenance.kind === "activating" && activationBundleName
-    ? renderActivationStatus(`Activating ${activationBundleName}...`, false)
+  const progressPanel = maintenance.kind !== "idle" && activationBundleName
+    ? renderActivationStatus(`${maintenance.kind === "verifying" ? "Verifying" : "Activating"} ${activationBundleName}...`, false)
     : activationFeedback
       ? renderActivationStatus(activationFeedback.message, activationFeedback.state === "failed")
       : progress
         ? ["preparing", "downloading", "verifying"].includes(progress.state)
-          ? renderProgress(progress)
+          ? renderModelDownloadProgress(progress)
           : progress.state === "failed"
             ? renderDownloadFailure(progress)
             : ""
@@ -531,6 +558,7 @@ async function renderSetup(
   const legacyPanel = renderLegacyPanel(scan, maintenance.kind !== "idle");
   const installedIds = new Set(installedBundleIds(scan));
   if (scan.activeBundle) installedIds.add(scan.activeBundle);
+  for (const bundle of scan.local ?? []) installedIds.add(bundle.bundleId);
   if (scan.legacy?.status === "completeUnverified" && scan.legacy.bundleId) {
     installedIds.add(scan.legacy.bundleId);
   }
@@ -579,8 +607,8 @@ async function renderSetup(
       </button>
       ${pendingCustomPath ? `
         <div class="custom-model-confirm" role="alert" aria-labelledby="custom-model-warning-title">
-          <strong id="custom-model-warning-title">Use unverified model files?</strong>
-          <p>Custom model files are not verified or supported by Triastasis. They may be incompatible, unsafe, or incorrectly licensed. You are responsible for the files and their source.</p>
+          <strong id="custom-model-warning-title">Use model files from this folder?</strong>
+          <p>The files stay in their current location. Triastasis recognizes catalog bundles and can verify their checksums. Other model files are user-provided and may be incompatible or incorrectly licensed.</p>
           <code>${escapeHtml(pendingCustomPath)}</code>
           <div class="custom-model-confirm-actions">
             <button class="button button--primary button--sm" data-act="confirm-custom" data-path="${escapeHtml(pendingCustomPath)}"${maintenance.kind !== "idle" ? " disabled" : ""}>Use this folder</button>
@@ -601,7 +629,7 @@ async function renderSetup(
           <label>Storage location</label>
           <code id="model-root-path">${escapeHtml(scan.modelsRoot)}</code>
           <span class="model-free">${escapeHtml(freeText)}</span>
-          <button class="button button--secondary button--sm" data-act="change-location">Change location...</button>
+          <button class="button button--secondary button--sm" data-act="change-location"${downloadActive ? " disabled" : ""}>Change location...</button>
           ${scan.portable ? `<p class="model-note">Portable mode keeps models next to the application.</p>` : ""}
         </div>
         <div id="model-setup-message" class="banner hidden"><span></span></div>
@@ -655,6 +683,7 @@ async function renderSetup(
             ).join("")}
           </div>
         </details>`}
+      <div id="runtime-setup-progress"></div>
       <p class="model-note">${runtime.portable ? "Portable mode installs the runtime beside Triastasis." : "The runtime is installed in your local application data and can be replaced by a future verified update."}</p>
     </section>`;
 
@@ -716,29 +745,33 @@ async function renderSetup(
     </div>`;
 
   bindActions(root, scan, runtime);
+  if (step === "runtime" && !runtime.installed && runtimeInstallError) {
+    showMessage(root, runtimeInstallError, true);
+  }
   if (step === "credits" || (!showWelcome && step === "models")) {
     bindCuratedModelTerms(root, () => void refreshModelSetup());
   }
 }
 
-function renderProgress(progress: NonNullable<ReturnType<typeof modelDownloadSnapshot>["progress"]>): string {
-  const pct = progress.totalBytesTotal
-    ? Math.min(100, Math.round((progress.totalBytesDone / progress.totalBytesTotal) * 100))
-    : 0;
+export function renderModelDownloadProgress(progress: NonNullable<ReturnType<typeof modelDownloadSnapshot>["progress"]>): string {
+  const pct = progress.totalBytesTotal > 0
+    ? Math.max(0, Math.min(100, Math.floor((progress.totalBytesDone / progress.totalBytesTotal) * 100)))
+    : null;
   const detail =
     progress.state === "verifying"
-      ? "Verifying downloaded files..."
+      ? progress.fileName ? `Checking ${progress.fileName}...` : "Checking the model bundle..."
       : progress.fileName
-        ? `${escapeHtml(progress.fileName)} (${formatGigabytes(progress.fileBytesDone)} of ${formatGigabytes(progress.fileBytesTotal)})`
+        ? `${progress.fileName} (${formatGigabytes(progress.fileBytesDone)} of ${formatGigabytes(progress.fileBytesTotal)})`
         : "Preparing...";
-  const summary = progress.state === "preparing"
+  const summary = progress.state === "verifying" ? "Verifying downloaded files..." : progress.state === "preparing"
     ? "Starting download..."
-    : `${pct}%, ${formatSpeed(progress.bytesPerSecond)}, ${formatEta(progress.etaSeconds)} remaining`;
-  return `
-    <div class="model-progress" role="status" aria-label="Model download progress">
-      <div class="model-progress-bar" aria-hidden="true"><div style="width:${pct}%"></div></div>
-      <p>${summary}<br><span>${detail}</span></p>
-    </div>`;
+    : `${pct === null ? "Downloading..." : `${pct}%`}${progress.bytesPerSecond > 0 ? `, ${formatSpeed(progress.bytesPerSecond)}` : ""}${progress.etaSeconds !== null ? `, ${formatEta(progress.etaSeconds)} remaining` : ""}`;
+  return downloadProgressHtml({
+    fraction: progress.state === "downloading" && progress.totalBytesTotal > 0
+      ? progress.totalBytesDone / progress.totalBytesTotal : null,
+    summary,
+    detail,
+  }, "Model download progress");
 }
 
 function renderActivationStatus(message: string, isError: boolean): string {
@@ -796,6 +829,7 @@ function showMessage(root: HTMLElement, text: string, isError: boolean): void {
 function bindActions(root: HTMLElement, scan: ModelsScan, runtime: RuntimeStatus): void {
   root.querySelectorAll<HTMLButtonElement>("[data-act]").forEach((btn) => {
     btn.onclick = async () => {
+      if (runtimeInstallInProgress) return;
       const act = btn.dataset.act;
       const id = btn.dataset.id ?? "";
       if (act === "delete-incomplete" && btn.dataset.confirm !== "true") {
@@ -858,11 +892,20 @@ function bindActions(root: HTMLElement, scan: ModelsScan, runtime: RuntimeStatus
         } else if (act === "install-runtime") {
           const backend = btn.dataset.backend || runtime.recommendedBackend;
           runtimeInstallInProgress = true;
+          runtimeInstallError = null;
+          ++setupRefreshVersion;
+          root.querySelector<HTMLElement>("#model-setup-message")?.classList.toggle("hidden", true);
+          btn.textContent = "Downloading...";
           root.querySelectorAll<HTMLButtonElement>("[data-act]").forEach((control) => {
             control.disabled = true;
           });
-          showMessage(root, `Downloading and verifying the ${runtimeLabel(backend)} runtime...`, false);
-          await installRuntime(backend);
+          const messageBox = root.querySelector<HTMLElement>("#runtime-setup-progress");
+          const installed = messageBox
+            ? await withRuntimeProgress(messageBox, () => installRuntime(backend))
+            : await installRuntime(backend);
+          if (!installed.installed) {
+            throw new Error("Runtime installation did not finish. Please try again.");
+          }
         } else if (act === "change-location") {
           const picked = await pickDirectory(scan.modelsRoot);
           if (picked && picked !== scan.modelsRoot) {
@@ -877,7 +920,7 @@ function bindActions(root: HTMLElement, scan: ModelsScan, runtime: RuntimeStatus
           pendingCustomPath = null;
         } else if (act === "confirm-custom" || act === "use-custom") {
           const path = btn.dataset.path ?? "";
-          showMessage(root, "Switching to the custom model folder...", false);
+          showMessage(root, "Switching to the existing model folder...", false);
           await activateCustomBundle(path);
           pendingCustomPath = null;
         } else if (act === "download" || act === "resume") {
@@ -885,6 +928,11 @@ function bindActions(root: HTMLElement, scan: ModelsScan, runtime: RuntimeStatus
         } else if (act === "verify") {
           showMessage(root, "Verifying the existing model files...", false);
           await verifyAndRegister(id);
+        } else if (act === "verify-local") {
+          showMessage(root, "Verifying the existing model files in place...", false);
+          await verifyLocalBundle(id, btn.dataset.path ?? "");
+        } else if (act === "use-local") {
+          await activateBundle(id, btn.dataset.path);
         } else if (act === "pause") {
           await pauseBundle();
         } else if (act === "cancel") {
@@ -897,7 +945,9 @@ function bindActions(root: HTMLElement, scan: ModelsScan, runtime: RuntimeStatus
           await activateManagedBundle(id);
         }
       } catch (e) {
-        showMessage(root, (e as Error).message || String(e), true);
+        const message = (e as Error).message || String(e);
+        if (act === "install-runtime") runtimeInstallError = message;
+        showMessage(root, message, true);
         refreshAfterAction = false;
       } finally {
         if (act === "install-runtime") {

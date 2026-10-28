@@ -95,6 +95,19 @@ fn apply_metadata_updates(dir: &Path, metadata: &mut Value) {
             }
             metadata["operationParams"]["assetLabel"] = patch["assetLabel"].clone();
         }
+        // Optional: absent keeps the original, null clears, an object sets the project.
+        if let Some(project) = patch.get("project") {
+            if !metadata["operationParams"].is_object() {
+                metadata["operationParams"] = json!({});
+            }
+            if project["name"].is_string() && project["icon"].is_string() {
+                metadata["operationParams"]["project"] = project.clone();
+            } else if project.is_null() {
+                if let Some(params) = metadata["operationParams"].as_object_mut() {
+                    params.remove("project");
+                }
+            }
+        }
         break;
     }
 }
@@ -540,7 +553,7 @@ mod tests {
         std::fs::create_dir_all(updates.join("1")).unwrap();
         std::fs::write(
             updates.join("1/metadata.json"),
-            br#"{"label":"Renamed","favorite":true,"assetLabel":"Props"}"#,
+            br#"{"label":"Renamed","favorite":true,"assetLabel":"Props","project":{"name":"Moon","icon":"gem"}}"#,
         )
         .unwrap();
         std::fs::create_dir_all(updates.join("2")).unwrap();
@@ -549,6 +562,7 @@ mod tests {
         assert_eq!(info["label"], "Renamed");
         assert_eq!(info["favorite"], true);
         assert_eq!(info["operationParams"]["assetLabel"], "Props");
+        assert_eq!(info["operationParams"]["project"]["name"], "Moon");
         assert_eq!(sha256_file(&source.join("model.glb")).unwrap(), before);
     }
     #[test]

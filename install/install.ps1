@@ -28,7 +28,7 @@ param(
   [string]$Dest = "$env:LOCALAPPDATA\triastasis",
   [string]$ModelsDir = "",
   [ValidatePattern('^[A-Za-z0-9][A-Za-z0-9._-]*$')]
-  [string]$ReleaseTag = "triastasis-v0.0.2",
+  [string]$ReleaseTag = "triastasis-v0.0.5",
   # Legacy opt-in: quantized weights "q8" (~10 GB) or "q4" (~6.5 GB). Default f16.
   [string]$Quant = "",
   # Legacy opt-in: download weights in the installer instead of the app.
@@ -46,6 +46,7 @@ $Models = @("birefnet.gguf", "dinov3.gguf", "ss_flow.gguf", "ss_dec.gguf",
   "shape_flow_512.gguf", "shape_flow_1024.gguf", "shape_dec.gguf",
   "tex_flow_512.gguf", "tex_flow_1024.gguf", "tex_dec.gguf")
 
+$ModelsDirExplicit = $PSBoundParameters.ContainsKey("ModelsDir")
 if (-not $ModelsDir) { $ModelsDir = Join-Path $Dest "models" }
 $RuntimeDir = Join-Path $Dest "runtime"
 
@@ -72,11 +73,14 @@ function Detect-Backend {
               "$capText".Trim(),
               [System.Globalization.NumberStyles]::Float,
               [System.Globalization.CultureInfo]::InvariantCulture,
-              [ref]$cap) -and $cap -ge 6.0 -and $cap -lt 7.5) {
+              [ref]$cap)) {
+          if ($cap -ge 7.5) { return "cuda" }
+          if ($cap -ge 6.0) {
           Info "detected NVIDIA compute capability $capText — selecting the CUDA 12 legacy runtime"
           return "cuda12"
+          }
         }
-        return "cuda"
+        return "vulkan"
       }
     } catch {}
   }
@@ -137,22 +141,27 @@ function Download($url, $dest) {
   }
 }
 
-function Verify-ReleaseChecksum($file, $checksumUrl) {
-  $checksumFile = "$file.sha256"
+function Verify-ReleaseChecksum($file, $artifact) {
+  $checksumFile = "$file.checksums"
   try {
+    # Only the published 0.0.3 compatibility release uses individual sidecars.
+    $legacy = $ReleaseTag -eq "triastasis-v0.0.3"
+    $checksumUrl = if ($legacy) { "$RelBase/$artifact.sha256" } else { "$RelBase/SHA256SUMS" }
     Download $checksumUrl $checksumFile
-  } catch {
-    Warn "release checksum is unavailable; continuing for compatibility with older releases."
-    return
-  }
-  try {
-    $line = (Get-Content -LiteralPath $checksumFile -Raw).Trim()
-    $match = [regex]::Match($line, '^([A-Fa-f0-9]{64})\s+[*]?.+$')
-    if (-not $match.Success) { Die "invalid checksum file for $(Split-Path $file -Leaf)" }
-    $expected = $match.Groups[1].Value.ToLowerInvariant()
+    $expected = $null
+    $names = [System.Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
+    foreach ($line in (Get-Content -LiteralPath $checksumFile)) {
+      if ($line -eq "") { continue }
+      $match = [regex]::Match($line, '^([a-f0-9]{64})  ([^/\\]+)$')
+      if (-not $match.Success) { Die "invalid release checksum manifest" }
+      $name = $match.Groups[2].Value
+      if ($name.Trim() -cne $name -or -not $names.Add($name)) { Die "ambiguous release checksum manifest" }
+      if ($name -ceq $artifact) { $expected = $match.Groups[1].Value }
+    }
+    if (-not $expected) { Die "release checksum manifest does not contain $artifact" }
     $actual = (Get-FileHash -LiteralPath $file -Algorithm SHA256).Hash.ToLowerInvariant()
-    if ($actual -ne $expected) { Die "SHA-256 mismatch for $(Split-Path $file -Leaf); the download was not used" }
-    Info "verified SHA-256: $(Split-Path $file -Leaf)"
+    if ($actual -ne $expected) { Die "SHA-256 mismatch for $artifact; the download was not used" }
+    Info "verified SHA-256: $artifact"
   } finally {
     Remove-Item -LiteralPath $checksumFile -Force -ErrorAction SilentlyContinue
   }
@@ -164,7 +173,7 @@ New-Item -ItemType Directory -Force -Path $RuntimeDir | Out-Null
 $bundle = "trellis-$Backend-windows-x64.zip"
 $tmp = Join-Path $env:TEMP $bundle
 Download "$RelBase/$bundle" $tmp
-Verify-ReleaseChecksum $tmp "$RelBase/$bundle.sha256"
+Verify-ReleaseChecksum $tmp $bundle
 Expand-Archive -Path $tmp -DestinationPath $RuntimeDir -Force
 Remove-Item $tmp -Force
 $ServerBin = Join-Path $RuntimeDir "trellis-server.exe"
@@ -191,7 +200,7 @@ if ($SkipApp) {
   Log "downloading Triastasis desktop app"
   $setup = Join-Path $env:TEMP "triastasis-windows-x64-setup.exe"
   Download "$RelBase/triastasis-windows-x64-setup.exe" $setup
-  Verify-ReleaseChecksum $setup "$RelBase/triastasis-windows-x64-setup.exe.sha256"
+  Verify-ReleaseChecksum $setup "triastasis-windows-x64-setup.exe"
   Info "launching installer (silent, per-user)"
   $installer = Start-Process $setup -ArgumentList "/S" -Wait -PassThru
   if ($installer.ExitCode -ne 0) { Die "Triastasis installer exited with code $($installer.ExitCode)" }
@@ -209,13 +218,32 @@ $cfg = [ordered]@{
   port      = $Port
   outputDir = (Join-Path $Dest "output")
 }
+$configPath = Join-Path $ConfigDir "config.json"
+if (Test-Path -LiteralPath $configPath) {
+  # Fail rather than replace an unreadable config. Preserve unknown fields for newer apps.
+  $existing = Get-Content -LiteralPath $configPath -Raw | ConvertFrom-Json
+  $merged = [ordered]@{}
+  foreach ($property in $existing.PSObject.Properties) { $merged[$property.Name] = $property.Value }
+  foreach ($key in $cfg.Keys) { if (-not $merged.Contains($key)) { $merged[$key] = $cfg[$key] } }
+  $merged.serverBin = $ServerBin
+  $merged.backend = $Backend
+  if ($PSBoundParameters.ContainsKey("Gpu")) { $merged.gpu = $Gpu }
+  if ($PSBoundParameters.ContainsKey("Port")) { $merged.port = $Port }
+  if ($ModelsDirExplicit -or $IncludeModels) {
+    $merged.modelsDir = $ModelsDir
+    $merged.modelsRoot = $ModelsDir
+    $merged.activeBundle = ""
+    $merged.customModelsDir = $ModelsDir
+  }
+  $cfg = $merged
+}
 # Write UTF-8 *without* a BOM: Windows PowerShell 5.1's `Set-Content -Encoding UTF8`
 # prepends a BOM, which serde_json (the app's config reader) refuses to parse, so the
 # app would silently fall back to an empty/"unknown" config. WriteAllText with an
 # explicit no-BOM encoding works on both Windows PowerShell 5.1 and PowerShell 7.
 [System.IO.File]::WriteAllText(
   (Join-Path $ConfigDir "config.json"),
-  ($cfg | ConvertTo-Json),
+  ($cfg | ConvertTo-Json -Depth 100),
   (New-Object System.Text.UTF8Encoding($false)))
 Info "config: $(Join-Path $ConfigDir 'config.json')"
 

@@ -16,6 +16,17 @@ export interface ServerStartupResult {
   error: string | null;
 }
 
+export function serverConnectionState(
+  online: boolean,
+  configured: boolean,
+  startupPending: boolean,
+  recovering: boolean,
+): "ready" | "setup" | "starting" | "offline" {
+  if (online) return "ready";
+  if (!configured) return "setup";
+  return startupPending || recovering ? "starting" : "offline";
+}
+
 async function waitUntilReady(
   dependencies: ServerStartupDependencies,
   checks: number,

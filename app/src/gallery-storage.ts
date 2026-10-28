@@ -12,6 +12,7 @@
 // testable.
 
 import type { GenRecord, VersionRecord } from "./types";
+import { parseProject, type LibraryProject } from "./projects";
 
 /** The subset of filesystem operations gallery storage needs. */
 export interface GalleryFs {
@@ -35,13 +36,15 @@ export interface StoredMetadata extends Omit<VersionRecord, "input" | "glb" | "t
   revision?: number;
 }
 
-export interface GalleryMetadataPatch { label?: string; favorite?: boolean; assetLabel?: string }
-interface MetadataOverlay { label: string; favorite: boolean; assetLabel: string | null }
+/** `project: null` clears the asset's project; `undefined` leaves it unchanged. */
+export interface GalleryMetadataPatch { label?: string; favorite?: boolean; assetLabel?: string; project?: LibraryProject | null }
+interface MetadataOverlay { label: string; favorite: boolean; assetLabel: string | null; project?: LibraryProject | null }
 
 function validOverlay(value: unknown): value is MetadataOverlay {
   if (!value || typeof value !== "object") return false;
   const v = value as MetadataOverlay;
-  return typeof v.label === "string" && typeof v.favorite === "boolean" && (v.assetLabel === null || typeof v.assetLabel === "string");
+  return typeof v.label === "string" && typeof v.favorite === "boolean" && (v.assetLabel === null || typeof v.assetLabel === "string")
+    && (v.project === undefined || v.project === null || parseProject(v.project) !== null);
 }
 async function overlayDirectories(fs: GalleryFs, dir: string): Promise<string[]> {
   if (!(await fs.exists(dir))) return [];
@@ -56,6 +59,11 @@ async function readMetadata(fs: GalleryFs, dir: string): Promise<StoredMetadata>
       metadata.label = patch.label;
       metadata.favorite = patch.favorite;
       if (patch.assetLabel !== null) metadata.operationParams = { ...metadata.operationParams, assetLabel: patch.assetLabel };
+      if (patch.project !== undefined) {
+        const { project: _previous, ...rest } = metadata.operationParams ?? {};
+        const project = parseProject(patch.project);
+        metadata.operationParams = project ? { ...rest, project } : rest;
+      }
       return metadata;
     } catch { /* an interrupted metadata update leaves the previous one usable */ }
   }
@@ -310,6 +318,7 @@ export function createTransactionalGallery(fs: GalleryFs, root: string) {
           label: patch.label ?? current.label ?? current.name ?? "Untitled model",
           favorite: patch.favorite ?? current.favorite === true,
           assetLabel: patch.assetLabel ?? (typeof current.operationParams?.assetLabel === "string" ? current.operationParams.assetLabel : null),
+          project: patch.project === undefined ? parseProject(current.operationParams?.project) : parseProject(patch.project),
         };
         if (!validOverlay(overlay)) throw new Error("Invalid Library metadata update");
         const serialized = JSON.stringify(overlay);

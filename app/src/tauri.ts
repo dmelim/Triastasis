@@ -213,10 +213,11 @@ export async function logsDir(): Promise<string> {
  * The Rust side resolves + creates the dir and returns the full path; the fs
  * plugin then writes the bytes there. Returns the path, or null in the browser.
  */
-export async function saveToOutputDir(name: string, bytes: Uint8Array): Promise<string | null> {
+export async function saveToOutputDir(name: string, bytes: Uint8Array, directory?: string): Promise<string | null> {
   if (!isTauri()) return null;
   const { writeFile } = await import("@tauri-apps/plugin-fs");
-  const path = await invoke<string>("output_path", { name });
+  if (!name || /[\\/:]/.test(name) || name === "." || name === "..") throw new Error("Output name must be a filename");
+  const path = directory ? `${directory}/${name}` : await invoke<string>("output_path", { name });
   await writeFile(path, bytes);
   return path;
 }

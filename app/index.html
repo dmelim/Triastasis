@@ -32,8 +32,8 @@
         #model-setup .onboarding-shell--loading .onboarding-logo { width: 88px; height: 88px; }
       }
       @media (prefers-reduced-motion: reduce) {
-        #model-setup .startup-paint-brush { animation: none; stroke-dashoffset: 0; }
-        #model-setup .startup-paint-finish { animation: none; opacity: 1; }
+        .startup-paint-brush { animation: none; stroke-dashoffset: 0; }
+        .startup-paint-finish { animation: none; opacity: 1; }
       }
     </style>
   </head>
@@ -202,6 +202,10 @@
                 <option value="1536">1536 experimental</option>
               </select>
             </div>
+            <label class="ctl">
+              <span>Seed</span>
+              <input id="ctl-seed" type="number" min="0" step="1" value="42" />
+            </label>
             <div id="hardware-resolution-note" class="hardware-limit-note control-wide hidden" role="status">
               <span></span>
               <button id="hardware-resolution-settings" class="link-btn" type="button">Review in Settings</button>
@@ -221,35 +225,10 @@
                 <option value="box">Box, faster</option>
               </select>
             </div>
-            <label class="ctl">
-              <span>Seed</span>
-              <input id="ctl-seed" type="number" min="0" step="1" value="42" />
-            </label>
-            <div class="ctl control-wide">
-              <label id="ctl-sweep-count-label" for="ctl-sweep-count">Sweep candidates</label>
-              <select id="ctl-sweep-count">
-                <option value="4" selected>4 seeds</option>
-                <option value="6">6 seeds</option>
-                <option value="8">8 seeds</option>
-              </select>
-            </div>
-            <div class="ctl">
-              <label id="ctl-target-faces-mode-label" for="ctl-target-faces-mode">Target faces</label>
-              <select id="ctl-target-faces-mode" aria-describedby="ctl-target-faces-error">
-                <option value="auto" selected>Auto by resolution</option>
-                <option value="custom">Custom target</option>
-              </select>
-            </div>
-            <label id="ctl-target-faces-wrap" class="ctl custom-param hidden">
-              <span>Custom faces</span>
-              <input id="ctl-target-faces" type="number" min="10000" max="1000000" step="1" value="150000" />
-            </label>
-            <span id="ctl-target-faces-error" data-param-error="targetFaces" class="field-error control-wide" role="alert"></span>
-            <span id="ctl-target-faces-help" class="field-help control-wide" role="note"></span>
             <div class="ctl">
               <label id="ctl-texture-label" for="ctl-texture">Textures</label>
               <select id="ctl-texture">
-                <option value="on" selected>Generate texture</option>
+                <option value="on" selected>Textured</option>
                 <option value="off">Geometry only</option>
               </select>
             </div>
@@ -262,18 +241,26 @@
               </select>
             </div>
             <span id="texture-resolution-help" class="field-help control-wide" role="note">1024 px decode is available with 1024 geometry; 512 px works at every geometry resolution.</span>
+            <div id="ctl-target-faces-mode-wrap" class="ctl">
+              <label id="ctl-target-faces-mode-label" for="ctl-target-faces-mode">Target faces</label>
+              <select id="ctl-target-faces-mode" aria-describedby="ctl-target-faces-error">
+                <option value="auto" selected>Auto</option>
+                <option value="custom">Custom target</option>
+              </select>
+            </div>
+            <label id="ctl-target-faces-wrap" class="ctl custom-param hidden">
+              <span>Custom faces</span>
+              <input id="ctl-target-faces" type="number" min="10000" max="1000000" step="1" value="150000" />
+            </label>
+            <span id="ctl-target-faces-error" data-param-error="targetFaces" class="field-error control-wide" role="alert"></span>
+            <span id="ctl-target-faces-help" class="field-help control-wide" role="note"></span>
             <div class="ctl">
               <label id="ctl-atlas-size-mode-label" for="ctl-atlas-size-mode">Atlas size</label>
               <select id="ctl-atlas-size-mode" aria-describedby="ctl-atlas-size-error">
-                <option value="auto" selected>Auto by resolution</option>
+                <option value="auto" selected>Auto</option>
                 <option value="custom">Custom atlas</option>
               </select>
             </div>
-            <label id="ctl-atlas-size-wrap" class="ctl custom-param hidden">
-              <span>Custom atlas</span>
-              <input id="ctl-atlas-size" type="number" min="128" max="4096" step="1" value="2048" />
-            </label>
-            <span id="ctl-atlas-size-error" data-param-error="atlasSize" class="field-error control-wide" role="alert"></span>
             <div class="ctl">
               <label id="ctl-remesh-band-mode-label" for="ctl-remesh-band-mode">Remesh band</label>
               <select id="ctl-remesh-band-mode" aria-describedby="ctl-remesh-band-error">
@@ -281,12 +268,25 @@
                 <option value="custom">Custom band</option>
               </select>
             </div>
+            <label id="ctl-atlas-size-wrap" class="ctl custom-param hidden">
+              <span>Custom atlas</span>
+              <input id="ctl-atlas-size" type="number" min="128" max="4096" step="1" value="2048" />
+            </label>
             <label id="ctl-remesh-band-wrap" class="ctl custom-param hidden">
               <span>Custom band</span>
               <input id="ctl-remesh-band" type="number" min="0" max="8" step="1" value="2" />
             </label>
+            <span id="ctl-atlas-size-error" data-param-error="atlasSize" class="field-error control-wide" role="alert"></span>
             <span id="ctl-remesh-band-error" data-param-error="remeshBand" class="field-error control-wide" role="alert"></span>
-            <div class="ctl control-wide">
+            <div id="ctl-sweep-count-wrap" class="ctl">
+              <label id="ctl-sweep-count-label" for="ctl-sweep-count">Sweep candidates</label>
+              <select id="ctl-sweep-count">
+                <option value="4" selected>4 seeds</option>
+                <option value="6">6 seeds</option>
+                <option value="8">8 seeds</option>
+              </select>
+            </div>
+            <div class="ctl">
               <label id="ctl-texture-encoding-label" for="ctl-texture-encoding">Texture encoding</label>
               <select id="ctl-texture-encoding">
                 <option value="auto" selected>Auto</option>
@@ -296,9 +296,8 @@
             </div>
             </div>
           </details>
-          <div id="generation-param-error" class="field-error" role="alert"></div>
-
           <div class="generate-actions">
+            <div id="generation-param-error" class="field-error" role="alert"></div>
             <button id="generate-btn" class="button button--primary" disabled>Generate 3D</button>
             <button id="sweep-btn" class="button button--secondary sweep-btn" disabled>Sweep at 512</button>
           </div>
@@ -307,7 +306,7 @@
         <section id="view-mode-panel" class="mode-panel hidden">
           <div class="panel-heading">
             <div>
-              <h1>Inspect</h1>
+              <h1>View</h1>
               <p>Read the mesh and inspect its triangle topology.</p>
             </div>
             <button id="viewer-reference-toggle" class="button button--secondary panel-heading-action hidden" type="button" aria-expanded="false" aria-controls="viewer-reference-popover">Source image</button>
@@ -315,7 +314,7 @@
 
           <div id="inspect-empty" class="inspect-empty">
             <strong>No model loaded</strong>
-            <span>Generate a model or choose one from the gallery.</span>
+            <span>Generate a model or choose one from the Library.</span>
           </div>
 
           <div id="inspect-content" class="inspect-content hidden">
@@ -516,13 +515,21 @@
 
       <section class="panel viewer-panel" id="view-mode-panel" role="tabpanel" aria-labelledby="mode-view">
         <div id="viewer-mount" class="viewer-mount">
+<div id="viewer-selection-loading" class="viewer-selection-loading hidden" role="status" aria-live="polite" aria-label="Loading model">
+<svg class="viewer-loading-logo" viewBox="0 0 1120 1120" aria-hidden="true" focusable="false">
+<defs><mask id="viewer-loading-paint-mask" maskUnits="userSpaceOnUse" x="0" y="0" width="1120" height="1120"><path class="startup-paint-brush" pathLength="1" d="M 349 196 L 432 125 C 483 90 548 146 560 195 C 588 273 498 341 402 369 C 326 402 261 473 263 522 C 266 579 317 620 368 606 C 452 586 480 486 549 435 C 598 392 644 395 678 439 C 720 491 673 552 630 600 C 590 663 533 739 479 736 C 422 734 397 681 433 627 C 473 569 546 554 610 558 C 698 553 750 503 813 553 C 877 601 881 661 827 717 C 791 754 744 778 706 790 C 622 828 566 886 567 939 C 568 988 620 1024 663 1004 C 699 989 724 960 750 934" fill="none" stroke="white" stroke-width="150" stroke-linecap="butt" stroke-linejoin="round"/></mask></defs>
+<image href="/brand/triastasis-mark.png" width="1120" height="1120" opacity=".085"/>
+<image href="/brand/triastasis-mark.png" width="1120" height="1120" mask="url(#viewer-loading-paint-mask)"/>
+<image class="startup-paint-finish" href="/brand/triastasis-mark.png" width="1120" height="1120" opacity="0"/>
+</svg>
+</div>
           <div id="viewer-reference-popover" class="viewer-reference-popover hidden">
             <img id="viewer-reference-image" alt="Source image used to generate the current model" />
           </div>
           <div id="viewer-empty" class="viewer-empty">
             <span class="viewer-empty-mark" aria-hidden="true">3D</span>
             <strong>Your model will appear here</strong>
-            <span>Generate from an image or reopen a gallery result.</span>
+            <span>Generate from an image or reopen a Library version.</span>
           </div>
           <span id="viewer-caption" class="viewer-caption viewer-caption-overlay muted"></span>
           <div id="progress" class="progress viewer-progress hidden" role="status" aria-live="polite">
@@ -531,6 +538,7 @@
                 <span class="button-icon icon-minus" aria-hidden="true"></span>
               </button>
               <div class="progress-head">
+                <img id="progress-input-preview" class="queue-image hidden" alt="Current generation input" />
                 <div class="progress-titles">
                   <div id="progress-title" class="progress-title">Generating 3D model</div>
                   <div id="progress-queue" class="progress-queue muted">1 running</div>
@@ -547,12 +555,14 @@
                 <div class="progress-actions" id="progress-actions">
                   <button id="cancel-btn" class="button button--secondary progress-cancel" type="button">Cancel current</button>
                   <button id="clear-queue-btn" class="link-btn progress-clear" type="button">Clear queued</button>
+                  <button id="queue-expand-btn" class="link-btn queue-expand hidden" type="button" aria-expanded="false" aria-controls="queue-previews"><span id="queue-expand-label">Show queued</span><span class="queue-caret" aria-hidden="true"></span></button>
                 </div>
               </div>
+              <ol id="queue-previews" class="queue-previews hidden" aria-label="Waiting generation jobs"></ol>
             </div>
             <button id="progress-chip" class="progress-chip hidden" type="button" aria-expanded="false" aria-controls="progress-card" title="Expand job card.">
               <span id="progress-chip-title" class="progress-chip-title"></span>
-              <span id="progress-chip-percent" class="progress-chip-percent">2%</span>
+              <span id="progress-chip-percent" class="progress-chip-percent"></span>
               <span id="progress-chip-elapsed" class="progress-chip-elapsed">0:00</span>
               <span id="progress-chip-queued" class="progress-chip-queued hidden"></span>
               <span class="button-icon icon-plus progress-chip-expand" aria-hidden="true"></span>
@@ -581,6 +591,12 @@
                 <option value="all">All assets</option>
                 <option value="favorites">Favourites</option>
                 <option value="multiple">Multiple versions</option>
+              </select>
+            </label>
+            <label class="library-filter-control">
+              <span>Project</span>
+              <select id="library-project">
+                <option value="all">All projects</option>
               </select>
             </label>
             <label class="library-filter-control">
@@ -670,22 +686,22 @@
     </main>
 
 
-    <div id="manifest-modal" class="modal hidden">
+    <dialog id="manifest-modal" class="modal hidden" aria-labelledby="manifest-title">
       <div class="modal-card">
         <div class="modal-head">
-          <span id="manifest-title">Generation</span>
+          <h2 class="modal-title" id="manifest-title">Generation</h2>
           <button id="manifest-close" class="button button--icon modal-close" type="button" aria-label="Close" title="Close">
             <span class="button-icon icon-x" aria-hidden="true"></span>
           </button>
         </div>
         <div id="manifest-body" class="modal-body" aria-live="polite"></div>
       </div>
-    </div>
+    </dialog>
 
-    <div id="rename-modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="rename-title">
+    <dialog id="rename-modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="rename-title">
       <div class="modal-card rename-modal-card">
         <div class="modal-head">
-          <span id="rename-title">Rename asset</span>
+          <h2 class="modal-title" id="rename-title">Rename asset</h2>
           <button id="rename-close" class="button button--icon modal-close" type="button" aria-label="Close rename dialog" title="Close">
             <span class="button-icon icon-x" aria-hidden="true"></span>
           </button>
@@ -702,7 +718,7 @@
           </div>
         </form>
       </div>
-    </div>
+    </dialog>
 
     <div id="toasts" class="toasts" aria-live="polite"></div>
 

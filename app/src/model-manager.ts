@@ -8,6 +8,7 @@ import {
   clearDownloadProgress,
   markDownloadFailed,
   markDownloadStarting,
+  modelDownloadSnapshot,
   refreshPartialDownloads,
 } from "./model-download-state";
 import { curatedModelTermsAccepted } from "./model-terms";
@@ -32,7 +33,7 @@ export interface NativeHardwareInfo {
   vramMb: number | null;
 }
 
-export type ModelMaintenanceKind = "idle" | "activating";
+export type ModelMaintenanceKind = "idle" | "activating" | "verifying";
 
 export interface ModelMaintenanceSnapshot {
   kind: ModelMaintenanceKind;
@@ -58,15 +59,15 @@ function setModelMaintenance(snapshot: ModelMaintenanceSnapshot): void {
   maintenanceListeners.forEach((listener) => listener(snapshot));
 }
 
-function beginModelActivation(bundleId: string): void {
+function beginModelActivation(bundleId: string, kind: "activating" | "verifying" = "activating"): void {
   if (maintenanceSnapshot.kind !== "idle") {
     throw new Error("Another model activation is already in progress.");
   }
-  setModelMaintenance({ kind: "activating", bundleId });
+  setModelMaintenance({ kind, bundleId });
 }
 
 function finishModelActivation(bundleId: string): void {
-  if (maintenanceSnapshot.kind === "activating" && maintenanceSnapshot.bundleId === bundleId) {
+  if (maintenanceSnapshot.kind !== "idle" && maintenanceSnapshot.bundleId === bundleId) {
     setModelMaintenance({ kind: "idle", bundleId: null });
   }
 }
@@ -142,8 +143,16 @@ export function selectionWarning(bundleId: string, vramMb: number | null | undef
  * Persist the managed models root before downloading. The server is not
  * restarted here: nothing is active yet.
  */
+function assertDownloadIdle(): void {
+  const progress = modelDownloadSnapshot().progress;
+  if (progress && ["preparing", "downloading", "verifying"].includes(progress.state)) {
+    throw new Error("Finish or stop the current model download first.");
+  }
+}
 export async function setModelsRoot(modelsRoot: string): Promise<void> {
+  assertDownloadIdle();
   await loadConfig(true);
+  assertDownloadIdle();
   await saveConfig({ modelsRoot });
 }
 
@@ -156,6 +165,7 @@ export async function currentModelsRoot(fallback: string): Promise<string> {
 // ---- actions ------------------------------------------------------------------
 
 export async function downloadBundle(bundleId: string): Promise<void> {
+  assertDownloadIdle();
   if (maintenanceSnapshot.kind !== "idle") {
     throw new Error("Wait for model activation to finish before starting another download.");
   }
@@ -196,11 +206,22 @@ export async function verifyAndRegister(bundleId: string): Promise<void> {
   await verifyModelBundle(bundleId);
 }
 
-export async function activateBundle(bundleId: string): Promise<void> {
+export async function activateBundle(bundleId: string, directory?: string): Promise<void> {
   beginModelActivation(bundleId);
   try {
-    await activateModelBundle(bundleId);
+    await activateModelBundle(bundleId, directory);
     await loadConfig(true);
+  } finally {
+    finishModelActivation(bundleId);
+  }
+}
+
+/** Verify existing catalog files without moving them into managed storage. */
+export async function verifyLocalBundle(bundleId: string, directory: string): Promise<void> {
+  assertDownloadIdle();
+  beginModelActivation(bundleId, "verifying");
+  try {
+    await verifyModelBundle(bundleId, directory);
   } finally {
     finishModelActivation(bundleId);
   }

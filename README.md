@@ -185,6 +185,7 @@ behavior-driving environment variables remain — use the flags above.
 
 ```
 GET  /health     -> "ok"
+GET  /identity   -> {"service":"trellis-server","identityVersion":1}
 POST /generate      multipart/form-data with an "image" file part; optional text
                     fields "seed", "resolution" (512/1024/1536), "bg_removal"
                     (threshold|birefnet). Returns model/gltf-binary.
@@ -192,6 +193,23 @@ POST /generate      multipart/form-data with an "image" file part; optional text
 
 Launch-time flags (including `--res`) set the per-request defaults; each request can
 override them with its own fields.
+
+Requests carrying a browser `Origin` are accepted only from the desktop webview
+(`tauri.localhost`) and loopback development pages; requests without `Origin`
+(scripts, the desktop worker) are accepted. When bound to a specific address, the
+`Host` header must name loopback or that address with the server port. Each
+connection serves one request, so a rejected request's body cannot be replayed as
+a second request.
+
+Limitations: binding to a wildcard address (`0.0.0.0` or `::`) disables the `Host`
+check, so DNS-rebinding protection does not apply in that mode; only the `Origin`
+check remains. These checks stop unrelated web pages, not other local programs.
+
+At startup the desktop app adopts a server already on the configured port only if
+`/identity` reports `trellis-server`. For runtimes that predate `/identity`, it
+falls back to `/health` answering `ok`. That fallback is a compatibility
+heuristic, not verified identity: any other service answering `/health` with
+`ok` would also be adopted.
 
 ### Pipeline
 

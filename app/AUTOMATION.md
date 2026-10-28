@@ -38,7 +38,9 @@ queue counts, and enforced concurrency policy. Browser requests must also carry
 no `Origin` header or a loopback/Tauri origin (`localhost`, `127.0.0.1`,
 `::1`, `tauri.localhost`, or the legacy `tauri://localhost` form); remote
 origins are rejected even though the API supports the simple multipart POST
-used by the skill.
+used by the skill. A `Host` header, when present, must name the loopback
+listener (`127.0.0.1`, `localhost`, or `[::1]` with the API port), which blocks
+DNS-rebinding pages.
 
 ## Endpoints
 

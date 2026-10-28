@@ -11,6 +11,7 @@
       "identifier": "opener:allow-open-url",
       "allow": [
         { "url": "https://github.com/pwilkin/trellis.cpp" },
+        { "url": "https://github.com/dmelim/Triastasis/releases/tag/triastasis-v*" },
         { "url": "https://huggingface.co/ilintar/trellis2-gguf" },
         { "url": "https://huggingface.co/microsoft/TRELLIS.2-4B" },
         { "url": "https://github.com/facebookresearch/dinov3/blob/main/LICENSE.md" },

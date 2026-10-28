@@ -1,3 +1,5 @@
+import { scanRuntime, type RuntimeStatus } from "./runtime-manager";
+import { runtimeNotice } from "./runtime-presentation";
 import { loadVersionModel } from "./store";
 import { OperationQueue } from "./operation-queue";
 import { SharedResources } from "./editing/shared-resources";
@@ -12,6 +14,7 @@ import type { BufferGeometry, Mesh, Object3D } from "three";
 import { generate, getGenerationProgress, health, type NativeProgress } from "./api";
 import { loadConfig } from "./config";
 import { createButton } from "./design-system/button";
+import { bindDialog, createDialog } from "./design-system/dialog";
 import { destroySelect, enhanceSelect, refreshSelect } from "./design-system/select";
 import {
   busyContentFor,
@@ -50,7 +53,7 @@ import { escapeHtml, hasBlockingCoreIssue, manifestIssueText } from "./manifest-
 import { initModelDownloadState } from "./model-download-state";
 import { initModelSetup, openModelSetup } from "./model-setup";
 import { subscribeModelStorageRefresh } from "./model-settings";
-import { ensureServerReady } from "./server-startup";
+import { ensureServerReady, serverConnectionState } from "./server-startup";
 import type { ManifestMetrics, ManifestQualityWarning } from "./types";
 import {
   detectPlaneCollapse,
@@ -62,7 +65,9 @@ import {
   matchingGenerationPreset,
   type GenerationPreset,
 } from "./generation-presets";
-import { filterLibraryEntries, type LibraryFilter, type LibrarySort } from "./library-filter";
+import { filterLibraryEntries, PROJECT_FILTER_ALL, PROJECT_FILTER_NONE, PROJECT_FILTER_PREFIX, type LibraryFilter, type LibrarySort } from "./library-filter";
+import { assetProject, projectEditTargets, projectsInRecords, projectKey, writeProjectToVersions, type LibraryProject } from "./projects";
+import { createProjectIcon, requestProject, type ProjectChoice } from "./project-picker";
 import {
   allowsGenerationAboveRecommendation,
   describeHardware,
@@ -71,7 +76,7 @@ import {
   type GenerationHardwareProfile,
 } from "./hardware-profile";
 import type { ComponentAnalysis, EditHistory } from "./editing";
-import { progressDisplayMode, renderSettings, type ProgressDisplayMode } from "./settings";
+import { progressDisplayMode, renderSettings, selectRuntimeSettings, type ProgressDisplayMode } from "./settings";
 import { readMigratedPreference } from "./storage-migration";
 import type {
   EditableScene,
@@ -90,9 +95,11 @@ import {
   put,
   renameVersion,
   renameAssetLabel,
+  setVersionProject,
   versionNeedsMemoryExport,
   refreshNativeLibrary,
-  setVersionFavorite,
+  setAssetFavorite,
+  putGeneratedVersion,
 } from "./store";
 import {
   automationInfo,
@@ -130,6 +137,8 @@ import {
   DEFAULT_PARAMS,
   GenParamsValidationError,
   normalizeGenParams,
+  parseGenerationSeed,
+  fillMissingMetrics,
   type GenParams,
   type ModelMetrics,
   type NormalizedGenParams,
@@ -189,6 +198,7 @@ const assetDock = $("asset-dock");
 const libraryModeSummary = $("library-mode-summary");
 const librarySearch = $<HTMLInputElement>("library-search");
 const libraryFilter = $<HTMLSelectElement>("library-filter");
+const libraryProject = $<HTMLSelectElement>("library-project");
 const librarySort = $<HTMLSelectElement>("library-sort");
 const libraryResultsSummary = $("library-results-summary");
 const libraryGrid = $("library-grid");
@@ -218,6 +228,7 @@ const candidateGallery = $("candidate-gallery");
 const candidateSummary = $("candidate-summary");
 const clearCandidatesBtn = $<HTMLButtonElement>("clear-candidates");
 const viewerMount = $("viewer-mount");
+const viewerSelectionLoading = $("viewer-selection-loading");
 const viewerReferenceToggle = $<HTMLButtonElement>("viewer-reference-toggle");
 const viewerReferencePopover = $("viewer-reference-popover");
 const viewerReferenceImage = $<HTMLImageElement>("viewer-reference-image");
@@ -245,13 +256,12 @@ const editRedoBtn = $<HTMLButtonElement>("edit-redo");
 const editExportBtn = $<HTMLButtonElement>("edit-export-glb");
 const editSaveDerivedBtn = $<HTMLButtonElement>("edit-save-derived");
 const editLimitations = $("edit-limitations");
-const renameModal = $("rename-modal");
+const renameModal = $<HTMLDialogElement>("rename-modal");
 const renameTitle = $("rename-title");
 const renameLabel = $("rename-label");
 const renameForm = $<HTMLFormElement>("rename-form");
 const renameInput = $<HTMLInputElement>("rename-input");
 const renameError = $("rename-error");
-const renameCloseBtn = $<HTMLButtonElement>("rename-close");
 const renameCancelBtn = $<HTMLButtonElement>("rename-cancel");
 
 const targetFacesMode = $<HTMLSelectElement>("ctl-target-faces-mode");
@@ -303,25 +313,21 @@ document.addEventListener("keydown", (event) => {
 
 type RenameKind = "asset" | "version";
 let resolveRename: ((value: string | null) => void) | null = null;
-let renameOpener: HTMLElement | null = null;
+const renameDialog = bindDialog(renameModal, () => closeRenameModal(null));
 let initialRenameValue = "";
 
 function closeRenameModal(value: string | null): void {
   if (!resolveRename) return;
   const resolve = resolveRename;
   resolveRename = null;
-  renameModal.classList.add("hidden");
+  renameDialog.close();
   renameInput.removeAttribute("aria-invalid");
   renameError.textContent = "";
-  const opener = renameOpener;
-  renameOpener = null;
   resolve(value);
-  if (opener && document.contains(opener)) opener.focus();
 }
 
 function requestRename(kind: RenameKind, currentValue: string): Promise<string | null> {
   if (resolveRename) closeRenameModal(null);
-  renameOpener = document.activeElement as HTMLElement | null;
   initialRenameValue = currentValue.trim();
   const noun = kind === "asset" ? "asset" : "version";
   renameTitle.textContent = `Rename ${noun}`;
@@ -329,11 +335,8 @@ function requestRename(kind: RenameKind, currentValue: string): Promise<string |
   renameInput.value = currentValue;
   renameInput.removeAttribute("aria-invalid");
   renameError.textContent = "";
-  renameModal.classList.remove("hidden");
-  requestAnimationFrame(() => {
-    renameInput.focus();
-    renameInput.select();
-  });
+  renameDialog.open(renameInput);
+  renameInput.select();
   return new Promise((resolve) => {
     resolveRename = resolve;
   });
@@ -355,32 +358,7 @@ renameInput.addEventListener("input", () => {
   renameInput.removeAttribute("aria-invalid");
   renameError.textContent = "";
 });
-renameCloseBtn.addEventListener("click", () => closeRenameModal(null));
 renameCancelBtn.addEventListener("click", () => closeRenameModal(null));
-renameModal.addEventListener("click", (event) => {
-  if (event.target === renameModal) closeRenameModal(null);
-});
-renameModal.addEventListener("keydown", (event) => {
-  if (event.key === "Escape") {
-    event.preventDefault();
-    closeRenameModal(null);
-    return;
-  }
-  if (event.key !== "Tab") return;
-  const focusable = Array.from(
-    renameModal.querySelectorAll<HTMLElement>('button, input, [tabindex]:not([tabindex="-1"])'),
-  ).filter((element) => !(element as HTMLButtonElement).disabled && element.offsetParent !== null);
-  if (!focusable.length) return;
-  const first = focusable[0];
-  const last = focusable[focusable.length - 1];
-  if (event.shiftKey && document.activeElement === first) {
-    event.preventDefault();
-    last.focus();
-  } else if (!event.shiftKey && document.activeElement === last) {
-    event.preventDefault();
-    first.focus();
-  }
-});
 
 // ---- state ----
 let viewer: Viewer | null = null;
@@ -398,7 +376,8 @@ async function removeAssetRecords(records: VersionRecord[]): Promise<void> {
     if (generating) { toast("Wait for generation to finish before removing assets", "err"); return; }
     const replacesCurrent = records.some((record) => record.id === activeId);
     if (replacesCurrent && !(await resolveUnsavedEdits())) return;
-    if (!confirm(`Remove this asset and its ${records.length} version(s)?`)) return;
+    const versionCount = `${records.length} ${records.length === 1 ? "version" : "versions"}`;
+    if (!(await confirmDestructive("Remove asset", `Remove this asset and its ${versionCount}?`, "Remove asset"))) return;
     const before = await all();
     const ids = new Set(records.flatMap((record) => [record.id, record.versionId]));
     if (before.some((record) => !ids.has(record.id) && record.parentVersionId && ids.has(record.parentVersionId))) {
@@ -415,23 +394,56 @@ function runEditorAction(action: () => Promise<unknown>): void {
   void modelOperations.run(action).catch((error) => toast(String(error instanceof Error ? error.message : error), "err"));
 }
 
+interface DialogChoice {
+  value: string;
+  label: string;
+  variant: "primary" | "secondary" | "danger";
+}
+
+async function chooseInDialog(title: string, message: string, choices: DialogChoice[]): Promise<string> {
+  return new Promise<string>((resolve) => {
+    const finish = (value: string): void => {
+      dialog.close();
+      dialog.element.remove();
+      resolve(value);
+    };
+    const dialog = createDialog(title, () => finish("cancel"));
+    dialog.element.dataset.dialogKind = "choice";
+    const text = document.createElement("p");
+    text.textContent = message;
+    const actions = document.createElement("footer");
+    actions.className = "modal-actions";
+    const ordered = [
+      ...choices.filter((choice) => choice.value === "cancel"),
+      ...choices.filter((choice) => choice.value !== "cancel" && choice.variant === "secondary"),
+      ...choices.filter((choice) => choice.value !== "cancel" && choice.variant !== "secondary"),
+    ];
+    for (const choice of ordered) {
+      const button = createButton(choice);
+      button.value = choice.value;
+      button.addEventListener("click", () => finish(choice.value));
+      actions.append(button);
+    }
+    dialog.body.append(text, actions);
+    document.body.append(dialog.element);
+    dialog.open(actions.querySelector<HTMLButtonElement>('button[value="cancel"]'));
+  });
+}
+
+async function confirmDestructive(title: string, message: string, confirmLabel: string): Promise<boolean> {
+  return (await chooseInDialog(title, message, [
+    { value: "confirm", label: confirmLabel, variant: "danger" },
+    { value: "cancel", label: "Cancel", variant: "secondary" },
+  ])) === "confirm";
+}
+
 async function resolveUnsavedEdits(): Promise<boolean> {
   if (!editorSession?.history.dirty) return true;
-  const dialog = document.createElement("dialog");
-  dialog.className = "unsaved-dialog";
-  dialog.innerHTML = '<h2>Unsaved edits</h2><p>Save your edit copy before replacing this model?</p><div class="unsaved-actions"><button class="button button--primary" value="save">Save derived version</button><button class="button button--secondary" value="discard">Discard edits</button><button class="button button--secondary" value="cancel">Cancel</button></div>';
-  if (!activeId) dialog.querySelector('button[value="save"]')!.textContent = "Export edited GLB";
-  document.body.appendChild(dialog);
-  const choice = await new Promise<string>((resolve) => {
-    dialog.addEventListener("click", (event) => {
-      const target = (event.target as HTMLElement).closest<HTMLButtonElement>("button[value]");
-      if (target) dialog.close(target.value);
-    });
-    dialog.addEventListener("close", () => resolve(dialog.returnValue || "cancel"), { once: true });
-    dialog.showModal();
-    dialog.querySelector<HTMLButtonElement>('button[value="cancel"]')!.focus();
-  });
-  dialog.remove();
+  const choice = await chooseInDialog("Unsaved edits", "Save your edit copy before replacing this model?", [
+    { value: "save", label: activeId ? "Save derived version" : "Export edited GLB", variant: "primary" },
+    { value: "discard", label: "Discard edits", variant: "secondary" },
+    { value: "cancel", label: "Cancel", variant: "secondary" },
+  ]);
   if (choice === "discard") return true;
   if (choice !== "save") return false;
   return activeId ? saveEditedDerivedVersion() : exportEditedModel();
@@ -498,6 +510,7 @@ let abort: AbortController | null = null;
 let elapsedTimer: number | null = null;
 let galleryUrls: string[] = [];
 let libraryUrls: string[] = [];
+const libraryPreviewBlobs = new WeakMap<HTMLImageElement, Blob>();
 let candidateUrls: string[] = [];
 let warnedEphemeral = false;
 let maskObjectUrl: string | null = null;
@@ -583,10 +596,17 @@ function noteManifestWriteFailure(
 // ---- workspace modes and viewer inspector ----
 let workspaceMode: WorkspaceMode = "generate";
 
+let modelReferenceUrl: string | null = null;
+function setModelReference(blob: Blob | null): void {
+  if (modelReferenceUrl) URL.revokeObjectURL(modelReferenceUrl);
+  modelReferenceUrl = blob ? URL.createObjectURL(blob) : null;
+  viewerReferenceImage.removeAttribute("src");
+  syncViewerReference();
+}
 function syncViewerReference(): void {
-  const available = workspaceMode === "view" && Boolean(currentGlb && inputObjectUrl);
+  const available = workspaceMode === "view" && Boolean(currentGlb && modelReferenceUrl);
   viewerReferenceToggle.classList.toggle("hidden", !available);
-  if (available && inputObjectUrl) viewerReferenceImage.src = inputObjectUrl;
+  if (available && modelReferenceUrl) viewerReferenceImage.src = modelReferenceUrl;
   if (!available) {
     viewerReferencePopover.classList.add("hidden");
     viewerReferenceToggle.setAttribute("aria-expanded", "false");
@@ -619,7 +639,7 @@ function setWorkspaceMode(mode: WorkspaceMode): void {
   viewerPanel.classList.toggle("hidden", fullPageMode);
   libraryModePanel.classList.toggle("hidden", !libraryMode);
   settingsModePanel.classList.toggle("hidden", !settingsMode);
-  assetDock.classList.toggle("hidden", settingsMode);
+  assetDock.classList.toggle("hidden", fullPageMode);
   workspace.classList.toggle("is-library-mode", libraryMode);
   workspace.classList.toggle("is-settings-mode", settingsMode);
   syncViewerReference();
@@ -726,9 +746,11 @@ function updateCustomParamVisibility(): void {
   targetFacesMode.disabled = !textureEnabled;
   targetFacesInput.disabled = !textureEnabled || targetFacesMode.value !== "custom";
   targetFacesWrap.classList.toggle("hidden", !textureEnabled || targetFacesMode.value !== "custom");
-  targetFacesHelp.textContent = textureEnabled
-    ? "Custom target faces is applied by the current textured QEM path."
-    : "Geometry-only output currently uses the backend's automatic face target; custom target faces is unavailable.";
+  targetFacesHelp.textContent = !textureEnabled
+    ? "Geometry-only models always use an automatic face count."
+    : targetFacesMode.value === "custom"
+      ? "Lower counts give lighter meshes; higher counts keep more detail."
+      : "Auto picks a face count for the selected resolution.";
 
   const supportsExplicit1024 = resolutionSelect.value === "1024";
   const texture1024Option = textureResolutionSelect.querySelector<HTMLOptionElement>('option[value="1024"]');
@@ -1469,10 +1491,10 @@ updateCustomParamVisibility();
 // ---- controls -> params ----
 function readParams(): GenParams {
   const res = parseInt(($("ctl-res") as HTMLSelectElement).value, 10);
-  const seed = parseInt(($("ctl-seed") as HTMLInputElement).value, 10);
+  const seed = parseGenerationSeed(($("ctl-seed") as HTMLInputElement).value);
   return normalizeGenParams({
     resolution: (res === 512 || res === 1536 ? res : 1024) as GenParams["resolution"],
-    seed: isNaN(seed) ? DEFAULT_PARAMS.seed : seed,
+    seed,
     bgRemoval: ($("ctl-bg") as HTMLSelectElement).value as GenParams["bgRemoval"],
     uv: ($("ctl-uv") as HTMLSelectElement).value as GenParams["uv"],
     targetFaces: targetFacesMode.value === "custom" ? Number(targetFacesInput.value) : "auto",
@@ -1582,7 +1604,7 @@ function applyHardwareGuardrails(normalizeSelection = true): void {
   const resolutionLocked = !override && maximum < 1536;
   hardwareResolutionNote.classList.toggle("hidden", !resolutionLocked);
   hardwareResolutionNote.querySelector("span")!.textContent = resolutionLocked
-    ? `1536 is disabled: it is experimental and recommended only for GPUs with 16 GB+ VRAM. Detected ${hardwareLabel}; recommended max ${maximum}.`
+    ? `1536 is experimental and needs a GPU with 16 GB+ VRAM. ${hardwareLabel}; recommended max ${maximum}.`
     : "";
 }
 
@@ -1626,8 +1648,12 @@ function showParamError(error: unknown): void {
   const message = error instanceof Error ? error.message : "Check the generation settings.";
   const field = error instanceof GenParamsValidationError ? error.field : null;
   const target = field ? document.querySelector<HTMLElement>(`[data-param-error="${field}"]`) : null;
-  if (target) target.textContent = message;
-  else $("generation-param-error").textContent = message;
+  if (target) {
+    target.textContent = message;
+    target.scrollIntoView({ block: "center" });
+  } else {
+    $("generation-param-error").textContent = message;
+  }
 }
 
 // ---- toasts ----
@@ -1635,8 +1661,21 @@ function toast(msg: string, kind: "" | "ok" | "err" = ""): void {
   const el = document.createElement("div");
   el.className = "toast" + (kind ? " " + kind : "");
   el.textContent = msg;
-  $("toasts").appendChild(el);
-  setTimeout(() => el.remove(), kind === "err" ? 8000 : 4000);
+  const modal = document.querySelector<HTMLDialogElement>("dialog[open]");
+  if (modal) {
+    let region = modal.querySelector<HTMLElement>(".dialog-notifications");
+    if (!region) {
+      region = document.createElement("div");
+      region.className = "dialog-notifications";
+      region.setAttribute("role", "alert");
+      (modal.querySelector<HTMLElement>(".modal-card") ?? modal).append(region);
+    }
+    region.replaceChildren(el);
+    region.scrollIntoView({ block: "nearest" });
+  } else {
+    $("toasts").appendChild(el);
+    setTimeout(() => el.remove(), kind === "err" ? 8000 : 4000);
+  }
 }
 
 // ---- input image ----
@@ -1651,13 +1690,14 @@ function clearInputPreview(): void {
   if (inputObjectUrl) URL.revokeObjectURL(inputObjectUrl);
   inputObjectUrl = null;
   inputPreview.removeAttribute("src");
-  viewerReferenceImage.removeAttribute("src");
   inputPreview.classList.add("hidden");
   dropHint.classList.remove("hidden");
   syncViewerReference();
 }
 
 function clearCurrentModelState(): void {
+  appliedInputSelection = ++inputSelectionSequence;
+  setModelReference(null);
   disposeEditorSession();
   activeId = null;
   currentGlb = null;
@@ -1673,7 +1713,29 @@ function clearCurrentModelState(): void {
   updateGenerateEnabled();
 }
 
-function setInput(blob: Blob, name: string): void {
+async function imageDecodes(blob: Blob): Promise<boolean> {
+  try {
+    const bitmap = await createImageBitmap(blob);
+    bitmap.close();
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+// Actions retain initiation order, but empty/failed clipboard reads are not
+// image selections. Only successful adoption (or an explicit clear) invalidates
+// older image work, so an unrelated text paste cannot discard a pending decode.
+let inputSelectionSequence = 0;
+let appliedInputSelection = 0;
+async function setInput(blob: Blob, name: string, selection = ++inputSelectionSequence): Promise<void> {
+  const decoded = await imageDecodes(blob);
+  if (selection < appliedInputSelection) return;
+  if (!decoded) {
+    toast(`${name || "This file"} could not be read as an image. Choose a valid PNG, JPEG, WebP, BMP or GIF file.`, "err");
+    return;
+  }
+  appliedInputSelection = selection;
   inputImage = blob;
   inputName = name || "input.png";
   setInputPreviewBlob(blob);
@@ -1782,7 +1844,9 @@ dropzone.addEventListener("keydown", (e) => {
 });
 fileInput.addEventListener("change", () => {
   const f = fileInput.files?.[0];
-  if (f) setInput(f, f.name);
+  // Clear the picker so choosing the same file again still fires `change`.
+  fileInput.value = "";
+  if (f) void setInput(f, f.name);
 });
 ["dragenter", "dragover"].forEach((ev) =>
   dropzone.addEventListener(ev, (e) => {
@@ -1798,7 +1862,7 @@ fileInput.addEventListener("change", () => {
 );
 dropzone.addEventListener("drop", (e) => {
   const f = (e as DragEvent).dataTransfer?.files?.[0];
-  if (f && f.type.startsWith("image/")) setInput(f, f.name);
+  if (f && f.type.startsWith("image/")) void setInput(f, f.name);
 });
 void listenForNativeFileDrops(async (event) => {
   if (event.type === "enter" || event.type === "over") {
@@ -1819,30 +1883,35 @@ void listenForNativeFileDrops(async (event) => {
       void viewGlbFile(droppedPath);
       return;
     }
+    const selection = ++inputSelectionSequence;
     const image = await readDroppedImage(droppedPath);
-    setInput(image.blob, image.name);
+    if (selection >= appliedInputSelection) await setInput(image.blob, image.name, selection);
   } catch (error) {
     toast((error as Error).message || "Could not open the dropped file", "err");
   }
 }).catch((error) => {
   console.warn("Could not subscribe to native file drops", error);
 });
-window.addEventListener("paste", async (e: ClipboardEvent) => {
+async function pasteInput(e: ClipboardEvent): Promise<void> {
+  const selection = ++inputSelectionSequence;
   for (const item of e.clipboardData?.items ?? []) {
     const image = item.type.startsWith("image/") && item.getAsFile();
-    if (image) return setInput(image, image.name || "pasted.png");
+    if (image) return setInput(image, image.name || "pasted.png", selection);
   }
   // WebKitGTK can omit image data from ClipboardEvent. Since paste was
   // user-triggered, try reading the clipboard item list for an image.
   const items = await navigator.clipboard?.read?.().catch(() => []) ?? [];
+  if (selection < appliedInputSelection) return;
   for (const item of items) {
     const type = item.types.find((type) => type.startsWith("image/"));
     if (type) {
       const image = await item.getType(type).catch(() => null);
-      if (image) return setInput(image, "pasted.png");
+      if (selection < appliedInputSelection) return;
+      if (image) return setInput(image, "pasted.png", selection);
     }
   }
-});
+}
+window.addEventListener("paste", pasteInput);
 
 function isEditableShortcutTarget(target: EventTarget | null): boolean {
   return target instanceof HTMLElement && (
@@ -1880,7 +1949,7 @@ function updateGenerateEnabled(): void {
   generateBtn.disabled = !enabled;
   sweepBtn.disabled = !enabled;
   previewMaskBtn.disabled = !inputImage || generating || !isTauri();
-  clearGalleryBtn.disabled = generating;
+  clearGalleryBtn.disabled = generating || currentAssetGroups.length === 0;
   clearCandidatesBtn.disabled = generating;
   generateBtn.textContent = generating || generationQueue.length ? "Add to queue" : "Generate 3D";
   clearQueueBtn.disabled = generationQueue.length === 0;
@@ -1894,7 +1963,7 @@ function generationBackendReady(): boolean {
     void openModelSetup(message);
     return false;
   }
-  toast("The model server is offline. Wait for it to finish starting, or review Models in Settings.", "err");
+  toast("The model server is offline. Wait for it to finish starting, or retry it from the banner above.", "err");
   return false;
 }
 
@@ -2026,7 +2095,62 @@ function updateProgressFromServerLog(line: string): void {
   }
 }
 
+const queuePreviewUrls = new Map<GenerationJob, string>();
+const queuePreviewRows = new Map<GenerationJob, HTMLLIElement>();
+let queueExpanded = false;
+const queueExpandButton = $<HTMLButtonElement>("queue-expand-btn");
+queueExpandButton.addEventListener("click", () => {
+  queueExpanded = !queueExpanded;
+  renderQueuePreviews();
+});
+
+function renderQueuePreviews(): void {
+  const preview = $<HTMLImageElement>("progress-input-preview");
+  const list = $("queue-previews");
+  const live = new Set(currentJob ? [currentJob, ...generationQueue] : generationQueue);
+  const imageUrl = (job: GenerationJob): string => {
+    let url = queuePreviewUrls.get(job);
+    if (!url) { url = URL.createObjectURL(job.image); queuePreviewUrls.set(job, url); }
+    return url;
+  };
+  if (currentJob) {
+    const url = imageUrl(currentJob);
+    if (preview.getAttribute("src") !== url) preview.src = url;
+    preview.alt = `Input for ${currentJob.label}`;
+  } else preview.removeAttribute("src");
+  preview.classList.toggle("hidden", !currentJob);
+  for (const [job, row] of queuePreviewRows) {
+    if (!generationQueue.includes(job)) { row.remove(); queuePreviewRows.delete(job); }
+  }
+  for (const [job, url] of queuePreviewUrls) {
+    if (!live.has(job)) { URL.revokeObjectURL(url); queuePreviewUrls.delete(job); }
+  }
+  generationQueue.forEach((job, index) => {
+    let row = queuePreviewRows.get(job);
+    if (!row) {
+      row = document.createElement("li");
+      const image = document.createElement("img");
+      image.className = "queue-image";
+      image.alt = "";
+      image.loading = "lazy";
+      image.decoding = "async";
+      image.src = imageUrl(job);
+      const label = document.createElement("span");
+      row.append(image, label);
+      queuePreviewRows.set(job, row);
+      list.append(row);
+    }
+    row.lastElementChild!.textContent = `${index + 1}. ${job.label}`;
+  });
+  if (!generationQueue.length) queueExpanded = false;
+  queueExpandButton.classList.toggle("hidden", !generationQueue.length);
+  queueExpandButton.setAttribute("aria-expanded", String(queueExpanded));
+  $("queue-expand-label").textContent = `${queueExpanded ? "Hide" : "Show"} queued (${generationQueue.length})`;
+  list.classList.toggle("hidden", !queueExpanded);
+}
+
 function updateQueueStatus(): void {
+  renderQueuePreviews();
   const queued = generationQueue.length;
   progressQueue.textContent = queued
     ? `1 running · ${queued} queued`
@@ -2310,7 +2434,7 @@ async function generateRecord(
     sweepGroupId: sweep?.id,
     sweepIndex: sweep?.index,
     sweepCount: sweep?.count,
-    assetId: sweep?.id ?? recordId,
+    assetId: resume?.assetId ?? sweep?.id ?? recordId,
     versionId: recordId,
     parentVersionId: undefined,
     operation: "generated",
@@ -2322,7 +2446,7 @@ async function generateRecord(
     qualityWarning: inspection.warning ?? undefined,
   };
 
-  const modelName = `${base}_${normalizedParams.resolution}_seed${normalizedParams.seed}_${rec.id}.glb`;
+  const modelName = `${base}_${normalizedParams.resolution}_seed${normalizedParams.seed}_${encodeURIComponent(rec.id)}.glb`;
   // Persist the GLB first so a completed manifest can never point at a file
   // that does not exist (the Rust writer computes its SHA-256 on write).
   let savedPath: string | null = null;
@@ -2330,14 +2454,17 @@ async function generateRecord(
   if (isTauri()) {
     try {
       const bytes = new Uint8Array(await glb.arrayBuffer());
-      savedPath = await saveToOutputDir(modelName, bytes);
+      const packageDir = resume
+        ? resume.path.slice(0, Math.max(resume.path.lastIndexOf("/"), resume.path.lastIndexOf("\\")))
+        : activeContext?.dir;
+      savedPath = await saveToOutputDir(modelName, bytes, packageDir);
       if (!savedPath) autosaveError = "the model could not be written to the output folder";
     } catch (e) {
       autosaveError = (e as Error).message || "autosave failed";
     }
   }
 
-  const librarySave = await put(rec);
+  const librarySave = await putGeneratedVersion(rec);
   if (!librarySave.persisted && !warnedEphemeral) {
     warnedEphemeral = true;
     toast(
@@ -2399,6 +2526,7 @@ async function generateRecord(
       const stats = await instance.load(glb, disposeEditorSession);
     rec.metrics = statsToMetrics(stats);
     currentGlb = glb;
+    setModelReference(sourceImage);
     activeId = rec.id;
     activeParams = normalizedParams;
     activeLabel = rec.label;
@@ -2406,13 +2534,13 @@ async function generateRecord(
     updateViewerCaption();
     renderViewerStats(stats, normalizedParams);
     renderMeshParts(instance);
-    await put(rec);
+    await putGeneratedVersion(rec);
     setWorkspaceMode("view");
     clearStandaloneView();
     const thumb = await instance.thumbnail();
     if (thumb) {
       rec.thumb = thumb;
-      await put(rec);
+      await putGeneratedVersion(rec);
       await refreshGallery();
     }
     });
@@ -2501,6 +2629,22 @@ async function runGenerationQueue(): Promise<void> {
   }
 }
 
+let queueConfirmationTimer: number | undefined;
+function showQueueConfirmation(): void {
+  window.clearTimeout(queueConfirmationTimer);
+  dropzone.querySelector(".queue-confirmation")?.remove();
+  const badge = document.createElement("span");
+  badge.className = "queue-confirmation";
+  badge.setAttribute("role", "status");
+  badge.setAttribute("aria-label", "Added to queue");
+  const icon = document.createElement("span");
+  icon.className = "queue-confirmation-icon";
+  icon.setAttribute("aria-hidden", "true");
+  badge.append(icon);
+  dropzone.append(badge);
+  queueConfirmationTimer = window.setTimeout(() => badge.remove(), 1100);
+}
+
 function doGenerate(): void {
   if (!inputImage) return;
   if (!generationBackendReady()) return;
@@ -2521,6 +2665,7 @@ function doGenerate(): void {
       label: `${inputName.replace(/\.[^.]+$/, "") || "Model"} · seed ${params.seed}`,
       autoOpen: noModelYet,
     });
+    showQueueConfirmation();
   } catch (error) {
     toast((error as Error).message, "err");
   }
@@ -2528,19 +2673,27 @@ function doGenerate(): void {
 
 generateBtn.addEventListener("click", doGenerate);
 cancelBtn.addEventListener("click", () => abort?.abort());
-clearQueueBtn.addEventListener("click", () => {
+clearQueueBtn.addEventListener("click", async () => {
   if (!generationQueue.length) return;
   const removed = generationQueue.splice(0);
   const affectedSweeps = new Set<string>();
   for (const job of removed) {
     if (job.candidate?.status === "queued") job.candidate.status = "cancelled";
     // Persist the cancelled state so recovery never requeues it.
-    if (job.candidate?.manifest) void cancelCandidateManifest(job.candidate.manifest);
+    try {
+      if (job.resumeManifest) {
+        await finishResumedManifest(job.resumeManifest.path, {
+          status: "cancelled", error: "Removed from queue",
+          newJobId: job.resumeManifest.versionId, newRequestId: newRequestId(),
+        });
+      } else if (job.candidate?.manifest) await cancelCandidateManifest(job.candidate.manifest);
+    } catch (error) { noteManifestWriteFailure(error, "generation-cancelled"); }
     if (job.sweep) affectedSweeps.add(job.sweep.id);
   }
   renderCandidates();
   affectedSweeps.forEach(announceSweepWhenComplete);
   updateQueueStatus();
+  await checkInterruptedManifests();
   toast(`${removed.length} queued job${removed.length === 1 ? "" : "s"} removed`);
 });
 
@@ -2583,6 +2736,8 @@ async function doSweep(): Promise<void> {
     return;
   }
   const sweepGroupId = newId();
+  const sweepImage = inputImage;
+  const sweepName = inputName;
 
   // Persist every candidate manifest (plus one shared source image) BEFORE
   // the first generation runs. If persistence fails, refuse to queue a
@@ -2592,12 +2747,12 @@ async function doSweep(): Promise<void> {
     try {
       const { seed: _seed, ...manifestParams } = sweepParams;
       preparedContexts = await prepareSweepManifests({
-        base: safeStem(inputName),
+        base: safeStem(sweepName),
         groupId: sweepGroupId,
-        labelBase: inputName.replace(/\.[^.]+$/, "") || "Model",
+        labelBase: sweepName.replace(/\.[^.]+$/, "") || "Model",
         params: manifestParams,
         seeds: sweepSeeds,
-        sourceBlob: inputImage,
+        sourceBlob: sweepImage,
       });
       if (preparedContexts.some((context) => context === null)) {
         throw new Error("one or more candidate records could not be written");
@@ -2619,8 +2774,6 @@ async function doSweep(): Promise<void> {
   sweepCandidates.set(sweepGroupId, candidates);
   candidateWrap.classList.remove("hidden");
   renderCandidates();
-  const sweepImage = inputImage;
-  const sweepName = inputName;
   const canOpenFirst = !activeId && !currentGlb && !currentJob && generationQueue.length === 0;
   candidates.forEach((slot, index) => {
     queueJob({
@@ -2636,6 +2789,7 @@ async function doSweep(): Promise<void> {
       candidate: slot,
     });
   });
+  showQueueConfirmation();
 }
 
 sweepBtn.addEventListener("click", () => {
@@ -2701,9 +2855,50 @@ versionDockToggle.addEventListener("click", () => {
   if (collapsed) userCollapsedVersionsThisSession = true;
 });
 
+let recordSelectionRequest = 0;
+let pendingRecordId: string | null = null;
+
+function setViewerSelectionLoading(loading: boolean): void {
+  viewerSelectionLoading.classList.toggle("hidden", !loading);
+  // Only the model canvas is busy; queue status and controls remain independent.
+  viewerMount.querySelector("canvas")?.setAttribute("aria-busy", String(loading));
+}
+
+function updateVersionSelection(): void {
+  const selectedId = pendingRecordId ?? activeId;
+  for (const item of versionGalleryEl.querySelectorAll<HTMLElement>(".version-item")) {
+    const selected = item.dataset.recordId === selectedId;
+    item.classList.toggle("active", selected);
+    item.setAttribute("aria-pressed", String(selected));
+    item.setAttribute("aria-busy", String(selected && pendingRecordId !== null));
+  }
+}
+
 async function loadRecordData(rec: VersionRecord): Promise<void> {
-  try { await replaceModel(() => loadRecordDataNow(rec)); }
+  const request = ++recordSelectionRequest;
+  pendingRecordId = rec.id;
+  updateVersionSelection();
+  setViewerSelectionLoading(true);
+  try {
+    await modelOperations.run(async () => {
+      if (request !== recordSelectionRequest) return;
+      if (!(await resolveUnsavedEdits())) throw new Error("Model change cancelled; edits kept");
+      if (request !== recordSelectionRequest) return;
+      setWorkspaceMode("view");
+      // Let the preview loading state paint before parsing a large GLB.
+      await new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
+      if (request !== recordSelectionRequest) return;
+      await loadRecordDataNow(rec);
+    });
+  }
   catch (error) { toast((error as Error).message, "err"); }
+  finally {
+    if (request === recordSelectionRequest) {
+      pendingRecordId = null;
+      updateVersionSelection();
+      setViewerSelectionLoading(false);
+    }
+  }
 }
 async function loadRecordDataNow(rec: VersionRecord): Promise<void> {
   let stats: ViewerStats;
@@ -2722,6 +2917,8 @@ async function loadRecordDataNow(rec: VersionRecord): Promise<void> {
   renderMeshParts(instance);
   setWorkspaceMode("view");
   clearStandaloneView();
+  appliedInputSelection = ++inputSelectionSequence;
+  setModelReference(rec.input);
   inputImage = rec.input;
   inputName = rec.name;
   clearMaskPreview();
@@ -2733,13 +2930,15 @@ async function loadRecordDataNow(rec: VersionRecord): Promise<void> {
   currentGlb = rec.glb;
   activeId = rec.id;
   activeLabel = rec.label;
+  updateVersionSelection();
   setViewerTools(true);
   updateViewerCaption();
   updateGenerateEnabled();
   let recordChanged = false;
   const measuredMetrics = statsToMetrics(stats);
-  if (!rec.metrics || !rec.metrics.dimensions) {
-    rec.metrics = measuredMetrics;
+  const filledMetrics = fillMissingMetrics(rec.metrics, measuredMetrics);
+  if (filledMetrics) {
+    rec.metrics = filledMetrics;
     recordChanged = true;
   }
   const measuredWarning = detectPlaneCollapse(measuredMetrics.dimensions);
@@ -2755,7 +2954,10 @@ async function loadRecordDataNow(rec: VersionRecord): Promise<void> {
       recordChanged = true;
     }
   }
-  if (recordChanged) await put(rec);
+  if (recordChanged) {
+    if (rec.operation === "generated") await putGeneratedVersion(rec);
+    else await put(rec);
+  }
   await refreshGallery();
   renderCandidates();
 }
@@ -2791,6 +2993,8 @@ function renderCandidates(): void {
     preview.className = "candidate-preview";
     if (slot.record) {
       const img = document.createElement("img");
+      img.loading = "lazy";
+      img.decoding = "async";
       const url = URL.createObjectURL(slot.record.thumb ?? slot.record.input);
       candidateUrls.push(url);
       img.src = url;
@@ -2862,12 +3066,43 @@ function assetIsFavorite(records: VersionRecord[]): boolean {
   return records.length > 0 && records.every((record) => record.favorite);
 }
 
-function renderLibraryAsset(asset: AssetGroup): HTMLElement {
+async function applyProjectChoice(asset: AssetGroup, choice: ProjectChoice): Promise<void> {
+  const records = choice.kind === "edit"
+    ? projectEditTargets(currentAssetGroups.flatMap((group) => group.records), choice.from)
+    : asset.records;
+  const project = choice.kind === "set" ? choice.project : choice.kind === "edit" ? choice.to : null;
+  const { saved, error } = await writeProjectToVersions(records, project, async (record, next) => {
+    const updated = await setVersionProject(record.versionId, next);
+    // Preserve card event-handler references while applying only persisted metadata.
+    for (const group of currentAssetGroups) {
+      for (const current of group.records) {
+        if (current.versionId === updated.versionId) Object.assign(current, updated);
+      }
+    }
+  });
+  if (error) {
+    const detail = (error as Error).message || "Could not update project";
+    toast(saved ? `${detail}. ${saved} of ${records.length} versions were updated. Repeat the change to finish the rest.` : detail, "err");
+  }
+  renderLibraryViewNow();
+}
+
+async function chooseAssetProject(asset: AssetGroup): Promise<void> {
+  const choice = await requestProject({
+    assetName: assetDisplayName(asset.records),
+    current: assetProject(asset.records),
+    projects: projectsInRecords(currentAssetGroups.flatMap((group) => group.records)),
+  });
+  if (choice) await applyProjectChoice(asset, choice);
+}
+
+function renderLibraryAsset(asset: AssetGroup, existing?: HTMLElement): HTMLElement {
   const records = asset.records;
   const representative = records.find((record) => record.id === activeId) ?? records[0];
   const assetName = assetDisplayName(records);
-  const item = document.createElement("article");
+  const item = existing ?? document.createElement("article");
   item.className = `asset-item library-asset-item${asset.assetId === selectedAssetId ? " active" : ""}`;
+  item.dataset.assetId = asset.assetId;
   item.tabIndex = 0;
   item.setAttribute("role", "button");
 
@@ -2877,6 +3112,21 @@ function renderLibraryAsset(asset: AssetGroup): HTMLElement {
   name.textContent = assetName;
   const actions = document.createElement("div");
   actions.className = "asset-actions";
+
+  const project = assetProject(records);
+  const projectBtn = createButton({
+    label: project ? `Project: ${project.name}. Change project` : "Add asset to a project",
+    variant: "icon",
+    size: "sm",
+    labelMode: "aria-only",
+    className: `g-action project-action${project ? " assigned" : ""}`,
+  });
+  projectBtn.append(createProjectIcon(project?.icon ?? "folder"));
+  projectBtn.addEventListener("click", (event) => {
+    event.stopPropagation();
+    void chooseAssetProject(asset);
+  });
+  actions.appendChild(projectBtn);
 
   const exportBtn = createButton({
     label: `Export ${assetName} as GLB`,
@@ -2908,7 +3158,7 @@ function renderLibraryAsset(asset: AssetGroup): HTMLElement {
   favoriteBtn.addEventListener("click", async (event) => {
     event.stopPropagation();
     try {
-      for (const record of records) await setVersionFavorite(record.versionId, !favorite);
+      await setAssetFavorite(representative.assetId, !favorite);
       await refreshGallery();
     } catch (error) {
       toast((error as Error).message || "Could not update favourite", "err");
@@ -2951,12 +3201,24 @@ function renderLibraryAsset(asset: AssetGroup): HTMLElement {
   });
   actions.appendChild(removeBtn);
   itemHead.append(name, actions);
-  item.appendChild(itemHead);
+  const previousHead = item.querySelector(".asset-item-head");
+  if (previousHead) previousHead.replaceWith(itemHead);
+  else item.appendChild(itemHead);
 
-  const img = document.createElement("img");
-  const url = URL.createObjectURL(representative.thumb ?? representative.input);
-  libraryUrls.push(url);
-  img.src = url;
+  const img = item.querySelector("img") ?? document.createElement("img");
+  img.loading = "lazy";
+  img.decoding = "async";
+  const preview = representative.thumb ?? representative.input;
+  if (libraryPreviewBlobs.get(img) !== preview) {
+    if (img.src) {
+      URL.revokeObjectURL(img.src);
+      libraryUrls = libraryUrls.filter((url) => url !== img.src);
+    }
+    const url = URL.createObjectURL(preview);
+    libraryUrls.push(url);
+    img.src = url;
+    libraryPreviewBlobs.set(img, preview);
+  }
   img.alt = `${representative.name} asset preview`;
   const text = document.createElement("div");
   text.className = "asset-item-meta";
@@ -2965,19 +3227,21 @@ function renderLibraryAsset(asset: AssetGroup): HTMLElement {
   const latest = document.createElement("span");
   latest.textContent = `Latest: ${representative.label}`;
   text.append(count, latest);
-  item.append(img, text);
+  if (!img.parentElement) item.appendChild(img);
+  const previousMeta = item.querySelector(".asset-item-meta");
+  if (previousMeta) previousMeta.replaceWith(text);
+  else item.appendChild(text);
 
   const openAsset = async (): Promise<void> => {
-    selectedAssetId = asset.assetId;
     await loadRecordData(representative);
   };
-  item.addEventListener("click", () => void openAsset());
-  item.addEventListener("keydown", (event) => {
-    if (event.key === "Enter" || event.key === " ") {
+  item.onclick = () => void openAsset();
+  item.onkeydown = (event) => {
+    if (event.target === item && (event.key === "Enter" || event.key === " ")) {
       event.preventDefault();
       void openAsset();
     }
-  });
+  };
   return item;
 }
 
@@ -2998,28 +3262,70 @@ function renderAssetSkeletons(container: HTMLElement): void {
   container.replaceChildren(fragment);
 }
 
-function renderLibraryView(): void {
-  libraryUrls.forEach((url) => URL.revokeObjectURL(url));
-  libraryUrls = [];
-  libraryGrid.innerHTML = "";
+/** Rebuilds the Project dropdown from the projects in use, keeping the selection when it still exists. */
+function syncProjectFilter(): void {
+  const projects: LibraryProject[] = projectsInRecords(currentAssetGroups.flatMap((asset) => asset.records));
+  const options: [string, string, string][] = [
+    [PROJECT_FILTER_ALL, "All projects", "stack"],
+    [PROJECT_FILTER_NONE, "No project", "project-folder"],
+    ...projects.map((project): [string, string, string] => [PROJECT_FILTER_PREFIX + projectKey(project), project.name, `project-${project.icon}`]),
+  ];
+  const previous = libraryProject.value;
+  const signature = JSON.stringify(options);
+  if (libraryProject.dataset.signature !== signature) {
+    libraryProject.dataset.signature = signature;
+    libraryProject.replaceChildren(...options.map(([value, label, icon]) => {
+      const option = new Option(label, value);
+      option.dataset.icon = icon;
+      return option;
+    }));
+  }
+  libraryProject.value = options.some(([value]) => value === previous) ? previous : PROJECT_FILTER_ALL;
+  refreshSelect(libraryProject);
+}
+
+function renderLibraryView(): void { renderLibraryViewNow(); }
+
+function renderLibraryViewNow(): void {
+  syncProjectFilter();
   const filtered = filterLibraryEntries(
-    currentAssetGroups.map((asset) => ({
-      ...asset,
-      name: assetDisplayName(asset.records),
-      searchText: [
-        assetDisplayName(asset.records),
-        ...asset.records.flatMap((record) => [record.label, record.name, record.operation]),
-      ].join(" "),
-      favorite: assetIsFavorite(asset.records),
-      versionCount: asset.records.length,
-      createdAt: asset.records[0]?.createdAt ?? 0,
-    })),
+    currentAssetGroups.map((asset) => {
+      const project = assetProject(asset.records);
+      return {
+        ...asset,
+        name: assetDisplayName(asset.records),
+        searchText: [
+          assetDisplayName(asset.records),
+          ...projectsInRecords(asset.records).map((entry) => entry.name),
+          ...asset.records.flatMap((record) => [record.label, record.name, record.operation]),
+        ].join(" "),
+        favorite: assetIsFavorite(asset.records),
+        versionCount: asset.records.length,
+        createdAt: asset.records[0]?.createdAt ?? 0,
+        projectKey: project ? projectKey(project) : null,
+        projectKeys: projectsInRecords(asset.records).map(projectKey),
+      };
+    }),
     {
       query: librarySearch.value,
       filter: libraryFilter.value as LibraryFilter,
       sort: librarySort.value as LibrarySort,
+      project: libraryProject.value,
     },
   );
+
+  {
+    const visible = new Set(filtered.map((asset) => asset.assetId));
+    for (const child of Array.from(libraryGrid.children)) {
+      if (visible.has((child as HTMLElement).dataset.assetId ?? "")) continue;
+      const url = child.querySelector("img")?.src;
+      if (url) {
+        URL.revokeObjectURL(url);
+        libraryUrls = libraryUrls.filter((entry) => entry !== url);
+      }
+      child.remove();
+    }
+  }
 
   const totalVersions = currentAssetGroups.reduce((sum, asset) => sum + asset.records.length, 0);
   libraryModeSummary.textContent = `${currentAssetGroups.length} asset${currentAssetGroups.length === 1 ? "" : "s"}, ${totalVersions} version${totalVersions === 1 ? "" : "s"}`;
@@ -3041,11 +3347,26 @@ function renderLibraryView(): void {
     libraryGrid.appendChild(empty);
     return;
   }
-  for (const asset of filtered) libraryGrid.appendChild(renderLibraryAsset(asset));
+  const existing = new Map(Array.from(libraryGrid.children).map((element) => [(element as HTMLElement).dataset.assetId, element as HTMLElement]));
+  let position = libraryGrid.firstElementChild;
+  for (const asset of filtered) {
+    const card = renderLibraryAsset(asset, existing.get(asset.assetId));
+    const project = assetProject(asset.records);
+    const button = card.querySelector<HTMLButtonElement>(".project-action")!;
+    const label = project ? `Project: ${project.name}. Change project` : "Add asset to a project";
+    button.title = label;
+    button.setAttribute("aria-label", label);
+    button.classList.toggle("assigned", Boolean(project));
+    const icon = button.querySelector<HTMLElement>(".project-icon")!;
+    icon.className = `project-icon project-icon-${project?.icon ?? "folder"}`;
+    if (card !== position) libraryGrid.insertBefore(card, position);
+    position = card.nextElementSibling;
+  }
 }
 
 librarySearch.addEventListener("input", renderLibraryView);
 libraryFilter.addEventListener("change", renderLibraryView);
+libraryProject.addEventListener("change", renderLibraryView);
 librarySort.addEventListener("change", renderLibraryView);
 dockFavoritesToggle.addEventListener("click", () => {
   dockFavoritesOnly = !dockFavoritesOnly;
@@ -3129,10 +3450,7 @@ async function refreshGalleryNow(): Promise<void> {
   const activeAsset = activeId
     ? assetGroups.find((asset) => asset.records.some((record) => record.id === activeId))
     : undefined;
-  if (activeAsset) selectedAssetId = activeAsset.assetId;
-  if (!selectedAssetId || !dockAssetGroups.some((asset) => asset.assetId === selectedAssetId)) {
-    selectedAssetId = dockAssetGroups[0]?.assetId ?? null;
-  }
+  selectedAssetId = activeAsset?.assetId ?? null;
   renderLibraryView();
 
   for (const asset of dockAssetGroups) {
@@ -3181,7 +3499,7 @@ async function refreshGalleryNow(): Promise<void> {
     favoriteBtn.addEventListener("click", async (event) => {
       event.stopPropagation();
       try {
-        for (const record of records) await setVersionFavorite(record.versionId, !assetIsFavorite);
+        await setAssetFavorite(representative.assetId, !assetIsFavorite);
         await refreshGallery();
       } catch (error) {
         toast((error as Error).message || "Could not update favorite", "err");
@@ -3227,6 +3545,8 @@ async function refreshGalleryNow(): Promise<void> {
     item.appendChild(itemHead);
 
     const img = document.createElement("img");
+    img.loading = "lazy";
+    img.decoding = "async";
     const url = URL.createObjectURL(representative.thumb ?? representative.input);
     galleryUrls.push(url);
     img.src = url;
@@ -3240,12 +3560,11 @@ async function refreshGalleryNow(): Promise<void> {
     text.append(count, latest);
     item.append(img, text);
     const openAsset = async (): Promise<void> => {
-      selectedAssetId = asset.assetId;
       await loadRecordData(representative);
     };
     item.addEventListener("click", () => void openAsset());
     item.addEventListener("keydown", (event) => {
-      if (event.key === "Enter" || event.key === " ") {
+      if (event.target === item && (event.key === "Enter" || event.key === " ")) {
         event.preventDefault();
         void openAsset();
       }
@@ -3282,6 +3601,7 @@ async function refreshGalleryNow(): Promise<void> {
         .filter((warning) => warning !== null && warning !== undefined);
       const item = document.createElement("article");
       item.className = `version-item${versionRecords.some((candidate) => candidate.id === activeId) ? " active" : ""}${warnings.length ? " quality-warning" : ""}`;
+      item.dataset.recordId = representative.id;
       item.tabIndex = 0;
       item.setAttribute("role", "button");
 
@@ -3296,6 +3616,8 @@ async function refreshGalleryNow(): Promise<void> {
       item.appendChild(itemHead);
 
       const img = document.createElement("img");
+      img.loading = "lazy";
+      img.decoding = "async";
       const url = URL.createObjectURL(representative.thumb ?? representative.input);
       galleryUrls.push(url);
       img.src = url;
@@ -3381,13 +3703,14 @@ async function refreshGalleryNow(): Promise<void> {
       };
       item.addEventListener("click", () => void openVersion());
       item.addEventListener("keydown", (event) => {
-        if (event.key === "Enter" || event.key === " ") {
+        if (event.target === item && (event.key === "Enter" || event.key === " ")) {
           event.preventDefault();
           void openVersion();
         }
       });
       versionGalleryEl.appendChild(item);
   }
+  updateVersionSelection();
 }
 
 let automationSync: Promise<number> | null = null;
@@ -3486,10 +3809,10 @@ clearGalleryBtn.addEventListener("click", async () => {
     if (!(await resolveUnsavedEdits())) return;
 
   if (generating) {
-    toast("Wait for generation to finish before clearing the gallery", "err");
+    toast("Wait for generation to finish before clearing the Library", "err");
     return;
   }
-  if (!confirm("Delete all saved generations?")) return;
+  if (!(await confirmDestructive("Clear Library", "Delete every saved asset and version from the Library?", "Delete all"))) return;
   try {
     await clearStore();
     candidates = [];
@@ -3499,7 +3822,7 @@ clearGalleryBtn.addEventListener("click", async () => {
     if (viewer) renderMeshParts(viewer);
     await refreshGallery();
   } catch (error) {
-    toast((error as Error).message || "Could not clear the gallery", "err");
+    toast((error as Error).message || "Could not clear the Library", "err");
   }
 
  }).catch((error) => toast((error as Error).message, "err"));
@@ -3512,9 +3835,10 @@ async function renderSettingsPage(): Promise<void> {
     await renderSettings(settingsBody, (message) => {
       pollHealth();
       void refreshHardwareGuardrails();
-      toast(message);
+      toast(message, "ok");
+      void showRuntimeVersionNotice();
       void renderSettingsPage();
-    });
+    }, (message) => toast(message, "err"));
   } catch (error) {
     const runtimeStatus = settingsBody.querySelector<HTMLElement>(".settings-runtime");
     settingsBody.querySelectorAll<HTMLSelectElement>("select").forEach(destroySelect);
@@ -3548,14 +3872,17 @@ $("banner-settings").addEventListener("click", () => {
 // ---- server status ----
 let serverRecoveryInProgress = false;
 let serverRecoveryError: string | null = null;
+let serverStartupPending = isTauri();
 
 function showServerStarting(): void {
   serverDot.className = "dot";
   serverLabel.textContent = "starting";
   setupBanner.classList.remove("hidden");
+  setupBanner.classList.add("loading");
+  setupBanner.setAttribute("role", "status");
   (setupBanner.querySelector("span") as HTMLElement).textContent =
-    "Starting the local model server. This can take a few seconds.";
-  setupBannerButton.textContent = "Starting…";
+    "Starting the model server… This can take a few seconds.";
+  setupBannerButton.innerHTML = '<span class="spinner" aria-hidden="true"></span> Starting…';
   setupBannerButton.disabled = true;
   setupBanner.dataset.action = "retry-server";
 }
@@ -3583,24 +3910,27 @@ async function pollHealthInternal(): Promise<void> {
   serverConfigured = cfg.configured;
   backendBadge.textContent = cfg.backend !== "unknown" ? cfg.backend : "-";
   const ok = await health();
+  const connection = serverConnectionState(ok, cfg.configured, serverStartupPending, serverRecoveryInProgress);
   serverOnline = ok;
-  serverDot.className = "dot " + (ok ? "ok" : "err");
-  serverLabel.textContent = ok ? "ready" : cfg.configured ? "offline" : "setup needed";
+  serverDot.className = "dot " + (ok ? "ok" : connection === "starting" ? "" : "err");
+  serverLabel.textContent = connection === "setup" ? "setup needed" : connection;
+  setupBanner.classList.remove("loading");
   const needSetup = !ok && !cfg.configured;
   setupBanner.classList.toggle("hidden", !needSetup);
   if (needSetup) {
+    setupBannerButton.disabled = false;
     (setupBanner.querySelector("span") as HTMLElement).textContent =
       "No model bundle is ready. Complete onboarding before generating.";
     $("banner-settings").textContent = "Complete onboarding";
     setupBanner.dataset.action = "onboarding";
   } else if (!ok && cfg.configured) {
     setupBanner.classList.remove("hidden");
-    if (serverRecoveryInProgress) {
+    if (connection === "starting") {
       showServerStarting();
     } else {
       (setupBanner.querySelector("span") as HTMLElement).textContent = serverRecoveryError
         ? "The model server did not start. Try again, or review the server logs if the problem continues."
-        : "The model server is unavailable. Triastasis can restart it automatically.";
+        : "The model server is unavailable. Retry to restart it.";
       setupBannerButton.textContent = "Retry server";
       setupBannerButton.disabled = false;
       setupBanner.dataset.action = "retry-server";
@@ -3676,6 +4006,7 @@ listenSafely<string>("automation-import-requested", () => {
   void syncAutomationImportRequests();
 });
 listenSafely("server-restarted", () => {
+  void showRuntimeVersionNotice();
   automationJobsCache = null;
   void pollHealth();
 });
@@ -3694,13 +4025,13 @@ document.addEventListener("visibilitychange", () => {
 });
 
 // ---- Triastasis manifest import / standalone GLB / recovery ----
-const manifestModal = $("manifest-modal");
+const manifestModal = $<HTMLDialogElement>("manifest-modal");
+const manifestDialog = bindDialog(manifestModal, closeManifestModal, () => !manifestBusy);
 const manifestTitle = $("manifest-title");
 const manifestBody = $("manifest-body");
 const recoveryBanner = $("recovery-banner");
 let previewUrlCleanup: (() => void) | null = null;
 let standaloneView: { glbPath: string | null; linkedPath: string | null } | null = null;
-let manifestOpener: HTMLElement | null = null;
 
 function manifestFocusables(): HTMLElement[] {
   return Array.from(
@@ -3712,29 +4043,6 @@ function manifestFocusables(): HTMLElement[] {
       element.offsetParent !== null,
   );
 }
-
-// Focus trap + Escape; initial focus and restore-on-close live in
-// openManifestPreview/closeManifestModal.
-manifestModal.addEventListener("keydown", (event) => {
-  if (event.key === "Escape") {
-    event.preventDefault();
-    closeManifestModal();
-    return;
-  }
-  if (event.key !== "Tab") return;
-  const items = manifestFocusables();
-  if (!items.length) return;
-  const first = items[0];
-  const last = items[items.length - 1];
-  const active = document.activeElement as HTMLElement | null;
-  if (event.shiftKey && (active === first || !manifestModal.contains(active))) {
-    event.preventDefault();
-    last.focus();
-  } else if (!event.shiftKey && active === last) {
-    event.preventDefault();
-    first.focus();
-  }
-});
 
 // 1x1 transparent PNG placeholder for assets imported without a source image.
 const PLACEHOLDER_PNG_B64 =
@@ -3749,22 +4057,15 @@ function closeManifestModal(): void {
   // Every user close path (Escape, backdrop, header, footer) is blocked while
   // an import/requeue is in flight. Success uses completeManifestSuccess().
   if (manifestBusy) return;
-  manifestModal.classList.add("hidden");
+  manifestDialog.close();
   cleanupManifestModal();
-  const opener = manifestOpener;
-  manifestOpener = null;
-  if (opener && document.contains(opener)) opener.focus();
 }
 
 /** Success-only completion: un-busy first, then close and clean up. */
 function completeManifestSuccess(): void {
   endManifestBusy();
-  manifestModal.classList.add("hidden");
+  manifestDialog.close();
   cleanupManifestModal();
-  const opener = manifestOpener;
-  manifestOpener = null;
-  if (opener && document.contains(opener)) opener.focus();
-  else manifestBody.querySelector<HTMLButtonElement>("button")?.focus();
 }
 
 function cleanupManifestModal(): void {
@@ -3773,11 +4074,6 @@ function cleanupManifestModal(): void {
     previewUrlCleanup = null;
   }
 }
-
-$("manifest-close").addEventListener("click", closeManifestModal);
-manifestModal.addEventListener("click", (e) => {
-  if (e.target === manifestModal) closeManifestModal();
-});
 
 function renderManifestFacts(m: GenerationManifest): string {
   const facts: string[] = [
@@ -3855,14 +4151,14 @@ async function openManifestPreview(path: string): Promise<void> {
       <div>
         ${renderManifestFacts(m)}
         ${issuesHtml}
-        <div class="modal-actions">
-          <button id="manifest-cancel" class="button button--secondary" type="button">Close</button>
-          ${actions.join("")}
-        </div>
       </div>
-    </div>`;
-  manifestOpener = (document.activeElement as HTMLElement) ?? null;
-  manifestModal.classList.remove("hidden");
+    </div>
+    <footer class="modal-actions">
+      <button id="manifest-cancel" class="button button--secondary" type="button">Close</button>
+      ${actions.join("")}
+    </footer>`;
+  manifestBody.closest("dialog")?.querySelector(".dialog-notifications")?.remove();
+  manifestDialog.open();
   const initialFocus =
     manifestBody.querySelector<HTMLElement>("#manifest-import, #manifest-requeue") ??
     manifestFocusables()[0];
@@ -4029,6 +4325,8 @@ function activateLoadedRecord(
   activeId = rec.id;
   activeParams = normalizeGenParams(rec.params);
   activeLabel = rec.label;
+  appliedInputSelection = ++inputSelectionSequence;
+  setModelReference(rec.input);
   inputImage = rec.input;
   inputName = rec.name;
   setInputPreviewBlob(rec.input);
@@ -4249,12 +4547,16 @@ async function requeueFromManifest(path: string, m?: GenerationManifest): Promis
   const bytes = await readManifestAsset(path, "sourceImage");
   const blob = new Blob([new Uint8Array(bytes)], { type: "image/png" });
   const name = `${safeStem(manifest.label || "resumed")}.png`;
+  if (isRecoveryEntryActive({ path, manifest })) {
+    throw new Error("This generation is already queued or running");
+  }
   queueJob({
     image: blob,
     name,
     params: normalizeGenParams(manifestRecordedParams(manifest)),
     label: `${manifest.label || "Resumed"} · seed ${manifest.seed}`,
     autoOpen: false,
+    sweep: manifest.sweep ? { id: manifest.sweep.groupId, index: manifest.sweep.index, count: manifest.sweep.count } : undefined,
     resumeManifest: {
       path,
       assetId: manifest.assetId,
@@ -4306,6 +4608,8 @@ async function viewGlbFileNow(glbPath: string): Promise<void> {
     activeParams = null;
     activeLabel = "";
     currentGlb = blob;
+    setModelReference(null);
+    renderMeshParts(instance);
     activeId = null;
     renderViewerStats(stats, null);
     setViewerTools(true);
@@ -4381,6 +4685,21 @@ $("import-linked-manifest").addEventListener("click", () => {
 // ---- interrupted-generation recovery ----
 interface InterruptedEntry extends RecoveryCandidate {}
 let interruptedManifests: InterruptedEntry[] = [];
+const restoringSweeps = new Set<string>();
+
+function isSweepActive(groupId: string): boolean {
+  return restoringSweeps.has(groupId) ||
+    [currentJob, ...generationQueue].some((job) =>
+      job?.sweep?.id === groupId || job?.resumeManifest?.assetId === groupId);
+}
+
+function isRecoveryEntryActive(entry: InterruptedEntry): boolean {
+  const groupId = entry.manifest.sweep?.groupId;
+  if (groupId && isSweepActive(groupId)) return true;
+  const normalizedPath = entry.path.replace(/\\/g, "/").toLowerCase();
+  return [currentJob, ...generationQueue].some((job) =>
+    job?.resumeManifest?.path.replace(/\\/g, "/").toLowerCase() === normalizedPath);
+}
 
 function groupInterrupted(
   entries: InterruptedEntry[],
@@ -4434,7 +4753,8 @@ async function checkInterruptedManifests(): Promise<void> {
   if (!isTauri()) return;
   try {
     const found = await scanInterruptedManifests();
-    interruptedManifests = found.map(([path, manifest]) => ({ path, manifest }));
+    interruptedManifests = found.map(([path, manifest]) => ({ path, manifest }))
+      .filter((entry) => !isRecoveryEntryActive(entry));
     recoveryBanner.classList.toggle("hidden", interruptedManifests.length === 0);
     if (interruptedManifests.length) {
       const { singles, sweeps } = groupInterrupted(interruptedManifests);
@@ -4462,6 +4782,11 @@ async function openSweepRecoveryView(groupId: string, anchorPath: string): Promi
     return;
   }
   const ordered = sortBySweepIndex(candidates);
+  if (isSweepActive(groupId)) {
+    toast("This seed sweep is already queued or running");
+    void checkInterruptedManifests();
+    return;
+  }
   const total = ordered[0]?.manifest.sweep?.count ?? ordered.length;
   const queueable = queueableCandidates(ordered);
 
@@ -4496,8 +4821,8 @@ async function openSweepRecoveryView(groupId: string, anchorPath: string): Promi
         }
       </div>
     </div>`;
-  manifestOpener = (document.activeElement as HTMLElement) ?? null;
-  manifestModal.classList.remove("hidden");
+  manifestBody.closest("dialog")?.querySelector(".dialog-notifications")?.remove();
+  manifestDialog.open();
   (
     manifestBody.querySelector<HTMLElement>("#sweep-requeue") ??
     manifestBody.querySelector<HTMLElement>("#manifest-cancel")
@@ -4505,13 +4830,20 @@ async function openSweepRecoveryView(groupId: string, anchorPath: string): Promi
 
   manifestBody.querySelector("#manifest-cancel")?.addEventListener("click", closeManifestModal);
   manifestBody.querySelector("#sweep-requeue")?.addEventListener("click", async () => {
+    if (isSweepActive(groupId)) {
+      toast("This seed sweep is already queued or running");
+      closeManifestModal();
+      void checkInterruptedManifests();
+      return;
+    }
+    restoringSweeps.add(groupId);
     const button = manifestBody.querySelector<HTMLButtonElement>("#sweep-requeue")!;
     button.disabled = true;
     button.textContent = "Queueing…";
     try {
       // Pure preflight: eligible candidates in original sweep.index order,
       // each with its normalized source identity.
-      const planned = planRecoveryQueue(candidates);
+      const planned = planRecoveryQueue(await loadSweepCandidates(anchorPath, groupId));
       if (!planned.length) {
         toast("Nothing to restore: every candidate is already finished or excluded", "err");
         closeManifestModal();
@@ -4567,13 +4899,16 @@ async function openSweepRecoveryView(groupId: string, anchorPath: string): Promi
       toast(`Sweep was not restored (nothing queued): ${(error as Error).message || error}`, "err");
       button.disabled = false;
       button.textContent = "Requeue sweep";
+    } finally {
+      restoringSweeps.delete(groupId);
+      void checkInterruptedManifests();
     }
   });
 }
 
 
 $("recovery-review").addEventListener("click", () => {
-  const { singles, sweeps } = groupInterrupted(interruptedManifests);
+  const { singles, sweeps } = groupInterrupted(interruptedManifests.filter((entry) => !isRecoveryEntryActive(entry)));
   const firstSweep = [...sweeps.entries()][0];
   if (firstSweep && !singles.length) {
     void openSweepRecoveryView(firstSweep[0], firstSweep[1][0].path);
@@ -4616,6 +4951,66 @@ $("import-generation-folder-btn").addEventListener("click", async () => {
 });
 
 
+let runtimeVersionBanner: HTMLElement | null = null;
+const RUNTIME_NOTICE_DISMISSED_KEY = "triastasis.runtimeNoticeDismissed";
+
+/** A dismissal lasts until the app version or the configured runtime changes. */
+function runtimeNoticeScope(runtime: RuntimeStatus): string {
+  return `${runtime.appVersion}|${runtime.path}`;
+}
+
+function dismissedRuntimeNotice(runtime: RuntimeStatus): string | null {
+  try {
+    const saved = JSON.parse(localStorage.getItem(RUNTIME_NOTICE_DISMISSED_KEY) ?? "null") as { scope?: unknown; notice?: unknown } | null;
+    return saved?.scope === runtimeNoticeScope(runtime) && typeof saved.notice === "string" ? saved.notice : null;
+  } catch {
+    return null;
+  }
+}
+
+function dismissRuntimeNotice(runtime: RuntimeStatus, notice: string): void {
+  try {
+    localStorage.setItem(RUNTIME_NOTICE_DISMISSED_KEY, JSON.stringify({ scope: runtimeNoticeScope(runtime), notice }));
+  } catch {
+    /* the banner simply returns next launch */
+  }
+}
+let runtimeNoticeRequest = 0;
+window.addEventListener("runtime-status-changed", () => { void showRuntimeVersionNotice(); });
+
+async function showRuntimeVersionNotice(): Promise<void> {
+  const request = ++runtimeNoticeRequest;
+  if (!isTauri() || document.body.classList.contains("model-setup-active")) return;
+  try {
+    const runtime = await scanRuntime();
+    if (request !== runtimeNoticeRequest) return;
+    const notice = runtimeNotice(runtime, dismissedRuntimeNotice(runtime));
+    runtimeVersionBanner?.remove();
+    runtimeVersionBanner = null;
+    if (!notice) return;
+    const banner = document.createElement("div");
+    banner.className = "banner";
+    banner.setAttribute("role", "status");
+    const message = document.createElement("span");
+    message.textContent = notice;
+    const settings = document.createElement("button");
+    settings.className = "link-btn";
+    settings.type = "button";
+    settings.textContent = "Open runtime settings";
+    settings.onclick = () => { selectRuntimeSettings(); void openSettings(); };
+    const dismiss = document.createElement("button");
+    dismiss.className = "link-btn";
+    dismiss.type = "button";
+    dismiss.textContent = "Dismiss";
+    dismiss.onclick = () => { dismissRuntimeNotice(runtime, notice); banner.remove(); runtimeVersionBanner = null; };
+    banner.append(message, settings, dismiss);
+    runtimeVersionBanner = banner;
+    setupBanner.insertAdjacentElement("afterend", banner);
+  } catch (error) {
+    console.warn("Could not check runtime version", error);
+  }
+}
+
 // ---- boot ----
 async function boot(): Promise<void> {
   setViewerTools(false);
@@ -4629,10 +5024,16 @@ async function boot(): Promise<void> {
   await refreshHardwareGuardrails();
   subscribeModelStorageRefresh();
   const cfg = await loadConfig(true);
-  if (isTauri() && cfg.configured && !(await health(800))) {
-    await recoverServer();
+  try {
+    if (isTauri() && cfg.configured) {
+      showServerStarting();
+      if (!(await health(800))) await recoverServer();
+    }
+  } finally {
+    serverStartupPending = false;
   }
   await pollHealth();
+  void showRuntimeVersionNotice();
   await syncAutomationResults();
   await syncAutomationImportRequests();
   await checkInterruptedManifests();
@@ -4644,6 +5045,8 @@ async function boot(): Promise<void> {
   }
 }
 void boot().catch((error) => {
+  serverStartupPending = false;
+  setupBanner.classList.remove("loading");
   if (document.body.classList.contains("startup-pending")) {
     document.body.classList.remove("startup-pending", "model-setup-active");
     $("model-setup").classList.add("hidden");
